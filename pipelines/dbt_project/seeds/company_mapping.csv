@@ -1,0 +1,6 @@
+real_name_pattern,pseudo_name,is_target,is_competitor
+supernus,Nova Pharma Inc,true,false
+ucb,Veridian Therapeutics,false,true
+lundbeck,Beta Neuroscience Inc,false,true
+intra-cellular,Gamma Biosciences Inc,false,true
+otsuka,Crest Pharma Inc,false,true

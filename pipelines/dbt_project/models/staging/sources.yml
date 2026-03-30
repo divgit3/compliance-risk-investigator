@@ -8,9 +8,11 @@ sources:
     schema: main  # DuckDB's default schema
 
     tables:
-      - name: cms_general_payments
+      - name: cms_open_payments
         description: >
-          CMS Open Payments general payments data (public).
+          CMS Open Payments general payments data (public), 2022-2024.
+          Single partitioned table created by Glue crawler — year subfolders
+          (2022/, 2023/, 2024/) are exposed as a partition column.
           Contains payments made by pharma companies to HCPs nationwide.
 
       - name: synthetic_interactions
