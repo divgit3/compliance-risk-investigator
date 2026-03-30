@@ -48,7 +48,5 @@ loguru==0.7.2
 # ── Testing ──────────────────────────────────────────────────────────────────
 # pytest is the te
 boto3
-loguru
-python-dotenv
-requests
-pandas
+
+
