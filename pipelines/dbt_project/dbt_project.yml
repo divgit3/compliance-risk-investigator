@@ -1,0 +1,33 @@
+name: compliance_risk_investigator
+version: "1.0.0"
+config-version: 2
+
+# The profile tells dbt which connection settings to use (defined in profiles.yml)
+profile: compliance_risk_investigator
+
+# Where dbt looks for different file types
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+# Where dbt writes compiled SQL and run artifacts
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# Materialization defaults per layer:
+#   views  → dbt runs a CREATE VIEW statement (fast, no data stored)
+#   tables → dbt runs a CREATE TABLE statement (data stored, slower to build)
+#
+# staging:      views  — lightweight pass-through of raw source data
+# intermediate: views  — joins and business logic built on staging
+# marts:        tables — final feature-ready output consumed by ML + API
+models:
+  compliance_risk_investigator:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

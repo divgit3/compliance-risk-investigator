@@ -1,0 +1,47 @@
+version: "3.9"
+
+networks:
+  compliance-network:
+    driver: bridge
+
+services:
+
+  # ── Qdrant (Vector Database) ───────────────────────────────────────────────
+  # Stores embeddings of policy documents for RAG retrieval.
+  # UI available at http://localhost:6333/dashboard
+  qdrant:
+    image: qdrant/qdrant:v1.9.4
+    container_name: qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - compliance-network
+    restart: unless-stopped
+
+  # ── MLflow (Experiment Tracking) ───────────────────────────────────────────
+  # Tracks anomaly detection model runs, parameters, and metrics.
+  # UI available at http://localhost:5000
+  mlflow:
+    image: python:3.12-slim
+    container_name: mlflow
+    command: >
+      bash -c "pip install mlflow==2.14.1 --quiet &&
+               mlflow server
+               --host 0.0.0.0
+               --port 5000
+               --backend-store-uri /mlruns
+               --default-artifact-root /mlruns"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlruns
+    networks:
+      - compliance-network
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  mlflow_data:

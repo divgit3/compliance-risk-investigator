@@ -1,0 +1,54 @@
+# ── Data Processing ──────────────────────────────────────────────────────────
+# Core data manipulation, file formats, and synthetic data generation
+pandas==2.2.2
+pyarrow>=14.0.0,<16.0.0
+numpy==1.26.4
+faker==25.2.0
+requests==2.32.3
+
+# ── dbt (Data Build Tool) ────────────────────────────────────────────────────
+# SQL-based transformation layer; dbt-duckdb runs locally without a server
+dbt-core==1.8.3
+dbt-duckdb==1.8.1
+
+# ── Vector Database ──────────────────────────────────────────────────────────
+# Qdrant client for storing and querying policy document embeddings
+qdrant-client==1.9.1
+
+# ── PDF Processing & RAG ─────────────────────────────────────────────────────
+# LangChain orchestrates the RAG pipeline; pypdf2 parses PDF policy docs
+PyPDF2==3.0.1
+langchain==0.2.5
+langchain-openai==0.1.13
+
+# ── OpenAI ───────────────────────────────────────────────────────────────────
+# Direct OpenAI SDK (used by langchain-openai and standalone calls)
+openai==1.35.3
+
+# ── API Layer ────────────────────────────────────────────────────────────────
+# FastAPI serves the backend; uvicorn is the ASGI server; pydantic validates data
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.3
+
+# ── UI ───────────────────────────────────────────────────────────────────────
+# Streamlit powers the investigator copilot dashboard
+streamlit==1.36.0
+
+# ── Machine Learning ─────────────────────────────────────────────────────────
+# scikit-learn for anomaly detection models; mlflow tracks experiments and models
+scikit-learn==1.5.0
+mlflow==2.14.1
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+# python-dotenv loads .env files; loguru provides structured logging
+python-dotenv==1.0.1
+loguru==0.7.2
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+# pytest is the te
+boto3
+loguru
+python-dotenv
+requests
+pandas

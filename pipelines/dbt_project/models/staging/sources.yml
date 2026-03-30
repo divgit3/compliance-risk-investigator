@@ -1,0 +1,24 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Raw source tables loaded into DuckDB by the ingest pipeline.
+      Includes CMS Open Payments public data and NovaPharma synthetic data.
+    schema: main  # DuckDB's default schema
+
+    tables:
+      - name: cms_general_payments
+        description: >
+          CMS Open Payments general payments data (public).
+          Contains payments made by pharma companies to HCPs nationwide.
+
+      - name: synthetic_interactions
+        description: >
+          Synthetic NovaPharma internal HCP interaction records.
+          Generated data — not real. Used to simulate field activity logs.
+
+      - name: synthetic_speaker_programs
+        description: >
+          Synthetic NovaPharma speaker program records.
+          Generated data — not real. Tracks HCP speaker engagements and fees.
