@@ -1,0 +1,33 @@
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# Environment variables
+.env
+
+# Data (too large for Git)
+data/raw/
+data/processed/
+data/synthetic/
+
+# MLflow
+mlruns/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Mac
+.DS_Store
+
+# Docker
+*.log
+
+# dbt
+target/
+dbt_packages/
+logs/
