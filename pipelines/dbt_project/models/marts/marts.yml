@@ -1,0 +1,106 @@
+version: 2
+
+models:
+  - name: mart_hcp_interactions_features
+    description: >
+      Feature mart for HCP interactions.
+      Violation flags excluded — used as anomaly detection model input only.
+    columns:
+      - name: interaction_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: hcp_id
+        data_tests:
+          - not_null
+
+      - name: interaction_type
+        data_tests:
+          - accepted_values:
+              values: ['meal', 'education', 'consulting', 'advisory_board', 'conference']
+
+      - name: program_year
+        data_tests:
+          - accepted_values:
+              values: [2022, 2023, 2024]
+
+      - name: payment_amount
+        data_tests:
+          - not_null
+
+      - name: fmv_tier
+        data_tests:
+          - accepted_values:
+              values: ['local', 'regional', 'national']
+
+  - name: mart_speaker_events_features
+    description: >
+      Feature mart for speaker program events.
+      Violation flags excluded — used as anomaly detection model input only.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: speaker_hcp_id
+        data_tests:
+          - not_null
+
+      - name: program_year
+        data_tests:
+          - accepted_values:
+              values: [2022, 2023, 2024]
+
+      - name: speaker_tier
+        data_tests:
+          - accepted_values:
+              values: ['local', 'regional', 'national']
+
+      - name: venue_type
+        data_tests:
+          - accepted_values:
+              values: ['office', 'hospital', 'hotel', 'restaurant',
+                       'entertainment_venue', 'luxury_resort', 'sports_venue']
+
+  - name: mart_attendees_features
+    description: >
+      Feature mart for speaker program attendees.
+      Violation flags excluded.
+      NOTE: Currently sourced from stg_synthetic_speaker_programs.
+      Full attendee tests added in Task 1.8 after source split.
+    columns:
+      - name: program_year
+        data_tests:
+          - accepted_values:
+              values: [2022, 2023, 2024]
+
+  - name: mart_violation_ground_truth
+    description: >
+      Ground truth mart — violation flags only.
+      Used EXCLUSIVELY for Phase 2 model validation. Never as model input.
+    columns:
+      - name: record_id
+        data_tests:
+          - not_null
+
+      - name: hcp_id
+        data_tests:
+          - not_null
+
+      - name: record_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['interaction', 'speaker_event']
+
+      - name: violation_severity
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['none', 'low', 'medium', 'high']
+
+      - name: is_violation
+        data_tests:
+          - not_null

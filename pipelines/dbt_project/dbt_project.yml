@@ -23,6 +23,15 @@ clean-targets: ["target", "dbt_packages"]
 # staging:      views  — lightweight pass-through of raw source data
 # intermediate: views  — joins and business logic built on staging
 # marts:        tables — final feature-ready output consumed by ML + API
+on-run-start:
+  - "INSTALL httpfs; LOAD httpfs;"
+  - "SET s3_region='us-east-1';"
+  - "SET s3_access_key_id='{{ env_var(\"AWS_ACCESS_KEY_ID\") }}';"
+  - "SET s3_secret_access_key='{{ env_var(\"AWS_SECRET_ACCESS_KEY\") }}';"
+  - "CREATE OR REPLACE VIEW main.synthetic_interactions AS SELECT * FROM read_parquet('s3://compliance-risk-investigator/synthetic/hcp_interactions/hcp_interactions.parquet');"
+  - "CREATE OR REPLACE VIEW main.synthetic_speaker_programs AS SELECT * FROM read_parquet('s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_events.parquet');"
+  - "CREATE OR REPLACE VIEW main.synthetic_attendees AS SELECT * FROM read_parquet('s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_attendees.parquet');"
+
 models:
   compliance_risk_investigator:
     staging:

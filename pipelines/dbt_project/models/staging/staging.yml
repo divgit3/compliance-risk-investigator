@@ -1,0 +1,99 @@
+version: 2
+
+models:
+  - name: stg_synthetic_interactions
+    description: >
+      Synthetic NovaPharma HCP interaction records.
+      Pass-through from source — full schema exposed for downstream marts.
+    columns:
+      - name: interaction_id
+        description: Unique identifier for each interaction.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: hcp_id
+        description: HCP identifier in HCP_{profile_id} format.
+        data_tests:
+          - not_null
+
+      - name: interaction_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['meal', 'education', 'consulting', 'advisory_board', 'conference']
+
+      - name: program_year
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [2022, 2023, 2024]
+
+      - name: fmv_tier
+        data_tests:
+          - accepted_values:
+              values: ['local', 'regional', 'national']
+
+      - name: payment_amount
+        data_tests:
+          - not_null
+
+      - name: violation_severity
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['none', 'low', 'medium', 'high']
+
+      - name: is_violation
+        data_tests:
+          - not_null
+
+      - name: synthetic_data_flag
+        data_tests:
+          - not_null
+
+  - name: stg_synthetic_speaker_programs
+    description: >
+      Synthetic NovaPharma speaker program event records.
+      Also used as source for attendee mart pending Task 1.8 source split.
+    columns:
+      - name: event_id
+        description: Unique identifier for each speaker event.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: speaker_hcp_id
+        data_tests:
+          - not_null
+
+      - name: program_year
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [2022, 2023, 2024]
+
+      - name: speaker_tier
+        data_tests:
+          - accepted_values:
+              values: ['local', 'regional', 'national']
+
+      - name: venue_type
+        data_tests:
+          - accepted_values:
+              values: ['office', 'hospital', 'hotel', 'restaurant',
+                       'entertainment_venue', 'luxury_resort', 'sports_venue']
+
+      - name: violation_severity
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['none', 'low', 'medium', 'high']
+
+      - name: is_violation
+        data_tests:
+          - not_null
+
+      - name: synthetic_data_flag
+        data_tests:
+          - not_null

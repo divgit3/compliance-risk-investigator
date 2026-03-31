@@ -19,4 +19,4 @@ SELECT
     times_attended_same_topic,
     program_year,
     synthetic_data_flag
-FROM {{ ref('stg_synthetic_speaker_programs') }}
+FROM {{ ref('stg_synthetic_attendees') }}

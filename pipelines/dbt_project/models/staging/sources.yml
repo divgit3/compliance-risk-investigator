@@ -14,13 +14,25 @@ sources:
           Single partitioned table created by Glue crawler — year subfolders
           (2022/, 2023/, 2024/) are exposed as a partition column.
           Contains payments made by pharma companies to HCPs nationwide.
+          Queried via Athena in Task 1.8 — not used in local DuckDB runs.
 
       - name: synthetic_interactions
         description: >
           Synthetic NovaPharma internal HCP interaction records.
           Generated data — not real. Used to simulate field activity logs.
+        external:
+          location: "s3://compliance-risk-investigator/synthetic/hcp_interactions/hcp_interactions.parquet"
 
       - name: synthetic_speaker_programs
         description: >
-          Synthetic NovaPharma speaker program records.
+          Synthetic NovaPharma speaker program event records.
           Generated data — not real. Tracks HCP speaker engagements and fees.
+        external:
+          location: "s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_events.parquet"
+
+      - name: synthetic_attendees
+        description: >
+          Synthetic NovaPharma speaker program attendee records.
+          Generated data — not real. Tracks attendees per speaker event.
+        external:
+          location: "s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_attendees.parquet"
