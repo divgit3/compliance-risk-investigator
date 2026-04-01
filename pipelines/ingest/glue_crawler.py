@@ -32,6 +32,7 @@ load_dotenv()
 
 GLUE_DATABASE   = "compliance_risk_raw"
 CRAWLER_NAME    = "compliance-cms-raw-crawler"
+CLASSIFIER_NAME = "cms-csv-classifier"
 S3_BUCKET       = os.getenv("S3_BUCKET_NAME", "compliance-risk-investigator")
 S3_TARGET_PATH  = f"s3://{S3_BUCKET}/raw/cms_open_payments/"
 GLUE_ROLE_ARN   = os.getenv("GLUE_ROLE_ARN")
@@ -72,6 +73,42 @@ def create_glue_database(db_name: str) -> None:
             raise
 
 
+def create_csv_classifier(classifier_name: str) -> None:
+    """
+    Register a Glue CSV classifier with explicit quote/delimiter settings.
+    Without this, Glue's auto-detection misparses quoted fields containing
+    commas (e.g. "Takeda Pharmaceuticals U.S.A., Inc."), shifting all
+    subsequent columns by 1.
+    """
+    try:
+        glue.create_classifier(
+            CsvClassifier={
+                "Name": classifier_name,
+                "Delimiter": ",",
+                "QuoteSymbol": '"',
+                "ContainsHeader": "PRESENT",
+                "DisableValueTrimming": False,
+                "AllowSingleColumn": False,
+            }
+        )
+        logger.info(f"Created CSV classifier: {classifier_name}")
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "AlreadyExistsException":
+            glue.update_classifier(
+                CsvClassifier={
+                    "Name": classifier_name,
+                    "Delimiter": ",",
+                    "QuoteSymbol": '"',
+                    "ContainsHeader": "PRESENT",
+                    "DisableValueTrimming": False,
+                    "AllowSingleColumn": False,
+                }
+            )
+            logger.info(f"CSV classifier already exists — updated: {classifier_name}")
+        else:
+            raise
+
+
 def create_crawler(
     crawler_name: str, db_name: str, s3_path: str, role_arn: str
 ) -> None:
@@ -85,6 +122,7 @@ def create_crawler(
         "Role": role_arn,
         "DatabaseName": db_name,
         "Description": "Crawls raw CMS Open Payments CSVs and registers schemas.",
+        "Classifiers": [CLASSIFIER_NAME],
         "Targets": {
             "S3Targets": [
                 {
@@ -119,6 +157,107 @@ def create_crawler(
             crawler_config.pop("Name")
             glue.update_crawler(Name=crawler_name, **crawler_config)
             logger.info(f"Crawler updated: {crawler_name}")
+        else:
+            raise
+
+
+OPEN_CSV_SERDE = {
+    "SerializationLibrary": "org.apache.hadoop.hive.serde2.OpenCSVSerde",
+    "Parameters": {
+        "separatorChar": ",",
+        "quoteChar":     '"',
+        "escapeChar":    "\\",
+    },
+}
+
+
+def patch_table_serde(db_name: str, table_name: str) -> None:
+    """
+    After the crawler runs, patch the Glue table and all its partitions to use
+    OpenCSVSerde instead of the default LazySimpleSerDe.
+
+    Background: Glue's custom CSV classifier with QuoteSymbol='"' fixes schema
+    inference (column names/types) but does NOT control the SerDe used at query
+    time. Glue always writes LazySimpleSerDe into the StorageDescriptor after a
+    crawl. LazySimpleSerDe does not handle RFC 4180 quoted fields, so company
+    names like "Takeda Pharmaceuticals U.S.A., Inc." (containing a comma) cause
+    all subsequent columns in that row to shift by 1.
+
+    OpenCSVSerde handles quoted fields correctly. This patch must be applied to
+    both the table AND every partition — Athena uses the partition-level SerDe
+    for actual reads, ignoring the table-level setting when they differ.
+    """
+    import copy
+
+    # ── Patch table ────────────────────────────────────────────────────────────
+    resp = glue.get_table(DatabaseName=db_name, Name=table_name)
+    table = resp["Table"]
+    sd = copy.deepcopy(table["StorageDescriptor"])
+    sd["SerdeInfo"] = OPEN_CSV_SERDE
+    params = dict(table.get("Parameters", {}))
+    # Treat unparseable values (e.g. empty string in a bigint column) as NULL
+    # instead of raising BAD_DATA in Athena.
+    params["use.null.for.invalid.data"] = "true"
+    glue.update_table(
+        DatabaseName=db_name,
+        TableInput={
+            "Name":              table["Name"],
+            "Description":       table.get("Description", ""),
+            "StorageDescriptor": sd,
+            "PartitionKeys":     table.get("PartitionKeys", []),
+            "TableType":         table.get("TableType", ""),
+            "Parameters":        params,
+        },
+    )
+    logger.info(f"Patched table SerDe to OpenCSVSerde: {db_name}.{table_name}")
+
+    # ── Patch all partitions ───────────────────────────────────────────────────
+    parts = glue.get_partitions(DatabaseName=db_name, TableName=table_name)
+    if not parts["Partitions"]:
+        logger.info("No partitions found — skipping partition SerDe patch.")
+        return
+
+    entries = []
+    for p in parts["Partitions"]:
+        psd = copy.deepcopy(p["StorageDescriptor"])
+        psd["SerdeInfo"] = OPEN_CSV_SERDE
+        pparams = dict(p.get("Parameters", {}))
+        pparams["use.null.for.invalid.data"] = "true"
+        entries.append({
+            "PartitionValueList": p["Values"],
+            "PartitionInput": {
+                "Values":              p["Values"],
+                "StorageDescriptor":   psd,
+                "Parameters":          pparams,
+            },
+        })
+
+    resp = glue.batch_update_partition(
+        DatabaseName=db_name,
+        TableName=table_name,
+        Entries=entries,
+    )
+    errors = resp.get("Errors", [])
+    if errors:
+        logger.error(f"Partition SerDe patch errors: {errors}")
+        raise RuntimeError(f"Failed to patch {len(errors)} partition(s).")
+
+    logger.info(
+        f"Patched {len(entries)} partition(s) SerDe to OpenCSVSerde: {db_name}.{table_name}"
+    )
+
+
+def delete_glue_table(db_name: str, table_name: str) -> None:
+    """
+    Drop the existing Glue table so the crawler recreates it cleanly
+    with corrected column alignment after classifier fix.
+    """
+    try:
+        glue.delete_table(DatabaseName=db_name, Name=table_name)
+        logger.info(f"Deleted Glue table: {db_name}.{table_name}")
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "EntityNotFoundException":
+            logger.info(f"Table {table_name} does not exist — nothing to delete.")
         else:
             raise
 
@@ -192,15 +331,19 @@ def main() -> None:
         )
 
     logger.info("Starting Glue catalog setup")
-    logger.info(f"  Database:   {GLUE_DATABASE}")
-    logger.info(f"  Crawler:    {CRAWLER_NAME}")
-    logger.info(f"  S3 target:  {S3_TARGET_PATH}")
-    logger.info(f"  Role ARN:   {GLUE_ROLE_ARN}")
+    logger.info(f"  Database:    {GLUE_DATABASE}")
+    logger.info(f"  Crawler:     {CRAWLER_NAME}")
+    logger.info(f"  Classifier:  {CLASSIFIER_NAME}")
+    logger.info(f"  S3 target:   {S3_TARGET_PATH}")
+    logger.info(f"  Role ARN:    {GLUE_ROLE_ARN}")
 
     create_glue_database(GLUE_DATABASE)
+    create_csv_classifier(CLASSIFIER_NAME)
     create_crawler(CRAWLER_NAME, GLUE_DATABASE, S3_TARGET_PATH, GLUE_ROLE_ARN)
+    delete_glue_table(GLUE_DATABASE, "cms_open_payments")
     run_crawler(CRAWLER_NAME)
     wait_for_crawler(CRAWLER_NAME)
+    patch_table_serde(GLUE_DATABASE, "cms_open_payments")
     verify_tables(GLUE_DATABASE)
 
     logger.info("Glue setup complete. Tables are ready for Athena queries.")
