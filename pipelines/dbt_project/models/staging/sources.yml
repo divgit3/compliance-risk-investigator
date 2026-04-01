@@ -11,28 +11,34 @@ sources:
       - name: cms_open_payments
         description: >
           CMS Open Payments general payments data (public), 2022-2024.
-          Single partitioned table created by Glue crawler — year subfolders
-          (2022/, 2023/, 2024/) are exposed as a partition column.
-          Contains payments made by pharma companies to HCPs nationwide.
-          Queried via Athena in Task 1.8 — not used in local DuckDB runs.
+          Placeholder for DuckDB — not queried locally.
+          Queried via Athena target only — use source('athena_raw', 'cms_open_payments').
 
       - name: synthetic_interactions
         description: >
           Synthetic NovaPharma internal HCP interaction records.
           Generated data — not real. Used to simulate field activity logs.
-        external:
-          location: "s3://compliance-risk-investigator/synthetic/hcp_interactions/hcp_interactions.parquet"
 
       - name: synthetic_speaker_programs
         description: >
           Synthetic NovaPharma speaker program event records.
           Generated data — not real. Tracks HCP speaker engagements and fees.
-        external:
-          location: "s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_events.parquet"
 
       - name: synthetic_attendees
         description: >
           Synthetic NovaPharma speaker program attendee records.
           Generated data — not real. Tracks attendees per speaker event.
-        external:
-          location: "s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_attendees.parquet"
+
+  - name: athena_raw
+    description: >
+      CMS Open Payments data in AWS Glue Data Catalog.
+      Queried via dbt --target athena. Not available in local DuckDB runs.
+    database: awsdatacatalog
+    schema: compliance_risk_raw
+    tables:
+      - name: cms_open_payments
+        description: >
+          CMS Open Payments general payments 2022-2024.
+          Partitioned Parquet table in Glue — crawled from
+          s3://compliance-risk-investigator/raw/cms_open_payments/.
+          Partition columns: year subfolders (2022, 2023, 2024).

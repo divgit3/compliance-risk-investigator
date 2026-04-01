@@ -1,6 +1,41 @@
 version: 2
 
 models:
+  - name: stg_cms_general_payments
+    description: >
+      Staged CMS Open Payments general payments (2022-2024).
+      Runs via --target athena only. HCP identity fields fully redacted (NULL).
+      Company names pseudonymized for 5 target/competitor companies.
+    columns:
+      - name: record_id
+        description: >
+          CMS-assigned unique payment record identifier.
+          NOTE: NULL for all 2022 partition rows — bigint type mismatch in ingest.
+          Not tested for not_null or unique until 2022 data is reprocessed.
+
+      - name: hcp_id
+        description: Pseudonymous HCP identifier in HCP_{profile_id} format.
+        data_tests:
+          - not_null
+
+      - name: program_year
+        description: CMS program year (2022, 2023, or 2024). Derived from partition_0 for 2022 rows.
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [2022, 2023, 2024]
+              quote: false  # program_year is bigint; prevent varchar IN comparison
+
+      - name: payment_amount
+        description: >
+          Total payment amount USD.
+          NOTE: NULL for many 2022 partition rows — bigint type mismatch in ingest.
+
+      - name: company_name
+        description: >
+          Pseudonymized company name for 5 companies; real name otherwise.
+          NOTE: 39 CMS source rows have no company name — not tested for not_null.
+
   - name: stg_synthetic_interactions
     description: >
       Synthetic NovaPharma HCP interaction records.

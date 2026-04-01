@@ -1,6 +1,42 @@
 version: 2
 
 models:
+  - name: mart_target_payments
+    description: >
+      CMS payments made to HCPs by the target company (Nova Pharma / Takeda).
+      Subset of stg_cms_general_payments where is_target = true.
+    columns:
+      - name: record_id
+        description: NULL for 2022 rows (ingest type mismatch) — not tested.
+
+      - name: hcp_id
+        data_tests:
+          - not_null
+
+  - name: mart_competitor_payments
+    description: >
+      CMS payments made to HCPs by competitor companies.
+      Subset of stg_cms_general_payments where is_competitor = true.
+    columns:
+      - name: record_id
+        description: NULL for 2022 rows (ingest type mismatch) — not tested.
+
+      - name: hcp_id
+        data_tests:
+          - not_null
+
+  - name: mart_population_payments
+    description: >
+      CMS payments made to HCPs who also received target company payments.
+      Used for population-level benchmarking context.
+    columns:
+      - name: record_id
+        description: NULL for 2022 rows (ingest type mismatch) — not tested.
+
+      - name: hcp_id
+        data_tests:
+          - not_null
+
   - name: mart_hcp_interactions_features
     description: >
       Feature mart for HCP interactions.
