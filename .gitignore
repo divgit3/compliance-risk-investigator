@@ -37,3 +37,4 @@ tests/test[0-9]*.py
 tests/recon*.py
 tests/sample.py
 tests/sample1.py
+tests/*.py
