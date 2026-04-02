@@ -23,19 +23,24 @@ services:
 
   # ── MLflow (Experiment Tracking) ───────────────────────────────────────────
   # Tracks anomaly detection model runs, parameters, and metrics.
-  # UI available at http://localhost:5000
+  # UI available at http://localhost:5001
+  # Port 5000 is reserved by macOS AirPlay/Control Center; using 5001 instead.
   mlflow:
-    image: python:3.12-slim
+    image: ghcr.io/mlflow/mlflow:v2.14.1
     container_name: mlflow
-    command: >
-      bash -c "pip install mlflow==2.14.1 --quiet &&
-               mlflow server
-               --host 0.0.0.0
-               --port 5000
-               --backend-store-uri /mlruns
-               --default-artifact-root /mlruns"
+    command:
+      - mlflow
+      - server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - /mlruns
+      - --default-artifact-root
+      - /mlruns
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       - mlflow_data:/mlruns
     networks:
