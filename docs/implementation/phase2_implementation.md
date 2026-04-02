@@ -2,6 +2,179 @@
 
 ---
 
+## Task 2.2 — mart_event_features
+
+### 1. Task Overview and Purpose
+
+`mart_event_features` produces one ML-ready row per speaker program event, aggregating cost, attendance, attestation, and speaker-repeat signals for anomaly detection. It is the event-level counterpart to `mart_hcp_spend_features` (which is HCP-level).
+
+Speaker programs are a priority OIG enforcement area. The 2020 OIG Special Fraud Alert on speaker programs explicitly identifies: low attendance at "educational" events, lavish venues, high venue costs, and the same speaker repeatedly presenting to the same audience as hallmarks of payments made under the guise of education. This mart operationalises those red flags as numeric features.
+
+**How it fits into the Phase 2 pipeline:**
+- Feeds `mart_hcp_risk_profile` (Task 2.3) where event features are aggregated to the HCP level and joined with external CMS spend signals
+- Feeds `event_features.py` (Task 2.6) for Python-side feature engineering
+- Feeds the EDA notebook (Task 2.13) for risk score distribution analysis
+
+All business rule thresholds are sourced from `compliance/rules.json` (Task 2.0b output) — no magic numbers in the SQL.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `pipelines/dbt_project/models/marts/mart_event_features.sql` | Main mart SQL — 5 CTEs, 30+ output columns |
+
+**5 CTEs:**
+
+| CTE | Purpose |
+|---|---|
+| `events_base` | Cleans identity, cost, and compliance fields from `stg_synthetic_speaker_programs`; COALESCEs cost columns to 0; casts types for window compatibility |
+| `attendee_agg` | Aggregates `stg_synthetic_attendees` per event: total attendee count, signed attestation count, and `attendees_signed_pct` (with NULLIF divide-by-zero guard) |
+| `speaker_window` | Window functions partitioned by `(speaker_hcp_id, event_year)` ordered by `event_date ASC`: `events_same_speaker_year` (total count per year), `days_since_last_event_same_speaker` (LAG date diff) |
+| `cost_features` | Joins `events_base` with `attendee_agg`; derives `meal_cost_per_attendee`, `venue_cost_pct_of_total`, `speaker_fee_fmv_pct`; applies `NULLIF` guards |
+| `final` | Joins all CTEs; applies COALESCE nulls to 0; computes all flags and `raw_event_risk_score`; adds `mart_created_at` |
+
+**Output columns by category:**
+
+| Group | Columns |
+|---|---|
+| Identity | `event_id`, `event_date`, `event_year`, `speaker_hcp_id`, `venue_city`, `venue_state`, `product_featured`, `compliance_approved` |
+| Attendance | `attendee_count`, `low_attendance_flag`, `very_low_attendance_flag` |
+| Cost | `speaker_fee`, `venue_cost`, `travel_reimbursement`, `total_program_cost`, `meal_cost_per_attendee`, `cost_per_head_over_limit`, `venue_cost_pct_of_total`, `high_venue_cost_flag`, `over_total_cost_ceiling_flag` |
+| Speaker FMV | `speaker_fee_fmv_pct`, `speaker_fee_over_fmv_flag` |
+| Repeat patterns | `events_same_speaker_year`, `repeat_speaker_flag`, `high_repeat_speaker_flag`, `days_since_last_event_same_speaker`, `rapid_repeat_flag` |
+| Attestation | `attendees_signed_pct`, `missing_attestation_flag` |
+| Composite | `raw_event_risk_score`, `mart_created_at` |
+
+**Window functions:**
+- `COUNT(*) OVER (PARTITION BY speaker_hcp_id, event_year)` — total events this speaker gave in this year; used for `events_same_speaker_year`, `repeat_speaker_flag`, `high_repeat_speaker_flag`
+- `LAG(event_date) OVER (PARTITION BY speaker_hcp_id, event_year ORDER BY event_date ASC)` — previous event date for same speaker in same year; subtracted from current to produce `days_since_last_event_same_speaker`
+
+---
+
+### 3. Technical Decisions and Why
+
+**$100 per-head ceiling (MEAL_003 from rules.json):**
+The Nova Pharma internal policy (DOC_002) extracted a stricter dinner ceiling of $100 vs the PhRMA standard of $125. The `stricter-wins` reconciliation in Task 2.0b selected $100. Since CMS Open Payments and the synthetic event data don't include meal type (breakfast/lunch/dinner), the dinner ceiling is used as the single per-head limit — the most common meal format and the most defensible uniform threshold.
+
+**$3,500 speaker FMV ceiling (SPEAKER_001 from rules.json):**
+Nova Pharma's synthetic policy extracted $3,500 as the per-event speaker fee FMV ceiling, stricter than the $4,000 fallback. `speaker_fee_fmv_pct = speaker_fee / 3500.0` scales the fee as a fraction of the FMV ceiling for the risk score component.
+
+**80% attestation threshold (ATTEST_001 from rules.json):**
+The 80% threshold was not found in any extracted policy chunk (returned as fallback). It represents a commonly used internal compliance standard: events where fewer than 80% of attendees sign attestation forms suggest inadequate documentation controls.
+
+**LAG window ordered by `event_date ASC`:**
+`ASC` order ensures the LAG function references the chronologically prior event. `DESC` would reference the next event, producing nonsensical negative day-difference values. The partition resets per year, so the first event of each year correctly gets a NULL lag (no prior event in that year).
+
+**Cost ratios capped at 1.0 before risk score multiplication:**
+`LEAST(1.0, meal_cost_per_attendee / 100.0)` prevents a single extreme value from consuming the entire score component. Without the cap, a $2,000 per-head cost would produce `20 * 25 = 500` — a score component 20× its maximum allocation. Capping ensures the risk score stays within [0, 100].
+
+---
+
+### 4. Business Rules Applied (all sourced from compliance/rules.json)
+
+| Rule ID | Rule | Threshold | Applied As |
+|---|---|---|---|
+| MEAL_003 | Per-head meal ceiling | $100 | `cost_per_head_over_limit`, meal component of risk score |
+| SPEAKER_001 | Speaker FMV ceiling | $3,500 | `speaker_fee_over_fmv_flag`, FMV component of risk score |
+| SPEAKER_002 | High repeat threshold | > 6 events/year | `high_repeat_speaker_flag` |
+| SPEAKER_003 | Repeat threshold | > 3 events/year | `repeat_speaker_flag` |
+| SPEAKER_004 | Min attendees | 3 | `low_attendance_flag` (< 3), `very_low_attendance_flag` (< 2) |
+| SPEAKER_005 | Rapid repeat window | 30 days | `rapid_repeat_flag` |
+| VENUE_001 | Max venue cost | $3,000 | `high_venue_cost_flag`, venue component of risk score |
+| VENUE_002 | Max total program cost | $8,000 | `over_total_cost_ceiling_flag` |
+| ATTEST_001 | Min attestation rate | 80% | `missing_attestation_flag`, attestation component of risk score |
+
+---
+
+### 5. How the Risk Score Works
+
+`raw_event_risk_score` is a 0-100 heuristic score (pre-ML) reflecting the OIG Fraud Alert's primary red flags for speaker program abuse.
+
+| Component | Formula | Max Points | Rationale |
+|---|---|---|---|
+| Attestation gap | `(1 - attendees_signed_pct) * 25` | 25 | Missing signatures = compliance failure; highest weight because it is directly actionable |
+| Meal cost overage | `LEAST(1, meal_cost_per_head / 100) * 25` | 25 | Per-head cost vs MEAL_003 ceiling; tied for highest weight because it is the most common OIG flag |
+| Venue cost | `LEAST(1, venue_cost / 3000) * 20` | 20 | Lavish venues are a core OIG Fraud Alert red flag |
+| Speaker FMV | `LEAST(1, speaker_fee / 3500) * 20` | 20 | Above-FMV compensation is the primary quid-pro-quo mechanism |
+| Low attendance | Binary 10 pts when < 3 attendees | 10 | Low attendance signals nominal educational justification |
+| **Total** | | **100** | |
+
+**Observed distribution (2026-04-02):** avg=56.76, max=100.0
+
+The high average (56.76 vs 0.67 in `mart_hcp_spend_features`) reflects that the attestation gap component is contributing broadly — most synthetic events have some unsigned attendees. This is expected from the synthetic data generator's statistical distributions.
+
+---
+
+### 6. How to Run and Verify
+
+**Run:**
+```bash
+cd pipelines/dbt_project
+dbt run --select mart_event_features
+dbt test --select mart_event_features
+```
+
+**Expected:**
+```
+1 of 1 OK created sql table model main.mart_event_features [OK 5241]
+6/6 tests PASS
+```
+
+**Verify row count and key signal prevalence:**
+```python
+import duckdb
+con = duckdb.connect('data/processed/compliance.duckdb')
+con.execute("""
+SELECT
+  COUNT(*)                                                    AS total_events,
+  SUM(CASE WHEN low_attendance_flag        THEN 1 ELSE 0 END) AS low_attendance,
+  SUM(CASE WHEN cost_per_head_over_limit   THEN 1 ELSE 0 END) AS cost_over_limit,
+  SUM(CASE WHEN speaker_fee_over_fmv_flag  THEN 1 ELSE 0 END) AS fmv_exceeded,
+  SUM(CASE WHEN repeat_speaker_flag        THEN 1 ELSE 0 END) AS repeat_speaker,
+  SUM(CASE WHEN missing_attestation_flag   THEN 1 ELSE 0 END) AS missing_attest,
+  ROUND(AVG(raw_event_risk_score), 2)                         AS avg_risk
+FROM main.mart_event_features
+""").df()
+```
+
+**Observed results (2026-04-02):**
+```
+total_events:  5,241
+low_attendance: 699  (13.3%)
+cost_over_limit: 5,194  (99.1% — synthetic data broad distribution)
+fmv_exceeded: 1,688  (32.2%)
+repeat_speaker: 1,137 (21.7%)
+high_repeat: 51  (1.0%)
+missing_attest: 1,027 (19.6%)
+rapid_repeat: 616 (11.8%)
+avg_risk_score: 56.76
+max_risk_score: 100.0
+```
+
+---
+
+### 7. Known Limitations
+
+1. **Synthetic data only** — no real CMS speaker event data. The synthetic generator's distributions may not match real-world prevalence rates (e.g., the 99.1% cost-over-limit rate is an artifact of synthetic `meal_cost_per_attendee` distributions, not a finding).
+
+2. **Meal type not tracked** — the $100 dinner ceiling is applied uniformly to all per-head cost calculations. Events with breakfast or lunch spend would have a lower threshold ($25 or $50 per MEAL_001/MEAL_002), but meal type is not available in the synthetic event data.
+
+3. **`days_since_last_event_same_speaker` is NULL for first event per speaker per year** — this is expected behavior, not missing data. The window function has no prior row to LAG from. `rapid_repeat_flag` correctly evaluates to `false` for NULL lag values.
+
+4. **Rep identity not tracked per event** — the speaker program data includes `speaker_hcp_id` but not a rep or territory identifier. Rep-level network concentration features (planned for Phase 3) are not available in this mart.
+
+---
+
+### 8. Next Steps
+
+- **Task 2.3** (`mart_hcp_risk_profile`): Aggregates this mart to HCP level (avg score, flag counts per speaker) and joins with `mart_hcp_spend_features` into the master HCP risk spine
+- **Task 2.6** (`event_features.py`): Reads this mart and engineers additional Python-side features (e.g., topic diversity index, geographic concentration)
+- **Task 2.13** (EDA notebook): Visualises risk score distribution, attendance patterns, and flag co-occurrence
+
+---
+
 ## Task 2.0b — business_rules_registry.py
 
 ### 1. Task Overview and Purpose

@@ -1,6 +1,34 @@
 version: 2
 
 models:
+  - name: mart_event_features
+    description: >
+      Phase 2 ML-ready speaker event feature mart. One row per event (5,241 total).
+      DuckDB only — sources synthetic speaker program and attendee parquets via S3.
+      All business rule thresholds sourced from compliance/rules.json.
+      Violation flags excluded — ML input only.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: speaker_hcp_id
+        data_tests:
+          - not_null
+
+      - name: raw_event_risk_score
+        data_tests:
+          - not_null
+
+      - name: attendee_count
+        data_tests:
+          - not_null
+
+      - name: attendees_signed_pct
+        data_tests:
+          - not_null
+
   - name: mart_hcp_spend_features
     description: >
       Phase 2 ML-ready external spend feature mart. One row per HCP aggregating
