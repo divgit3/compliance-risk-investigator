@@ -1,0 +1,735 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "generated_at": "2026-04-02T18:03:32.068116+00:00",
+    "generated_by": "business_rules_registry.py",
+    "qdrant_collection": "policy_docs",
+    "total_chunks_queried": 126,
+    "total_rules_extracted": 24,
+    "documents_used": [
+      "DOC_001",
+      "DOC_002",
+      "DOC_003",
+      "DOC_004",
+      "DOC_005"
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "MEAL_001",
+      "rule_name": "Meal Limit \u2014 Breakfast",
+      "category": "meal_limits",
+      "threshold": 25,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0000",
+          "extracted_value": 25
+        }
+      ],
+      "nova_pharma_value": 25,
+      "industry_value": null,
+      "effective_threshold": 25,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "meal_limit_exceeded",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:30.420822+00:00"
+    },
+    {
+      "rule_id": "MEAL_002",
+      "rule_name": "Meal Limit \u2014 Lunch",
+      "category": "meal_limits",
+      "threshold": 50,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0000",
+          "extracted_value": 50
+        }
+      ],
+      "nova_pharma_value": 50,
+      "industry_value": null,
+      "effective_threshold": 50,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "meal_limit_exceeded",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:30.421065+00:00"
+    },
+    {
+      "rule_id": "MEAL_003",
+      "rule_name": "Meal Limit \u2014 Dinner",
+      "category": "meal_limits",
+      "threshold": 100,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0000",
+          "extracted_value": 100
+        }
+      ],
+      "nova_pharma_value": 100,
+      "industry_value": null,
+      "effective_threshold": 100,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "meal_limit_exceeded",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:30.421211+00:00"
+    },
+    {
+      "rule_id": "MEAL_004",
+      "rule_name": "Meal Limit \u2014 General",
+      "category": "meal_limits",
+      "threshold": 75.0,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 75.0,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "meal_limit_exceeded",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:01:30.421339+00:00"
+    },
+    {
+      "rule_id": "SPEAKER_001",
+      "rule_name": "Speaker Fee FMV Ceiling",
+      "category": "speaker_programs",
+      "threshold": 3500,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0001",
+          "extracted_value": 3500
+        }
+      ],
+      "nova_pharma_value": 3500,
+      "industry_value": null,
+      "effective_threshold": 3500,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "fmv_exceeded",
+      "severity": "high",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:39.325896+00:00"
+    },
+    {
+      "rule_id": "SPEAKER_002",
+      "rule_name": "Max Speaker Events Per Year",
+      "category": "speaker_programs",
+      "threshold": 6,
+      "unit": "count",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 6,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "repeat_speaker",
+      "severity": "medium",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:01:39.326028+00:00"
+    },
+    {
+      "rule_id": "SPEAKER_003",
+      "rule_name": "Repeat Speaker Threshold",
+      "category": "speaker_programs",
+      "threshold": 6,
+      "unit": "count",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0001",
+          "extracted_value": 6
+        }
+      ],
+      "nova_pharma_value": 6,
+      "industry_value": null,
+      "effective_threshold": 6,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "repeat_speaker",
+      "severity": "low",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:39.326184+00:00"
+    },
+    {
+      "rule_id": "SPEAKER_004",
+      "rule_name": "Minimum Attendees Per Event",
+      "category": "speaker_programs",
+      "threshold": 3,
+      "unit": "count",
+      "threshold_type": "minimum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0001",
+          "extracted_value": 3
+        }
+      ],
+      "nova_pharma_value": 3,
+      "industry_value": null,
+      "effective_threshold": 3,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "low_attendance",
+      "severity": "medium",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:39.326254+00:00"
+    },
+    {
+      "rule_id": "SPEAKER_005",
+      "rule_name": "Rapid Repeat Event Window",
+      "category": "speaker_programs",
+      "threshold": 30,
+      "unit": "days",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 30,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "rapid_repeat_speaker",
+      "severity": "low",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:01:39.326324+00:00"
+    },
+    {
+      "rule_id": "VENUE_001",
+      "rule_name": "Max Venue Cost Per Event",
+      "category": "venue_event_costs",
+      "threshold": 3000.0,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 3000.0,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "high_venue_cost",
+      "severity": "medium",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:01:47.521074+00:00"
+    },
+    {
+      "rule_id": "VENUE_002",
+      "rule_name": "Max Total Program Cost Per Event",
+      "category": "venue_event_costs",
+      "threshold": 8000.0,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 8000.0,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "excess_program_cost",
+      "severity": "high",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:01:47.521538+00:00"
+    },
+    {
+      "rule_id": "VENUE_003",
+      "rule_name": "Meal Cost Per Attendee Ceiling",
+      "category": "venue_event_costs",
+      "threshold": 100,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_004",
+          "authority": "OIG",
+          "doc_type": "fraud_alert",
+          "chunk_id": "DOC_004_chunk_0000",
+          "extracted_value": 500
+        },
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0001",
+          "extracted_value": 100
+        }
+      ],
+      "nova_pharma_value": 100,
+      "industry_value": null,
+      "effective_threshold": 100,
+      "effective_source": "Nova Pharma",
+      "single_source": false,
+      "reconciliation_note": "Multiple sources (OIG, Nova Pharma). Stricter-wins applied. Effective source: Nova Pharma.",
+      "violation_type": "meal_limit_exceeded",
+      "severity": "medium",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:01:47.521723+00:00"
+    },
+    {
+      "rule_id": "COMP_001",
+      "rule_name": "Annual HCP Compensation Cap",
+      "category": "hcp_compensation",
+      "threshold": 75000,
+      "unit": "USD",
+      "threshold_type": "maximum",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0001",
+          "extracted_value": 75000
+        }
+      ],
+      "nova_pharma_value": 75000,
+      "industry_value": null,
+      "effective_threshold": 75000,
+      "effective_source": "Nova Pharma",
+      "single_source": true,
+      "reconciliation_note": "Single source (Nova Pharma); no reconciliation needed.",
+      "violation_type": "annual_cap_exceeded",
+      "severity": "high",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:02:12.673945+00:00"
+    },
+    {
+      "rule_id": "COMP_002",
+      "rule_name": "FMV Consulting Hourly Rate Ceiling",
+      "category": "hcp_compensation",
+      "threshold": 500.0,
+      "unit": "USD/hour",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 500.0,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "fmv_exceeded",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:02:12.674094+00:00"
+    },
+    {
+      "rule_id": "COMP_003",
+      "rule_name": "Near-Cap Warning Threshold",
+      "category": "hcp_compensation",
+      "threshold": 0.8,
+      "unit": "fraction",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 0.8,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "near_annual_cap",
+      "severity": "low",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:02:12.674295+00:00"
+    },
+    {
+      "rule_id": "FREQ_001",
+      "rule_name": "Max Meals Per HCP Per Year",
+      "category": "interaction_frequency",
+      "threshold": 24,
+      "unit": "count",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 24,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "excess_meal_frequency",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:02:38.514895+00:00"
+    },
+    {
+      "rule_id": "FREQ_002",
+      "rule_name": "Max Interactions Same HCP/Rep Per Week",
+      "category": "interaction_frequency",
+      "threshold": 3,
+      "unit": "count",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 3,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "excess_interaction_frequency",
+      "severity": "low",
+      "applies_to": [
+        "hcp_interactions"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:02:38.515409+00:00"
+    },
+    {
+      "rule_id": "FREQ_003",
+      "rule_name": "Max Interactions Same HCP/Rep Per Month",
+      "category": "interaction_frequency",
+      "threshold": 10,
+      "unit": "count",
+      "threshold_type": "maximum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 10,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "excess_interaction_frequency",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:02:38.515950+00:00"
+    },
+    {
+      "rule_id": "ATTEST_001",
+      "rule_name": "Minimum Attestation Rate Per Event",
+      "category": "attestation_documentation",
+      "threshold": 0.8,
+      "unit": "fraction",
+      "threshold_type": "minimum",
+      "sources": [],
+      "nova_pharma_value": null,
+      "industry_value": null,
+      "effective_threshold": 0.8,
+      "effective_source": "fallback",
+      "single_source": false,
+      "reconciliation_note": "No explicit threshold found in policy documents; using fallback default.",
+      "violation_type": "missing_attestation",
+      "severity": "medium",
+      "applies_to": [
+        "speaker_events"
+      ],
+      "used_fallback": true,
+      "extracted_at": "2026-04-02T18:03:04.388578+00:00"
+    },
+    {
+      "rule_id": "ATTEST_002",
+      "rule_name": "Business Rationale Required",
+      "category": "attestation_documentation",
+      "threshold": true,
+      "unit": "boolean",
+      "threshold_type": "required",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0002",
+          "extracted_value": true
+        },
+        {
+          "doc_id": "DOC_005",
+          "authority": "PhRMA",
+          "doc_type": "industry_code",
+          "chunk_id": "DOC_005_chunk_0010",
+          "extracted_value": true
+        }
+      ],
+      "nova_pharma_value": true,
+      "industry_value": true,
+      "effective_threshold": true,
+      "effective_source": "PhRMA",
+      "single_source": false,
+      "reconciliation_note": "Multiple sources (Nova Pharma, PhRMA). Stricter-wins applied. Effective source: PhRMA.",
+      "violation_type": "missing_documentation",
+      "severity": "low",
+      "applies_to": [
+        "hcp_interactions"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:03:04.389071+00:00"
+    },
+    {
+      "rule_id": "ATTEST_003",
+      "rule_name": "FMV Documentation Required",
+      "category": "attestation_documentation",
+      "threshold": true,
+      "unit": "boolean",
+      "threshold_type": "required",
+      "sources": [
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0002",
+          "extracted_value": true
+        },
+        {
+          "doc_id": "DOC_005",
+          "authority": "PhRMA",
+          "doc_type": "industry_code",
+          "chunk_id": "DOC_005_chunk_0010",
+          "extracted_value": true
+        }
+      ],
+      "nova_pharma_value": true,
+      "industry_value": true,
+      "effective_threshold": true,
+      "effective_source": "PhRMA",
+      "single_source": false,
+      "reconciliation_note": "Multiple sources (Nova Pharma, PhRMA). Stricter-wins applied. Effective source: PhRMA.",
+      "violation_type": "missing_fmv_documentation",
+      "severity": "medium",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:03:04.389218+00:00"
+    },
+    {
+      "rule_id": "PROHIBIT_001",
+      "rule_name": "Entertainment/Recreational Activities Prohibited",
+      "category": "prohibited_practices",
+      "threshold": true,
+      "unit": "boolean",
+      "threshold_type": "prohibited",
+      "sources": [
+        {
+          "doc_id": "DOC_003",
+          "authority": "OIG",
+          "doc_type": "regulatory_guidance",
+          "chunk_id": "DOC_003_chunk_0009",
+          "extracted_value": true
+        },
+        {
+          "doc_id": "DOC_002",
+          "authority": "Nova Pharma",
+          "doc_type": "company_policy",
+          "chunk_id": "DOC_002_chunk_0002",
+          "extracted_value": true
+        },
+        {
+          "doc_id": "DOC_005",
+          "authority": "PhRMA",
+          "doc_type": "industry_code",
+          "chunk_id": "DOC_005_chunk_0002",
+          "extracted_value": true
+        }
+      ],
+      "nova_pharma_value": true,
+      "industry_value": true,
+      "effective_threshold": true,
+      "effective_source": "PhRMA",
+      "single_source": false,
+      "reconciliation_note": "Multiple sources (OIG, Nova Pharma, PhRMA). Stricter-wins applied. Effective source: PhRMA.",
+      "violation_type": "prohibited_entertainment",
+      "severity": "high",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:03:32.067506+00:00"
+    },
+    {
+      "rule_id": "PROHIBIT_002",
+      "rule_name": "Gifts to HCPs Prohibited",
+      "category": "prohibited_practices",
+      "threshold": true,
+      "unit": "boolean",
+      "threshold_type": "prohibited",
+      "sources": [
+        {
+          "doc_id": "DOC_003",
+          "authority": "OIG",
+          "doc_type": "regulatory_guidance",
+          "chunk_id": "DOC_003_chunk_0009",
+          "extracted_value": true
+        },
+        {
+          "doc_id": "DOC_005",
+          "authority": "PhRMA",
+          "doc_type": "industry_code",
+          "chunk_id": "DOC_005_chunk_0002",
+          "extracted_value": true
+        }
+      ],
+      "nova_pharma_value": null,
+      "industry_value": true,
+      "effective_threshold": true,
+      "effective_source": "PhRMA",
+      "single_source": false,
+      "reconciliation_note": "Multiple sources (OIG, PhRMA). Stricter-wins applied. Effective source: PhRMA.",
+      "violation_type": "prohibited_gift",
+      "severity": "high",
+      "applies_to": [
+        "hcp_interactions"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:03:32.067731+00:00"
+    },
+    {
+      "rule_id": "PROHIBIT_003",
+      "rule_name": "Cash or Cash Equivalent Payments Prohibited",
+      "category": "prohibited_practices",
+      "threshold": true,
+      "unit": "boolean",
+      "threshold_type": "prohibited",
+      "sources": [
+        {
+          "doc_id": "DOC_003",
+          "authority": "OIG",
+          "doc_type": "regulatory_guidance",
+          "chunk_id": "DOC_003_chunk_0009",
+          "extracted_value": true
+        },
+        {
+          "doc_id": "DOC_005",
+          "authority": "PhRMA",
+          "doc_type": "industry_code",
+          "chunk_id": "DOC_005_chunk_0002",
+          "extracted_value": true
+        }
+      ],
+      "nova_pharma_value": null,
+      "industry_value": true,
+      "effective_threshold": true,
+      "effective_source": "PhRMA",
+      "single_source": false,
+      "reconciliation_note": "Multiple sources (OIG, PhRMA). Stricter-wins applied. Effective source: PhRMA.",
+      "violation_type": "prohibited_cash_payment",
+      "severity": "high",
+      "applies_to": [
+        "hcp_interactions",
+        "speaker_events"
+      ],
+      "used_fallback": false,
+      "extracted_at": "2026-04-02T18:03:32.067874+00:00"
+    }
+  ],
+  "fallback_rules": {
+    "MEAL_001": 30.0,
+    "MEAL_002": 75.0,
+    "MEAL_003": 125.0,
+    "MEAL_004": 75.0,
+    "SPEAKER_001": 4000.0,
+    "SPEAKER_002": 6,
+    "SPEAKER_003": 3,
+    "SPEAKER_004": 3,
+    "SPEAKER_005": 30,
+    "VENUE_001": 3000.0,
+    "VENUE_002": 8000.0,
+    "VENUE_003": 125.0,
+    "COMP_001": 75000.0,
+    "COMP_002": 500.0,
+    "COMP_003": 0.8,
+    "FREQ_001": 24,
+    "FREQ_002": 3,
+    "FREQ_003": 10,
+    "ATTEST_001": 0.8,
+    "ATTEST_002": true,
+    "ATTEST_003": true,
+    "PROHIBIT_001": true,
+    "PROHIBIT_002": true,
+    "PROHIBIT_003": true
+  }
+}

@@ -2,6 +2,212 @@
 
 ---
 
+## Task 2.0b — business_rules_registry.py
+
+### 1. Task Overview and Purpose
+
+`business_rules_registry.py` RAGs against the Qdrant `policy_docs` collection to extract compliance rule thresholds from 5 embedded policy documents, reconciles conflicting values across authorities, and writes a versioned `compliance/rules.json` registry.
+
+`rules.json` is the **single source of truth** for all business rule constants used throughout Phase 2. Rather than each dbt model or Python script hard-coding `$125` or `$75K`, they call `get_rule("MEAL_003")["effective_threshold"]` — which always returns the authoritative reconciled value. If the policy docs are re-embedded with updated PDFs and the registry is re-generated, every downstream component automatically picks up the new thresholds.
+
+**Why RAG-based extraction instead of hard-coding:**
+Hard-coding assumes the person writing the code has correctly read and interpreted every policy document. RAG-based extraction grounds thresholds in the actual document text — GPT-4o finds the explicit numeric values and returns null when a threshold isn't stated, rather than guessing. The reconciliation step then applies a defined authority hierarchy to resolve conflicts. The process is auditable: every rule in `rules.json` records which document chunk it came from.
+
+**How `rules.json` is used downstream:**
+
+```python
+from pipelines.business_rules_registry import get_rule
+
+meal_limit    = get_rule("MEAL_003")["effective_threshold"]   # 100 (Nova Pharma)
+annual_cap    = get_rule("COMP_001")["effective_threshold"]   # 75000
+attest_min    = get_rule("ATTEST_001")["effective_threshold"] # 0.8 (fallback)
+```
+
+**The `get_rule()` utility function pattern:**
+`get_rule(rule_id)` is designed to be imported and called at module load time in rule_based_flags.py, scorer.py, and feature scripts. It handles the file-not-found case gracefully (falls back to `FALLBACK_RULES` dict) and fills null effective thresholds from the `fallback_rules` section of `rules.json`. Downstream code never needs to deal with None thresholds.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `pipelines/business_rules_registry.py` | Main pipeline script |
+| `compliance/rules.json` | Generated rules registry (committed to git) |
+
+**5 Functions:**
+
+| Function | Purpose |
+|---|---|
+| `query_qdrant(query_text, top_k, filter_authority)` | Embeds query via ada-002, searches Qdrant with optional authority filter, returns chunk list with scores |
+| `extract_rules_from_chunks(chunks, rule_category, rule_definitions)` | Builds GPT-4o prompt with chunk context and rule list, parses JSON response, returns `{rule_id: value}` |
+| `reconcile_rules(extractions_by_authority, rule_id, rule_def, chunks_by_authority)` | Applies authority hierarchy and stricter-wins logic, builds complete rule dict with source metadata |
+| `build_rules_registry()` | Orchestrates all 7 categories, returns `(registry_dict, stats)` |
+| `save_rules_registry(registry)` | Creates `compliance/` directory, writes `rules.json`, returns path |
+| `get_rule(rule_id, rules_json_path)` | Utility for downstream import — loads `rules.json`, returns rule dict with guaranteed non-null threshold |
+
+**7 Rule categories and 24 rule IDs:**
+
+| Category | Rule IDs |
+|---|---|
+| `meal_limits` | MEAL_001, MEAL_002, MEAL_003, MEAL_004 |
+| `speaker_programs` | SPEAKER_001, SPEAKER_002, SPEAKER_003, SPEAKER_004, SPEAKER_005 |
+| `venue_event_costs` | VENUE_001, VENUE_002, VENUE_003 |
+| `hcp_compensation` | COMP_001, COMP_002, COMP_003 |
+| `interaction_frequency` | FREQ_001, FREQ_002, FREQ_003 |
+| `attestation_documentation` | ATTEST_001, ATTEST_002, ATTEST_003 |
+| `prohibited_practices` | PROHIBIT_001, PROHIBIT_002, PROHIBIT_003 |
+
+**`rules.json` schema:**
+```json
+{
+  "metadata": {
+    "version", "generated_at", "generated_by",
+    "qdrant_collection", "total_chunks_queried",
+    "total_rules_extracted", "documents_used"
+  },
+  "rules": [
+    {
+      "rule_id", "rule_name", "category",
+      "threshold", "unit", "threshold_type",
+      "sources": [{"doc_id", "authority", "doc_type", "chunk_id", "extracted_value"}],
+      "nova_pharma_value", "industry_value",
+      "effective_threshold", "effective_source",
+      "single_source", "reconciliation_note",
+      "violation_type", "severity", "applies_to",
+      "used_fallback", "extracted_at"
+    }
+  ],
+  "fallback_rules": { "MEAL_001": 30.0, ... }
+}
+```
+
+---
+
+### 3. Technical Decisions and Why
+
+**GPT-4o for extraction (not ada-002):**
+ada-002 is an embedding model — it has no generation capability. Extraction requires reading text and producing a structured JSON response. GPT-4o is used for its strong instruction-following and JSON output reliability. ada-002 is still used for the Qdrant similarity search step.
+
+**`temperature=0.0` for deterministic extraction:**
+Rule threshold extraction must be reproducible. A temperature of 0 ensures GPT-4o returns the same JSON given the same input — essential for a versioned registry that is committed to git and used as a reference.
+
+**`response_format={"type": "json_object"}`:**
+Forces GPT-4o to return valid JSON unconditionally, eliminating the need for regex stripping of markdown code fences. If the model would otherwise wrap its response in ` ```json ` blocks, this parameter prevents it.
+
+**`fallback_rules` section in `rules.json`:**
+Extraction returns null when a threshold is not explicitly stated in the retrieved chunks. Fallback values ensure every rule has a non-null effective threshold regardless of extraction success. The fallback values match the constants used in `mart_hcp_spend_features.sql`, so the system is self-consistent even when RAG extraction fails.
+
+**Authority hierarchy: OIG > Nova Pharma > PhRMA > CMS:**
+- OIG (Office of Inspector General) issues regulatory enforcement guidance — these represent the government's position on what constitutes fraud and abuse
+- Nova Pharma internal policy may be stricter than OIG/PhRMA (companies often self-impose tighter limits for risk management); it ranks second because stricter-wins logic still applies
+- PhRMA Code is industry self-regulation — influential but not legally binding
+- CMS data dictionary is reference material, not a rules document; it ranks last
+
+---
+
+### 4. Reconciliation Logic
+
+**Stricter-wins approach:**
+For `threshold_type = "maximum"` (meal limits, caps): the lower value is stricter.
+For `threshold_type = "minimum"` (attestation rate, min attendees): the higher value is stricter.
+For `threshold_type = "prohibited"` or `"required"`: `True` is always the stricter value.
+
+The reconciliation considers all non-null extracted values across authorities, applies the hierarchy to pick the first (highest-authority) value, then checks whether any lower-authority value is stricter. If a stricter value exists at a lower-authority source, it wins regardless.
+
+**Single-source rules:**
+When only one authority's chunks contain an explicit threshold, `single_source = true` is flagged in the rule record. This signals that the value hasn't been cross-validated against another document — downstream code can use this to apply additional caution flags.
+
+**Actual extraction results (2026-04-02):**
+
+| Rule | Effective | Source | Note |
+|---|---|---|---|
+| MEAL_001–003 | 25/50/100 | Nova Pharma | Synthetic policy; stricter than standard $30/$75/$125 |
+| SPEAKER_001 | 3500 | Nova Pharma | Stricter than typical $4,000 FMV ceiling |
+| SPEAKER_003 | 6 | Nova Pharma | Repeat speaker threshold |
+| SPEAKER_004 | 3 | Nova Pharma | Min attendees |
+| VENUE_003 | 100 | Nova Pharma | Stricter per-head meal ceiling |
+| COMP_001 | 75000 | Nova Pharma | Annual cap confirmed |
+| ATTEST_002/003 | True | PhRMA | Documentation required |
+| PROHIBIT_001–003 | True | PhRMA | Confirmed in both PhRMA and OIG chunks |
+| 11 rules | fallback | — | Not explicitly stated in retrieved chunks |
+
+Note: OIG precedence = 0 because OIG chunks for meal limits and compensation didn't contain explicit numeric thresholds — OIG guidance is qualitative ("reasonable", "not substantial") rather than specifying dollar amounts.
+
+---
+
+### 5. How to Run and Verify
+
+**Run:**
+```bash
+python pipelines/business_rules_registry.py
+```
+
+**Prerequisites:** Qdrant must be running with 128 points in `policy_docs`.
+
+**Expected output:**
+```
+Total rules:          24
+Chunks queried:       126
+Documents used:       DOC_001, DOC_002, DOC_003, DOC_004, DOC_005
+OIG precedence:       0 rules
+Nova Pharma override: 8 rules
+Fallback used:        11 rules
+```
+
+**Verify JSON validity:**
+```bash
+cat compliance/rules.json | python3 -m json.tool
+```
+
+**Check all 24 rule IDs present:**
+```bash
+python3 -c "
+import json
+with open('compliance/rules.json') as f:
+    r = json.load(f)
+ids = [rule['rule_id'] for rule in r['rules']]
+print(f'Rules: {len(ids)}')
+print(ids)
+nulls = [rule['rule_id'] for rule in r['rules'] if rule['effective_threshold'] is None]
+print(f'Null thresholds: {nulls}')
+"
+```
+
+**Use `get_rule()` in a downstream script:**
+```python
+from pipelines.business_rules_registry import get_rule
+
+print(get_rule("MEAL_003")["effective_threshold"])   # 100
+print(get_rule("COMP_001")["effective_threshold"])   # 75000
+print(get_rule("PROHIBIT_001")["effective_threshold"])  # True
+```
+
+---
+
+### 6. Known Limitations
+
+1. **Synthetic Nova Pharma policy** — `nova_pharma_internal_policy_SYNTHETIC.pdf` was generated by `policy_doc_loader.py`. Its thresholds (e.g., MEAL_003=100 vs standard $125) are stricter than the PhRMA Code defaults. In production, real internal policy thresholds should be used.
+
+2. **OIG guidance is qualitative** — OIG's CPG and fraud alert documents use language like "reasonable", "not substantial", and "consistent with fair market value" rather than specifying numeric dollar amounts. This is why OIG precedence = 0: GPT-4o correctly returned null rather than inferring a number. The stricter-wins logic still works — it just means OIG didn't provide competing numeric thresholds.
+
+3. **`rules.json` is static after generation** — if the policy PDFs are updated and re-embedded, the registry must be re-run manually (`python pipelines/business_rules_registry.py`). There is no auto-refresh mechanism.
+
+4. **PhRMA Code meal limits not extracted** — the PhRMA Code chunks retrieved for the meal_limits query did not contain the explicit $30/$75/$125 thresholds (those paragraphs may be in chunks not retrieved by the top-5 search). The synthetic Nova Pharma policy's stricter values were found instead. Future improvement: increase top_k or use targeted page-range queries.
+
+5. **No deduplication across re-runs** — each run overwrites `compliance/rules.json` entirely. Git history provides the audit trail.
+
+---
+
+### 7. Next Steps
+
+- **Task 2.2** (`mart_event_features.sql`): Uses thresholds from `rules.json` via `get_rule()` rather than hard-coded constants
+- **Task 2.8** (`rule_based_flags.py`): Imports `get_rule()` for every threshold comparison — no magic numbers
+- **Task 2.10** (`scorer.py`): Uses `severity` field from rules to weight the composite anomaly score
+- **Phase 3 Policy Agent**: Queries the same `policy_docs` Qdrant collection for natural language policy Q&A using LangChain retrieval chain
+
+---
+
 ## Task 2.0a — embed_policy_docs.py
 
 ### 1. Task Overview and Purpose

@@ -26,6 +26,7 @@ langchain-openai==0.1.13
 # ── OpenAI ───────────────────────────────────────────────────────────────────
 # Direct OpenAI SDK (used by langchain-openai and standalone calls)
 openai==1.35.3
+httpx==0.27.2
 
 # ── API Layer ────────────────────────────────────────────────────────────────
 # FastAPI serves the backend; uvicorn is the ASGI server; pydantic validates data
