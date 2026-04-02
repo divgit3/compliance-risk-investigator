@@ -1,6 +1,35 @@
 version: 2
 
 models:
+  - name: mart_hcp_spend_features
+    description: >
+      Phase 2 ML-ready external spend feature mart. One row per HCP aggregating
+      CMS Open Payments (Nova Pharma / Takeda) signals 2022-2024.
+      Athena-only (mart_target_payments dependency). Rep concentration features
+      are 0-filled on Athena until synthetic parquet is registered in Glue.
+      Violation flags excluded — ML input only, not ground truth.
+    columns:
+      - name: hcp_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: has_cms_payments
+        data_tests:
+          - not_null
+
+      - name: raw_spend_risk_score
+        data_tests:
+          - not_null
+
+      - name: lifetime_total_spend
+        data_tests:
+          - not_null
+
+      - name: peak_year_spend
+        data_tests:
+          - not_null
+
   - name: mart_target_payments
     description: >
       CMS payments made to HCPs by the target company (Nova Pharma / Takeda).
