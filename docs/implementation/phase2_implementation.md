@@ -2,6 +2,181 @@
 
 ---
 
+## Task 2.0a — embed_policy_docs.py
+
+### 1. Task Overview and Purpose
+
+`embed_policy_docs.py` is the prerequisite for the entire Phase 2 AI explanation layer. It ingests 5 policy PDFs from S3, converts them into overlapping text chunks, embeds them via OpenAI `text-embedding-ada-002`, and upserts the resulting vectors into the Qdrant `policy_docs` collection.
+
+Without this pipeline, the RAG layer has no knowledge base to query. Every downstream component that needs to explain a compliance flag — "why is this speaker fee suspicious?" — retrieves grounding context from this collection before generating a response.
+
+**How it fits into Phase 2:**
+- **Task 2.0b** (`business_rules_registry.py`): RAGs against this collection to extract concrete rule thresholds (e.g., "$4,000 FMV ceiling") and writes them to `rules.json`
+- **Tasks 2.2+**: All dbt model business rule constants are sourced from `rules.json` rather than being hard-coded
+- **Phase 3 Policy Agent**: Uses the same Qdrant collection for natural language compliance Q&A ("What does PhRMA say about meal limits?")
+
+**Role of Qdrant as policy knowledge base:**
+Qdrant stores each chunk as a 1536-dimensional dense vector alongside its full metadata payload. At query time, a compliance question is embedded and the nearest-neighbor chunks are retrieved — giving the LLM precise policy text to reason over, rather than relying on parametric memory.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `pipelines/embed_policy_docs.py` | Main pipeline script |
+| `requirements.txt` | Added `pymupdf` dependency |
+
+**5 Functions:**
+
+| Function | Purpose |
+|---|---|
+| `download_pdf_from_s3(bucket, key)` | Downloads raw PDF bytes from S3 via boto3; logs filename and size |
+| `extract_text_from_pdf(pdf_bytes, filename)` | Extracts text page-by-page via PyMuPDF; skips pages < 50 chars; returns list of `{page_num, text, filename}` |
+| `chunk_text(pages, filename, doc_metadata)` | Flattens all page text into word list, slides CHUNK_SIZE/CHUNK_OVERLAP window; returns list of chunk dicts with full metadata |
+| `embed_chunks(chunks)` | Batches chunks in groups of 100, calls OpenAI embeddings API with exponential backoff; adds `embedding` key to each chunk dict |
+| `upsert_to_qdrant(chunks_with_embeddings)` | Batches in groups of 50, upserts PointStructs to Qdrant; verifies collection exists first; returns total points upserted |
+
+**Supporting functions:**
+
+| Function | Purpose |
+|---|---|
+| `verify_qdrant_collection()` | Queries Qdrant for point count, vector dim, and collection status |
+| `_chunk_id_to_qdrant_id(chunk_id)` | Converts string chunk_id to stable MD5-based integer point ID |
+
+**Chunk schema (all fields):**
+
+| Field | Type | Description |
+|---|---|---|
+| `chunk_id` | str | `{doc_id}_chunk_{index:04d}` — unique per chunk |
+| `doc_id` | str | `DOC_001` through `DOC_005` |
+| `doc_type` | str | `cms_reference`, `company_policy`, `regulatory_guidance`, `fraud_alert`, `industry_code` |
+| `authority` | str | `CMS`, `Nova Pharma`, `OIG`, `PhRMA` |
+| `filename` | str | Original PDF filename |
+| `page_num` | int | Page where chunk starts (1-indexed) |
+| `chunk_index` | int | 0-indexed position within document |
+| `text` | str | Raw chunk text (~512 words) |
+| `char_count` | int | Length of `text` in characters |
+| `relevant_rules` | list[str] | Pre-assigned rule tags for this document |
+| `embedding` | list[float] | 1536-dim vector (stored in Qdrant, not in payload) |
+
+**Qdrant point structure:**
+
+```
+PointStruct(
+    id      = int(md5(chunk_id)[:8], 16),  # stable 32-bit integer
+    vector  = [float, ...],                 # 1536-dim
+    payload = {all chunk fields except embedding}
+)
+```
+
+---
+
+### 3. Technical Decisions and Why
+
+**PyMuPDF over other PDF libraries:**
+PyMuPDF (`fitz`) is significantly faster and more accurate than PyPDF2 for text extraction, particularly for PDFs with complex layouts. The regulatory PDFs (OIG CPG, PhRMA Code) contain multi-column layouts and headers/footers that PyPDF2 often merges incorrectly. PyMuPDF's `get_text("text")` produces clean per-page output. PyPDF2 is retained in requirements.txt for backward compatibility with `policy_doc_loader.py`.
+
+**Word-based chunking over tiktoken:**
+tiktoken adds a dependency on OpenAI's tokeniser which requires a separate install and has version drift issues. Word-based chunking is a well-understood approximation: 512 words ≈ 640 tokens for English regulatory text (avg. ~1.25 tokens/word). This is comfortably below the 8,192-token `text-embedding-ada-002` context limit. The simpler implementation is also easier to audit.
+
+**Chunk size 512 words / overlap 64 words:**
+512 words (~640 tokens) gives enough context for a policy clause to be self-contained while staying well under the embedding model limit. 64-word overlap (12.5%) ensures that a rule clause split across a chunk boundary appears in full in at least one chunk — important for rules stated across two or three sentences.
+
+**Batch size 100 for embeddings, 50 for Qdrant:**
+OpenAI's embedding API accepts up to 2,048 inputs per request, but 100 is a safe upper bound that avoids timeout risk for long chunks. Qdrant's Python client recommends batches of 64-100 for `upsert`; 50 is conservative to keep individual request latency predictable.
+
+**MD5 hash for Qdrant integer point IDs:**
+Qdrant requires integer or UUID point IDs. String IDs (`DOC_001_chunk_0042`) aren't supported. MD5 of the chunk_id string, truncated to 8 hex chars (32-bit integer), gives a stable, deterministic, collision-resistant mapping. The same chunk always maps to the same Qdrant ID, making re-runs idempotent (upsert overwrites by ID).
+
+**Exponential backoff on embedding calls:**
+OpenAI's rate limits can trigger on bursts of large-batch requests. Two retries with 2s → 4s delays handle transient 429s without requiring manual intervention. Three attempts is sufficient for a pipeline that runs once — this is not a high-throughput production system.
+
+---
+
+### 4. Document Metadata Design
+
+**Why `authority` and `doc_type` fields:**
+Different authorities carry different enforcement weight. OIG guidance and fraud alerts represent formal government regulatory positions. PhRMA Code is industry self-regulation. Nova Pharma internal policy may be stricter than either. The `authority` field lets the business rules registry (`business_rules_registry.py`, Task 2.0b) apply precedence logic: if OIG and PhRMA disagree on a threshold, OIG wins. If Nova Pharma is stricter than both, Nova Pharma wins.
+
+`doc_type` enables filtering by document category — a query for "what counts as a compliance violation in speaker programs" should prioritise `fraud_alert` and `regulatory_guidance` over `cms_reference` (which is a data dictionary, not a rules document).
+
+**Why `relevant_rules` tags are pre-assigned:**
+The tags (`meal_limits`, `fmv`, `speaker_programs`, etc.) allow the rules registry to issue targeted queries — "retrieve chunks tagged `meal_limits` from documents with authority `OIG` or `PhRMA`" — rather than relying on semantic search alone. This improves precision for structured rule extraction where exact thresholds must be found.
+
+**How `authority` drives stricter-rule logic in 2.0b:**
+Priority order (most to least authoritative):
+1. `OIG` fraud alerts and CPGs — government enforcement position
+2. `CMS` — reporting requirements
+3. `PhRMA` — industry code (strong but self-regulatory)
+4. `Nova Pharma` — internal policy (may be stricter; always enforced internally)
+
+When multiple documents mention the same rule threshold differently, the rules registry selects the strictest value among authoritative sources.
+
+---
+
+### 5. How to Run and Verify
+
+**Run:**
+```bash
+python pipelines/embed_policy_docs.py
+```
+
+**Expected output:**
+```
+Docs processed:        5/5
+Total chunks embedded: ~171
+Total points upserted: ~171
+Collection status:     green
+Time taken:            ~30-60s (dominated by OpenAI API calls)
+```
+
+**Verify Qdrant collection:**
+```bash
+curl http://localhost:6333/collections/policy_docs | python3 -m json.tool
+# Look for: "points_count": 171, "status": "green"
+```
+
+**Verify a sample payload:**
+```bash
+curl -X POST http://localhost:6333/collections/policy_docs/points/scroll \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 2, "with_payload": true, "with_vector": false}' \
+  | python3 -m json.tool
+```
+
+**Re-run behaviour:**
+If the collection already has points, the script prompts:
+```
+Re-embed and overwrite? [y/N]:
+```
+Entering `y` proceeds; upsert overwrites existing points by ID (idempotent).
+Any other input aborts safely.
+
+---
+
+### 6. Known Limitations
+
+1. **`nova_pharma_internal_policy_SYNTHETIC.pdf` is synthetic** — the document was generated by `policy_doc_loader.py` with placeholder text. Rule thresholds in it (e.g., "$75K annual cap") are correct by design, but the surrounding context may not match the prose style of a real compliance policy. The rules registry should weight OIG/PhRMA sources more heavily for threshold extraction.
+
+2. **`cms_open_payments_data_dictionary.pdf` contains field definitions, not rules** — this document explains what CMS columns mean (e.g., "Nature of Payment"), not what is permissible. It has low rule-extraction signal. It is embedded because the RAG layer may need it to answer questions about CMS data interpretation.
+
+3. **Word-based chunking may split mid-sentence** — sentences longer than the step size (448 words) will be split. In regulatory PDFs, very long sentences are rare, but tables and lists may be fragmented. The 64-word overlap mitigates this for most rule clauses.
+
+4. **No deduplication across runs** — if run twice, chunks are upserted by the same MD5-derived IDs (idempotent overwrite). The collection will not grow, but embeddings are re-computed and re-upserted, consuming OpenAI API credits. The `existing_points > 0` guard prevents accidental re-runs.
+
+5. **Single-threaded** — documents are processed sequentially. With 5 documents and ~171 chunks, total runtime is ~30-60 seconds (dominated by OpenAI API calls). Parallelism is not needed at this scale.
+
+---
+
+### 7. Next Steps
+
+- **Task 2.0b** (`business_rules_registry.py`): Uses this collection to RAG-extract concrete thresholds for each rule tag and reconcile across authorities. Output: `rules.json` — single source of truth for all business rule constants used in Tasks 2.2+
+- **Tasks 2.2+**: dbt models read rule thresholds from `rules.json` via dbt variables rather than hard-coded constants
+- **Phase 3 Policy Agent**: Uses the same `policy_docs` Qdrant collection for natural language policy Q&A via LangChain retrieval chain
+
+---
+
 ## Task 2.1 — mart_hcp_spend_features
 
 ### 1. Task Overview and Purpose

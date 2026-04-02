@@ -16,8 +16,10 @@ dbt-duckdb==1.8.1
 qdrant-client==1.9.1
 
 # ── PDF Processing & RAG ─────────────────────────────────────────────────────
-# LangChain orchestrates the RAG pipeline; pypdf2 parses PDF policy docs
+# PyMuPDF (fitz) for high-fidelity PDF text extraction in embed_policy_docs.py
+# PyPDF2 retained for legacy policy_doc_loader.py compatibility
 PyPDF2==3.0.1
+pymupdf
 langchain==0.2.5
 langchain-openai==0.1.13
 
