@@ -2,6 +2,185 @@
 
 ---
 
+## Task 2.3 — mart_hcp_risk_profile
+
+### 1. Task Overview and Purpose
+
+`mart_hcp_risk_profile` is the master HCP risk spine — one row per HCP joining all Phase 2 feature marts into a single ML-ready table. It is the primary input for the Isolation Forest (Task 2.9), rule-based flags (Task 2.8), and the unified scorer (Task 2.10).
+
+Three independent data sources each capture a different angle of HCP risk:
+- **CMS Open Payments** (`mart_hcp_spend_features`) — what Nova Pharma reported to the government; external, independently verifiable
+- **Speaker events** (`mart_event_features`) — OIG Fraud Alert primary signals; internal program-level compliance data
+- **CRM interactions** (`mart_hcp_interactions_features`) — meal frequency, rep visits, FMV compliance, documentation quality; internal CRM
+
+No single source is complete. CMS data lives only in Athena; synthetic event and interaction data live only in DuckDB. This mart handles cross-engine incompleteness via target-conditional 0-filled CTEs and a null-safe combined score that reweights proportionally to available sources.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `pipelines/dbt_project/models/marts/mart_hcp_risk_profile.sql` | Master risk spine SQL — 6 target-conditional CTEs |
+
+**6 CTEs:**
+
+| CTE | Athena | DuckDB |
+|---|---|---|
+| `hcp_spine` | From `mart_hcp_spend_features` (97,011 CMS-known HCPs) | Aggregated from `mart_hcp_interactions_features` GROUP BY hcp_id |
+| `spend_features` | From `mart_hcp_spend_features` | 0-filled (27 columns) |
+| `event_agg` | 0-filled | Aggregated from `mart_event_features` GROUP BY speaker_hcp_id |
+| `interaction_features` | 0-filled | Aggregated from `mart_hcp_interactions_features` GROUP BY hcp_id |
+| `ground_truth_agg` | 0-filled | Aggregated from `mart_violation_ground_truth` GROUP BY hcp_id |
+| `final` | All LEFT JOINs, COALESCE, combined score, GT with VALIDATION ONLY comment | Same |
+
+**Output columns by category:**
+
+| Group | Key Columns |
+|---|---|
+| Identity | `hcp_id`, `hcp_name` (NULL — not in synthetic data), `city`, `state`, `specialty`, `is_kol`, `is_high_prescriber` |
+| CMS spend | `lifetime_total_spend`, `peak_year_spend`, `annual_cap_pct_used`, `at_cap_flag`, `near_cap_flag`, `meal_breach_rate`, `max_meal_overage_pct`, `pct_speaking_fee`, `multi_year_increasing_flag`, `raw_spend_risk_score` |
+| Speaker events | `total_events_as_speaker`, `avg_event_risk_score`, `max_event_risk_score`, `events_with_low_attendance`, `events_over_fmv`, `events_missing_attestation`, `events_rapid_repeat`, `total_speaker_fees_events`, `pct_events_over_fmv` |
+| Interactions | `total_interactions`, `total_meals`, `avg_meal_cost`, `interactions_with_vague_rationale`, `fmv_compliance_rate`, `unique_reps_interacted`, `interaction_frequency_score` |
+| Completeness | `has_cms_payments`, `has_speaker_events`, `has_interactions`, `data_completeness_score` (0-3), `risk_signal_count` |
+| Combined score | `combined_raw_risk_score` (0-100 heuristic, pre-ML) |
+| Ground truth | `ground_truth_violation_count`, `ground_truth_max_severity` — VALIDATION ONLY |
+
+---
+
+### 3. Technical Decisions and Why
+
+**HCP spine on DuckDB uses `mart_hcp_interactions_features`, not `stg_synthetic_interactions`:**
+`stg_synthetic_interactions` contains one row per interaction (995K rows). Selecting `DISTINCT hcp_id` would work but requires a full scan of the raw staging table. Using the already-materialized `mart_hcp_interactions_features` (also interaction-level, but with cleaner fields) is more consistent with the rest of the mart's dependency chain and avoids redundant staging table reads.
+
+**`interaction_features` CTE aggregates an interaction-level mart:**
+`mart_hcp_interactions_features` is one row per interaction, not per HCP. The `interaction_features` CTE contains a full GROUP BY aggregation to produce one HCP-level row. The CTE name was chosen to match the logical concept (HCP-level interaction features) rather than the physical source (interaction-level mart).
+
+**Vague rationale defined as `IN ('', 'Meeting', 'Other') OR IS NULL`:**
+Actual data exploration on the synthetic interactions found these three string values collectively account for ~53K low-quality documentation entries. Single-word or empty rationales indicate documentation controls are not being followed — a behavioral signal separate from FMV compliance.
+
+**`interaction_frequency_score` weights (50/30/20):**
+- 50 pts for volume (100 interactions → 50 pts): captures high-frequency relationships regardless of compliance status
+- 30 pts for FMV violations (0% compliance → 30 pts): FMV excess is the primary quid-pro-quo mechanism
+- 20 pts for documentation quality (100% vague → 20 pts): documentation weakness is a lagging indicator of behavioral risk
+
+**Null-safe combined score with 7 CASE branches:**
+The 7 branches cover all combinations of available sources (2³ = 8 states minus the "all absent" → 0.0 fallback). Each branch uses proportional reweighting — e.g., events+interactions only uses weights `0.35/0.60 ≈ 0.583` and `0.25/0.60 ≈ 0.417` so the output still sums to 100% of the original scale. This prevents the combined score from being systematically lower for HCPs with fewer data sources.
+
+**`CURRENT_TIMESTAMP` instead of `CAST(NOW() AS TIMESTAMP)` for `mart_created_at`:**
+This model is DuckDB-primary (`--target dev`). DuckDB supports `CURRENT_TIMESTAMP` natively. On Athena, `CURRENT_TIMESTAMP` returns `timestamp(3) with time zone` which fails Hive table storage — but the Athena target does not use this model's full form (event/interaction/GT CTEs are 0-filled on Athena, and the Athena primary model for spend is `mart_hcp_spend_features`).
+
+---
+
+### 4. Business Rules Applied (all sourced from compliance/rules.json)
+
+| Rule ID | Rule | Threshold | Applied As |
+|---|---|---|---|
+| COMP_001 | Annual cap | $75,000 | `at_cap_flag`, `near_cap_flag`, `annual_cap_pct_used` (via spend features) |
+| COMP_003 | Near-cap threshold | 80% ($60K) | `near_cap_flag` |
+| MEAL_003 | Dinner ceiling | $100 | `meal_breach_rate`, `max_meal_overage_pct` (via spend features) |
+| SPEAKER_001 | Speaker FMV ceiling | $3,500 | `events_over_fmv`, `pct_events_over_fmv` (via event agg) |
+| SPEAKER_004 | Min attendees | 3 | `events_with_low_attendance` (via event agg) |
+| ATTEST_001 | Min attestation rate | 80% | `events_missing_attestation` (via event agg) |
+| SPEAKER_005 | Rapid repeat window | 30 days | `events_rapid_repeat` (via event agg) |
+
+---
+
+### 5. How the Combined Score Works
+
+`combined_raw_risk_score` is a null-safe weighted average of the three source risk scores, computed only from available data sources.
+
+**Full weights (all three sources):**
+```
+spend * 0.40 + avg_event_risk_score * 0.35 + interaction_frequency_score * 0.25
+```
+
+**DuckDB (no CMS spend — events + interactions only):**
+```
+avg_event_risk_score * (0.35/0.60) + interaction_frequency_score * (0.25/0.60)
+≈ avg_event_risk_score * 0.583 + interaction_frequency_score * 0.417
+```
+
+**Athena (no events/interactions — spend only):**
+```
+raw_spend_risk_score * 1.0
+```
+
+---
+
+### 6. How to Run and Verify
+
+**Run:**
+```bash
+cd pipelines/dbt_project
+dbt run --select mart_hcp_risk_profile
+dbt test --select mart_hcp_risk_profile
+```
+
+**Expected:**
+```
+1 of 1 OK created sql table model main.mart_hcp_risk_profile [OK]
+9/9 tests PASS
+```
+
+**Spot-check queries:**
+```python
+import duckdb
+con = duckdb.connect('data/processed/compliance.duckdb')
+
+con.execute('SELECT COUNT(*) FROM mart_hcp_risk_profile').fetchone()
+# (97011,)
+
+con.execute('SELECT COUNT(*) FROM mart_hcp_risk_profile WHERE has_speaker_events = true').fetchone()
+# (1354,)  — 1.4% of HCPs were speakers (realistic for a pharma program)
+
+con.execute('SELECT ROUND(AVG(combined_raw_risk_score), 3) FROM mart_hcp_risk_profile').fetchone()
+# (7.576,)  — DuckDB combined = events*0.583 + interactions*0.417; most HCPs have low event scores
+
+con.execute('SELECT COUNT(*) FROM mart_hcp_risk_profile WHERE ground_truth_violation_count > 0').fetchone()
+# (23727,)  — 24.5% of HCPs have at least one flagged violation in ground truth
+
+# Completeness distribution
+con.execute('''
+    SELECT data_completeness_score, COUNT(*)
+    FROM mart_hcp_risk_profile GROUP BY 1 ORDER BY 1
+''').fetchall()
+# [(1, 95657), (2, 1354)]
+# — On DuckDB: all HCPs have interactions; 1,354 also have speaker events; no CMS spend (0-filled)
+
+# GT severity distribution
+con.execute('''
+    SELECT ground_truth_max_severity, COUNT(*)
+    FROM mart_hcp_risk_profile GROUP BY 1 ORDER BY 1
+''').fetchall()
+# [('high', 1034), ('low', 3335), ('medium', 19358), ('none', 73284)]
+```
+
+---
+
+### 7. Known Limitations
+
+1. **DuckDB has no CMS spend** — `has_cms_payments` is always `false` on the dev target; `raw_spend_risk_score` is always 0. The combined score on DuckDB reflects only events + interactions. Full 3-source scoring requires synthetic data registered in Glue (future).
+
+2. **`data_completeness_score` max is 2 on DuckDB** — because CMS spend is always absent on the dev target. A score of 3 is only achievable on Athena after synthetic data is registered in Glue.
+
+3. **`hcp_name`, `specialty`, `is_kol`, `is_high_prescriber` are NULL** — these fields are not present in the synthetic data sources. They are placeholders for future HCP master data enrichment.
+
+4. **Ground truth is DuckDB-only** — `ground_truth_violation_count` and `ground_truth_max_severity` are 0-filled on Athena because `mart_violation_ground_truth` is built from synthetic data that doesn't exist in Glue. This is by design — these fields are VALIDATION ONLY and should not be present in production Athena runs.
+
+5. **`avg_event_risk_score` vs `max_event_risk_score` in combined score** — the combined score uses `avg_event_risk_score` (mean across all events a speaker gave). This may underweight HCPs who had one very high-risk event alongside many compliant events. Task 2.10 (`scorer.py`) will address this with a more sophisticated weighting.
+
+---
+
+### 8. Next Steps
+
+- **Task 2.4** (`mart_benchmark.sql`): Adds peer percentile ranks for key risk signals (e.g., `pct_speaking_fee_percentile`) as additional features
+- **Task 2.8** (`rule_based_flags.py`): Reads this mart and applies `get_rule()` thresholds to produce deterministic violation flags for the ensemble
+- **Task 2.9** (`isolation_forest.py`): Uses this mart's numeric columns as the Isolation Forest feature matrix
+- **Task 2.10** (`scorer.py`): Replaces `combined_raw_risk_score` with a unified ML-informed score that combines IF anomaly scores with rule-based flags
+
+---
+
 ## Task 2.2 — mart_event_features
 
 ### 1. Task Overview and Purpose

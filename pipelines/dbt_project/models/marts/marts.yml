@@ -197,3 +197,42 @@ models:
       - name: is_violation
         data_tests:
           - not_null
+
+  - name: mart_hcp_risk_profile
+    description: >
+      Phase 2 master HCP risk spine. One row per HCP (97,011 total on DuckDB dev target).
+      Joins mart_hcp_spend_features, mart_event_features, mart_hcp_interactions_features,
+      and mart_violation_ground_truth into a single ML-ready table.
+      Cross-engine: Athena spine = CMS HCPs; DuckDB spine = synthetic interactions.
+      Ground truth fields are VALIDATION ONLY — never ML input.
+    columns:
+      - name: hcp_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: combined_raw_risk_score
+        data_tests:
+          - not_null
+
+      - name: has_cms_payments
+        data_tests:
+          - not_null
+
+      - name: has_speaker_events
+        data_tests:
+          - not_null
+
+      - name: has_interactions
+        data_tests:
+          - not_null
+
+      - name: data_completeness_score
+        data_tests:
+          - not_null
+
+      - name: ground_truth_max_severity
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['none', 'low', 'medium', 'high']
