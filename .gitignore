@@ -38,3 +38,5 @@ tests/recon*.py
 tests/sample.py
 tests/sample1.py
 tests/*.py
+tests/test*.py
+.claude/
