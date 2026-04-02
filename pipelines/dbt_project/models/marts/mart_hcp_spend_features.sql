@@ -22,7 +22,9 @@
 -- Business rules applied
 --   Meal per-person limits (PhRMA Code 2022, Section 3):
 --     breakfast $30 | lunch $75 | dinner $125
---     CMS Food & Beverage records carry no meal-type; $125 (dinner ceiling)
+--     Nova Pharma limits: breakfast $25 | lunch $50 | dinner $100
+--     (stricter than PhRMA $30/$75/$125 — source: compliance/rules.json MEAL_003)
+--     CMS Food & Beverage records carry no meal-type; $100 (dinner ceiling)
 --     is applied as the single-record cap — the most common pharma meal format
 --     and the most defensible single-transaction limit.
 --   Annual compensation cap: $75,000 per HCP per year (OIG CPG / internal policy)
@@ -75,18 +77,18 @@ cms_payments AS (
             THEN true ELSE false
         END                                                         AS is_consulting,
 
-        -- Meal limit: dinner ceiling $125 applied to all F&B records
+        -- Meal limit: dinner ceiling $100 applied to all F&B records
         CASE
             WHEN nature_of_payment = 'Food and Beverage'
-             AND payment_amount > 125.0
+             AND payment_amount > 100.0
             THEN true ELSE false
         END                                                         AS meal_over_limit,
 
-        -- Overage as proportion of the $125 cap (NULL when not over limit)
+        -- Overage as proportion of the $100 Nova Pharma dinner ceiling (NULL when not over limit)
         CASE
             WHEN nature_of_payment = 'Food and Beverage'
-             AND payment_amount > 125.0
-            THEN (payment_amount - 125.0) / 125.0
+             AND payment_amount > 100.0
+            THEN (payment_amount - 100.0) / 100.0
             ELSE NULL
         END                                                         AS meal_overage_pct
 
@@ -212,7 +214,7 @@ hcp_features AS (
         CASE WHEN GREATEST(cy.spend_2022, cy.spend_2023, cy.spend_2024)
                   >= 60000.0 THEN true ELSE false END                  AS near_cap_flag,
 
-        -- ── Meal limits ($125 dinner ceiling on F&B records) ──────────────
+        --- --- Meal limits ($100 Nova Pharma dinner ceiling — rules.json MEAL_003) ─── ---
         cy.meals_over_limit_count,
         CASE WHEN cy.total_meal_count > 0
              THEN CAST(cy.meals_over_limit_count AS DOUBLE)
