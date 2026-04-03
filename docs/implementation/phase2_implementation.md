@@ -2,6 +2,142 @@
 
 ---
 
+## Task 2.4 — mart_benchmark
+
+### 1. Task Overview and Purpose
+
+`mart_benchmark` is a two-tier HCP peer benchmarking mart — one row per HCP. It answers four compliance questions per HCP:
+
+1. Was each program year individually compliant vs the $75K annual cap (COMP_001)?
+2. Is Nova Pharma overpaying vs our own annual engagement norms (TIER 1 NP benchmarks)?
+3. Is Nova Pharma overpaying vs what the industry pays annually (TIER 2 industry benchmarks)?
+4. Is Nova Pharma this HCP's dominant payer (share of wallet — OIG captured-HCP red flag)?
+
+It produces an `engagement_quadrant` decision (investigate / review / competitive_intelligence / continue) and an `engagement_priority_score` (0-100) per HCP for 2024 as the primary signal, with 2022/2023 for pattern context.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `pipelines/dbt_project/models/marts/mart_benchmark.sql` | Two-tier benchmarking mart — 11 CTEs |
+
+**11 CTEs:**
+
+| CTE | Description |
+|---|---|
+| `hcp_base` | HCP spine from `mart_hcp_risk_profile` — identity, `combined_raw_risk_score`, `meal_breach_rate`. `specialty` coalesced to 'Unknown' (NULL everywhere in synthetic data). |
+| `np_spend_base` | **Target-conditional.** Athena: joins `mart_hcp_spend_features` for `spend_2022/2023/2024`. DuckDB: 0-filled (CMS Athena-only). |
+| `np_specialty_stats_yr` | GROUP BY specialty — per-year peer averages, P90, P95, P50 (median). Risk score benchmarks. |
+| `np_specialty_state` | GROUP BY specialty + state — peer group size for national fallback logic (min 10 HCPs). |
+| `np_percentile_ranks` | PERCENT_RANK() window functions per specialty for spend (3 years + 3yr), state, specialty×state, risk score, meal breach rate. |
+| `industry_hcp_agg` | **Target-conditional.** Athena: aggregate `mart_population_payments` (13.2M rows) to HCP×year. DuckDB: empty (0-row schema-only stub). |
+| `industry_stats_yr` | **Target-conditional.** Athena: GROUP BY specialty — per-year industry averages, P90, P95. DuckDB: empty stub. |
+| `competitor_hcp_agg` | **Target-conditional.** Athena: aggregate `mart_competitor_payments` (4.3M rows) to HCP×year. DuckDB: empty stub. |
+| `competitor_stats_yr` | **Target-conditional.** Athena: GROUP BY specialty — competitor averages. DuckDB: empty stub. |
+| `pre_final` | JOIN all CTEs. Compute ratios, SOW, per-year cap flags, outlier counts. 76 columns. |
+| `final` | Engagement quadrant, priority score, combined flags, metadata. SELECT * emitted. |
+
+**Output columns by category:**
+
+| Group | Key Columns |
+|---|---|
+| Identity | `hcp_id`, `specialty`, `state` |
+| Per-year spend | `spend_2022`, `spend_2023`, `spend_2024`, `spend_3yr` (pattern context) |
+| Annual cap compliance | `annual_cap_pct_used_2022/2023/2024`, `at_cap_*`, `near_cap_*`, `years_at_cap`, `years_near_cap`, `cap_breach_any`, `cap_pattern` |
+| Spend trend | `spend_trend` (increasing/decreasing/net_increasing/stable), `spend_trend_2324`, `spend_trend_2223` |
+| TIER 1 NP ranks | `np_spend_pct_rank_specialty_2022/2023/2024/3yr`, `np_spend_pct_rank_state_2024`, `np_risk_pct_rank_specialty_2024`, `np_meal_breach_pct_rank_specialty_2024` |
+| TIER 1 NP stats | `np_peer_avg_spend_*`, `np_peer_p90_spend_*`, `np_peer_avg_risk_score`, `np_peer_p90_risk_score` |
+| TIER 1 NP flags | `np_spend_outlier_2022/2023/2024`, `np_persistent_outlier`, `np_spend_outlier`, `np_risk_outlier`, `np_top_1pct_risk`, `np_top_5pct_risk`, `np_top_10pct_risk` |
+| TIER 2 industry | `industry_spend_2022/2023/2024/3yr`, `ind_peer_avg_spend_*`, `ind_peer_p90/p95_spend_*` |
+| TIER 2 NP vs industry | `np_vs_industry_ratio_2022/2023/2024/3yr`, `ind_outlier_2022/2023/2024`, `ind_high_outlier_2024`, `ind_persistent_outlier` |
+| Share of wallet | `sow_2022/2023/2024/3yr`, `sow_dominant_*`, `sow_exclusive` (>80%), `sow_increasing` |
+| Competitor | `competitor_spend_2022/2023/2024/3yr`, `np_vs_competitor_ratio_2024`, `comp_spend_outlier` |
+| Engagement decision | `engagement_quadrant`, `engagement_quadrant_reason`, `engagement_priority_score` |
+| Combined flags | `dual_outlier_flag`, `triple_signal_flag`, `escalating_risk_flag`, `chronic_risk_flag` |
+
+---
+
+### 3. Technical Decisions and Why
+
+**DuckDB `LEAST()/GREATEST()` NULL behavior — critical fix:**
+DuckDB returns the non-null argument when any argument is NULL (`LEAST(10.0, NULL) = 10.0`), unlike standard SQL which propagates NULL. The pattern `COALESCE(LEAST(10.0, x / NULLIF(y, 0)), 0.0)` misfires when `y` is NULL: `NULLIF(NULL, 0) = NULL`, `x / NULL = NULL`, `LEAST(10.0, NULL) = 10.0` (DuckDB), `COALESCE(10.0, 0.0) = 10.0`. This set all ratios to their cap value on DuckDB in the first iteration.
+
+**Fix pattern:**
+```sql
+-- BEFORE (buggy on DuckDB):
+COALESCE(LEAST(10.0, nb.spend_2024 / NULLIF(ind.ind_peer_avg_spend_2024, 0.0)), 0.0)
+
+-- AFTER (correct on all engines):
+CASE WHEN COALESCE(ind.ind_peer_avg_spend_2024, 0.0) > 0.0
+     THEN LEAST(10.0, nb.spend_2024 / ind.ind_peer_avg_spend_2024)
+     ELSE 0.0 END
+```
+Applied to all 12 ratio/SOW computations in the model.
+
+**Annual-first design — no lifetime columns:**
+OIG Fraud Alert 2020, PhRMA Code, and CMS Open Payments all operate on a per-program-year basis. Annual cap compliance is year-specific. 3-year aggregates (`spend_3yr`) are included as pattern context only and explicitly labeled as such throughout the model.
+
+**Target-conditional CTEs for Athena-only sources:**
+`mart_population_payments` and `mart_competitor_payments` are thin views over `stg_cms_general_payments` (Glue catalog, Athena-only). They do not exist in DuckDB. The 4 industry/competitor CTEs are wrapped in `{% if target.type == 'athena' %}` blocks. DuckDB versions return 0 rows using `FROM (SELECT 1 AS _dummy) _empty WHERE 1 = 0` to produce the correct schema for LEFT JOINs.
+
+**`specialty = 'Unknown'` as national benchmark fallback:**
+`specialty` is NULL for all 97,011 rows in `mart_hcp_risk_profile` (not in synthetic interactions data). COALESCE to 'Unknown' produces one national peer group until HCP master data is joined. All specialty benchmarks on current targets are effectively national benchmarks.
+
+**Industry JOIN via CMS specialty (not mart_hcp_risk_profile specialty):**
+The JOIN from `hcp_base` to `industry_stats_yr` uses `COALESCE(ihcp.specialty, h.specialty)` — preferring the specialty from `industry_hcp_agg` (sourced from `physician_specialty` in CMS Open Payments) over the hcp_base specialty (NULL everywhere). This means on Athena the industry benchmarks are segmented by the CMS-reported specialty rather than the HCP master specialty.
+
+**`np_use_national_benchmark` flag:**
+When `np_peer_group_size < 10` for a specialty×state combination, `np_use_national_benchmark = true`. The model surfaces this as a metadata flag; the actual national fallback (using specialty = 'Unknown' as the peer group) occurs naturally because `specialty` is 'Unknown' everywhere in the current data.
+
+**Engagement quadrant logic:**
+```
+investigate:            2024 NP rank > 75th pct AND industry ratio > 1.5×
+                        OR escalating rank (both YoY) AND chronic near-cap (≥2 years)
+review:                 2024 NP rank > 75th pct AND industry ratio ≤ 1.5×
+competitive_intelligence: NP rank ≤ 75th pct AND industry ratio > 1.5×
+continue:               all other HCPs
+```
+
+**`engagement_priority_score` formula (0-100):**
+```
+LEAST(100.0,
+    np_spend_pct_rank_specialty_2024 × 30     -- NP 2024 rank (30 pts)
+  + LEAST(1.0, np_vs_industry_ratio_2024 / 3.0) × 25  -- industry ratio (25 pts, full at 3×)
+  + sow_2024 × 25                             -- share of wallet (25 pts)
+  + np_outlier_years_count × 5.0             -- NP persistence (10 pts max)
+  + ind_outlier_years_count × 5.0            -- industry persistence (10 pts max)
+)
+```
+On DuckDB, spend = 0 for all HCPs → rank = 0, industry ratio = 0, SOW = 0 → score = 0 by design.
+
+---
+
+### 4. Verification Results (DuckDB dev)
+
+| Check | Expected | Actual |
+|---|---|---|
+| Row count | 97,011 | 97,011 ✓ |
+| `np_vs_industry_ratio_2024` | 0.0 (no CMS on DuckDB) | 0.0 ✓ |
+| `sow_2024` | 0.0 (no CMS on DuckDB) | 0.0 ✓ |
+| `engagement_quadrant` | 'continue' for all (no spend data) | 'continue' (97,011) ✓ |
+| `np_top_1pct_risk` | ~1% of 97,011 ≈ 970 | 962 ✓ |
+| `cap_pattern` | 'compliant' for all (spend = 0) | 'compliant' (97,011) ✓ |
+| dbt tests | 11/11 PASS | 11/11 PASS ✓ |
+
+---
+
+### 5. Known Limitations
+
+- **DuckDB: all spend = 0** — `mart_hcp_spend_features` depends on `mart_target_payments` (Athena-only CMS source). All per-year spend columns, spend ranks, cap compliance, SOW, and industry ratios are 0-filled on DuckDB. Only risk score ranks and meal breach ranks are meaningful on DuckDB.
+- **DuckDB: engagement_quadrant = 'continue' for all** — correct; meaningful quadrant assignments require Athena CMS data.
+- **specialty = 'Unknown' everywhere** — synthetic interactions data does not include HCP specialty. All specialty benchmarks are national benchmarks on current targets. Will segment correctly when HCP master data is joined.
+- **Industry JOIN uses CMS specialty** — on Athena, industry benchmarks join via `physician_specialty` from CMS Open Payments, not from an HCP master table. Specialty mismatches between CMS records and HCP master data will affect benchmark accuracy.
+- **3-year aggregates include overlapping HCPs** — HCPs who received payments in only 1 or 2 of the 3 years will have lower 3yr aggregates than active HCPs. This is by design (reflecting actual engagement) but means `spend_3yr` is not normalized for tenure.
+
+---
+
 ## Task 2.3 — mart_hcp_risk_profile
 
 ### 1. Task Overview and Purpose

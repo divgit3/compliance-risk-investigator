@@ -198,6 +198,50 @@ models:
         data_tests:
           - not_null
 
+  - name: mart_benchmark
+    description: >
+      Phase 2 two-tier peer benchmarking mart. One row per HCP (97,011 total on DuckDB dev).
+      TIER 1 (np_): Nova Pharma internal spend percentile ranks and peer statistics per year.
+      TIER 2 (ind_/comp_/sow_): Industry-wide benchmarks, share of wallet, competitor context.
+      Primary signal: 2024. Pattern context: 2022, 2023. 3yr aggregates labeled pattern context only.
+      Athena: both tiers fully functional. DuckDB: TIER 1 risk ranks functional; spend/industry = 0-filled.
+      Business rules: COMP_001 ($75K annual cap), COMP_003 ($60K near-cap), MEAL_003, SPEAKER_001.
+    columns:
+      - name: hcp_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: engagement_quadrant
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['investigate', 'review', 'competitive_intelligence', 'continue']
+
+      - name: engagement_priority_score
+        data_tests:
+          - not_null
+
+      - name: cap_pattern
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['chronic_breach', 'single_breach', 'chronic_near_cap', 'near_cap', 'compliant']
+
+      - name: spend_trend
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['increasing', 'decreasing', 'net_increasing', 'stable']
+
+      - name: np_vs_industry_ratio_2024
+        data_tests:
+          - not_null
+
+      - name: sow_2024
+        data_tests:
+          - not_null
+
   - name: mart_hcp_risk_profile
     description: >
       Phase 2 master HCP risk spine. One row per HCP (97,011 total on DuckDB dev target).
