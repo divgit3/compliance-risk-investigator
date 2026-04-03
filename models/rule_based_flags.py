@@ -2,51 +2,52 @@
 rule_based_flags.py
 Phase 2 — Rule-based compliance anomaly detection
 
-Applies all 23 hard compliance rules from compliance/rules.json to produce
-one boolean flag column per rule, per HCP. Every threshold is loaded via
-get_rule() so flags stay in sync with the versioned rules registry.
+Applies 23 hard compliance rules from compliance/rules.json to the merged
+feature store, producing one boolean flag column per rule per HCP plus a
+severity summary.
 
 This is the first of two anomaly detection approaches:
   1. Rule-based flags (this module) — catches KNOWN rule violations
-  2. Isolation Forest (Task 2.9)     — catches UNKNOWN statistical patterns
+  2. Isolation Forest (Task 2.9)    — catches UNKNOWN statistical patterns
 
 Both feed into scorer.py (Task 2.10), which combines them into a unified
-risk score.
+0–100 risk score per HCP.
 
 Data sources:
-  features/outputs/feature_store.parquet — HCP spine; provides unscaled
-      binary/pct/ordinal columns (flag_sum counts, pct_ ratios, _real
-      ordinal integers). Scaled continuous columns (spend_2022, meal_breach_rate,
-      etc.) are NOT used for threshold comparisons — raw values are needed.
-  data/processed/compliance.duckdb:
-      mart_hcp_risk_profile — raw interaction metrics (meal_breach_rate,
-          fmv_compliance_rate, interactions_with_vague_rationale, etc.)
-      mart_benchmark — per-year at_cap/near_cap booleans + raw spend columns
+  features/outputs/feature_store.parquet — 97,011-row HCP feature matrix
+      produced by feature_store.py. Contains scaled continuous features,
+      unscaled binary flags (0/1), pct_ ratios, flag_sum counts, and
+      _real ordinal integers computed from raw Athena spend data.
+  compliance/rules.json — canonical threshold registry (24 rules)
 
-Design note on data sources: feature_store.parquet was designed for ML
-(features scaled for Isolation Forest). Rule-based flags need raw values
-for deterministic threshold comparisons. DuckDB sources provide these raw
-values. Feature_store is still the HCP spine and provides unscaled
-derived columns (flag counts, pct_ ratios, _real ordinals).
+Cap rule note:
+  spend_2022/2023/2024 in feature_store are RobustScaled (unsuitable for
+  dollar-value threshold comparisons). Cap rules use annual_cap_pct_used_*
+  columns (spend_YYYY / ANNUAL_CAP), which are also scaled but their
+  interpretation is preserved: >= 1.0 means the cap was met or exceeded.
+  If feature_store is regenerated with unscaled spend columns, replace the
+  cap_pct_used comparisons with direct dollar comparisons:
+      df["flag_annual_cap_breach_2022"] = (_col(df, "spend_2022") >= cap).astype(bool)
 
 Usage:
     python3 models/rule_based_flags.py
+
+Prerequisite:
+    feature_store.parquet must exist (run features/feature_store.py first).
 """
 
 import json
-import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import duckdb
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from loguru import logger
 
-# ─── Path setup for get_rule() import ────────────────────────────────────────
+# ─── get_rule() import ────────────────────────────────────────────────────────
 sys.path.append("pipelines")
 from business_rules_registry import get_rule  # noqa: E402
 
@@ -54,287 +55,173 @@ load_dotenv()
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 FEATURE_STORE_PATH = "features/outputs/feature_store.parquet"
-DUCKDB_PATH        = "data/processed/compliance.duckdb"
+RULES_PATH         = "compliance/rules.json"
 OUTPUT_DIR         = "models/outputs"
 
 # ─── Severity mapping ─────────────────────────────────────────────────────────
-# One entry per flag column. Used by compute_flag_summary() to count
-# critical/high/medium severity flags per HCP.
+# One entry per flag column. Used by compute_flag_summary() to bucket HCPs
+# into critical/high/medium severity tiers.
 RULE_SEVERITY: dict[str, str] = {
-    "flag_meal_limit_breach":              "medium",
-    "flag_meal_chronic_breach":            "high",
-    "flag_meal_overage_severe":            "high",
-    "flag_annual_cap_breach_2022":         "critical",
-    "flag_annual_cap_breach_2023":         "critical",
-    "flag_annual_cap_breach_2024":         "critical",
-    "flag_near_cap_2024":                  "high",
-    "flag_chronic_near_cap":               "high",
-    "flag_speaker_fmv_breach":             "high",
-    "flag_speaker_fmv_chronic":            "critical",
-    "flag_repeat_speaker":                 "medium",
-    "flag_high_repeat_speaker":            "high",
-    "flag_low_attendance_pattern":         "high",
-    "flag_rapid_repeat_pattern":           "medium",
-    "flag_missing_attestation":            "medium",
-    "flag_chronic_missing_attestation":    "high",
-    "flag_vague_rationale":                "medium",
-    "flag_vague_rationale_pattern":        "high",
-    "flag_fmv_non_compliance":             "high",
-    "flag_rep_concentration":              "medium",
-    "flag_speaking_fee_concentration":     "high",
-    "flag_escalating_spend":               "medium",
-    "flag_escalating_rank":                "medium",
+    "flag_meal_limit_breach":               "medium",
+    "flag_meal_chronic_breach":             "high",
+    "flag_meal_overage_severe":             "high",
+    "flag_annual_cap_breach_2022":          "critical",
+    "flag_annual_cap_breach_2023":          "critical",
+    "flag_annual_cap_breach_2024":          "critical",
+    "flag_near_cap_2024":                   "high",
+    "flag_chronic_near_cap":                "high",
+    "flag_speaker_fmv_breach":              "high",
+    "flag_speaker_fmv_chronic":             "critical",
+    "flag_repeat_speaker":                  "medium",
+    "flag_high_repeat_speaker":             "high",
+    "flag_low_attendance_pattern":          "high",
+    "flag_rapid_repeat_pattern":            "medium",
+    "flag_missing_attestation":             "medium",
+    "flag_chronic_missing_attestation":     "high",
+    "flag_vague_rationale":                 "medium",
+    "flag_vague_rationale_pattern":         "high",
+    "flag_fmv_non_compliance":              "high",
+    "flag_rep_concentration":               "medium",
+    "flag_speaking_fee_concentration":      "high",
+    "flag_escalating_spend":                "medium",
+    "flag_escalating_rank":                 "medium",
 }
 
-# ─── Policy citation mapping ──────────────────────────────────────────────────
-# Maps each flag to the rule_id from rules.json that justifies it.
-# Used by Phase 3 Policy Agent to retrieve the policy chunk_id.
+# Policy citation chain: flag → rule_id → rules.json chunk_id
+# Used by Phase 3 Policy Agent to cite the source policy document section
+# for each fired flag. flagged_rule_ids in compute_flag_summary() builds a
+# comma-separated string from this mapping for every HCP.
 RULE_TO_POLICY: dict[str, str] = {
-    "flag_meal_limit_breach":              "MEAL_003",
-    "flag_meal_chronic_breach":            "MEAL_003",
-    "flag_meal_overage_severe":            "MEAL_003",
-    "flag_annual_cap_breach_2022":         "COMP_001",
-    "flag_annual_cap_breach_2023":         "COMP_001",
-    "flag_annual_cap_breach_2024":         "COMP_001",
-    "flag_near_cap_2024":                  "COMP_001",
-    "flag_chronic_near_cap":               "COMP_001",
-    "flag_speaker_fmv_breach":             "SPEAKER_001",
-    "flag_speaker_fmv_chronic":            "SPEAKER_001",
-    "flag_repeat_speaker":                 "SPEAKER_003",
-    "flag_high_repeat_speaker":            "SPEAKER_002",
-    "flag_low_attendance_pattern":         "SPEAKER_004",
-    "flag_rapid_repeat_pattern":           "SPEAKER_005",
-    "flag_missing_attestation":            "ATTEST_001",
-    "flag_chronic_missing_attestation":    "ATTEST_001",
-    "flag_vague_rationale":                "ATTEST_002",
-    "flag_vague_rationale_pattern":        "ATTEST_002",
-    "flag_fmv_non_compliance":             "ATTEST_003",
-    "flag_rep_concentration":              "Nova Pharma Policy",
-    "flag_speaking_fee_concentration":     "SPEAKER_001",
-    "flag_escalating_spend":               "Nova Pharma Policy",
-    "flag_escalating_rank":                "Nova Pharma Policy",
+    "flag_meal_limit_breach":               "MEAL_003",
+    "flag_meal_chronic_breach":             "MEAL_003",
+    "flag_meal_overage_severe":             "MEAL_003",
+    "flag_annual_cap_breach_2022":          "COMP_001",
+    "flag_annual_cap_breach_2023":          "COMP_001",
+    "flag_annual_cap_breach_2024":          "COMP_001",
+    "flag_near_cap_2024":                   "COMP_001",
+    "flag_chronic_near_cap":                "COMP_001",
+    "flag_speaker_fmv_breach":              "SPEAKER_001",
+    "flag_speaker_fmv_chronic":             "SPEAKER_001",
+    "flag_repeat_speaker":                  "SPEAKER_003",
+    "flag_high_repeat_speaker":             "SPEAKER_002",
+    "flag_low_attendance_pattern":          "SPEAKER_004",
+    "flag_rapid_repeat_pattern":            "SPEAKER_005",
+    "flag_missing_attestation":             "ATTEST_001",
+    "flag_chronic_missing_attestation":     "ATTEST_001",
+    "flag_vague_rationale":                 "ATTEST_002",
+    "flag_vague_rationale_pattern":         "ATTEST_002",
+    "flag_fmv_non_compliance":              "ATTEST_003",
+    "flag_rep_concentration":               "Nova Pharma Policy",
+    "flag_speaking_fee_concentration":      "SPEAKER_001",
+    "flag_escalating_spend":                "Nova Pharma Policy",
+    "flag_escalating_rank":                 "Nova Pharma Policy",
 }
 
-# All flag column names (defines canonical order for output parquet)
 ALL_FLAGS = list(RULE_SEVERITY.keys())
 
-# Severity sets for fast lookup in compute_flag_summary()
-CRITICAL_FLAGS = {f for f, s in RULE_SEVERITY.items() if s == "critical"}
-HIGH_FLAGS     = {f for f, s in RULE_SEVERITY.items() if s == "high"}
-MEDIUM_FLAGS   = {f for f, s in RULE_SEVERITY.items() if s == "medium"}
+# Expected total HCPs in the feature store
+EXPECTED_ROWS = 97_011
 
 
-# ─── Load functions ───────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def load_rules() -> dict:
+def _col(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     """
-    Load thresholds from compliance/rules.json via get_rule().
+    Return df[col] if present, otherwise a zero-filled Series with a warning.
 
-    Returns dict keyed by rule_id: {effective_threshold, unit, chunk_id}.
-    Every threshold used in this file must go through this dict — never
-    hardcode numeric values.
+    Prevents KeyErrors when a feature is absent (e.g. on DuckDB dev where
+    Athena-only features are 0-filled or missing). Using a default of 0.0
+    makes all threshold comparisons fail safely (no false positives).
     """
-    rule_ids = list(set(RULE_TO_POLICY.values()) - {"Nova Pharma Policy"})
-    rules = {}
-    for rule_id in rule_ids:
-        r = get_rule(rule_id)
-        rules[rule_id] = {
-            "effective_threshold": r["effective_threshold"],
-            "unit":                r["unit"],
-            "chunk_id":            r["sources"][0]["chunk_id"] if r.get("sources") else None,
-        }
-    logger.info("Loaded {} rule thresholds from rules.json", len(rules))
-    for rid, rv in sorted(rules.items()):
-        logger.debug("  {}: {} {}", rid, rv["effective_threshold"], rv["unit"])
-    return rules
-
-
-def load_feature_store() -> pd.DataFrame:
-    """
-    Load feature_store.parquet — HCP spine and unscaled derived columns.
-
-    Provides:
-      - hcp_id (join key — 97,011 rows)
-      - Unscaled binary columns: at_cap_flag, near_cap_flag,
-        multi_year_increasing_flag, np_escalating_rank
-      - Unscaled pct_ event columns: pct_events_over_fmv,
-        pct_events_low_attendance, pct_events_rapid_repeat,
-        pct_events_missing_attestation
-      - Unscaled event flag counts: speaker_fee_over_fmv_flag_sum,
-        repeat_speaker_flag_sum, high_repeat_speaker_flag_sum
-      - Unscaled _real ordinals: years_near_cap_real, years_at_cap_real
-
-    NOTE: Scaled continuous columns (spend_2022, meal_breach_rate, etc.)
-    are NOT used here — raw values from DuckDB are used instead.
-    """
-    path = Path(FEATURE_STORE_PATH)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Feature store not found at {path}. "
-            "Run features/feature_store.py first."
-        )
-    df = pd.read_parquet(path)
-    df["hcp_id"] = df["hcp_id"].astype(str)
-    logger.info("Feature store: {} rows × {} columns", len(df), len(df.columns))
-    return df
-
-
-def load_raw_interaction_features() -> pd.DataFrame:
-    """
-    Load raw (unscaled) interaction metrics from mart_hcp_risk_profile (DuckDB).
-
-    Provides raw values needed for threshold comparisons:
-      meal_breach_rate, max_meal_overage_pct, avg_meal_cost,
-      interactions_with_vague_rationale, total_interactions,
-      fmv_compliance_rate, pct_speaking_fee
-
-    These are the pre-scaling values — mandatory for rule threshold comparisons
-    since the feature_store versions are RobustScaler-transformed.
-    """
-    logger.info("Loading raw interaction metrics from mart_hcp_risk_profile (DuckDB)")
-    try:
-        con = duckdb.connect(DUCKDB_PATH, read_only=True)
-    except Exception as e:
-        logger.error("DuckDB connection failed: {}", e)
-        raise
-
-    query = """
-        SELECT
-            hcp_id,
-            meal_breach_rate,
-            max_meal_overage_pct,
-            avg_meal_cost,
-            interactions_with_vague_rationale,
-            total_interactions,
-            fmv_compliance_rate,
-            pct_speaking_fee
-        FROM mart_hcp_risk_profile
-    """
-    df = con.execute(query).df()
-    con.close()
-
-    df["hcp_id"] = df["hcp_id"].astype(str)
-    # Suffix to distinguish from potentially scaled versions in feature_store
-    df = df.rename(columns={
-        col: f"{col}_raw"
-        for col in df.columns
-        if col != "hcp_id"
-    })
-    logger.info("Raw interaction features: {} rows", len(df))
-    return df
-
-
-def load_raw_spend_features() -> pd.DataFrame:
-    """
-    Load per-year cap booleans and raw spend from mart_benchmark (DuckDB).
-
-    Provides:
-      - at_cap_2022/2023/2024: boolean per-year cap breach flags
-      - near_cap_2024: boolean near-cap flag for 2024
-      - top_rep_concentration_pct: raw rep concentration ratio
-        (NOTE: 0.0 on DuckDB dev — CMS rep data is Athena-only;
-         flag_rep_concentration will be False on dev by design)
-
-    at_cap/near_cap per-year columns are not in feature_store.parquet and
-    cannot be derived from spend columns there (scaled), hence this load.
-    """
-    logger.info("Loading raw per-year cap flags from mart_benchmark (DuckDB)")
-    try:
-        con = duckdb.connect(DUCKDB_PATH, read_only=True)
-    except Exception as e:
-        logger.error("DuckDB connection failed: {}", e)
-        raise
-
-    query = """
-        SELECT
-            hcp_id,
-            -- Per-year cap boolean flags (not in feature_store.parquet)
-            at_cap_2022,
-            at_cap_2023,
-            at_cap_2024,
-            near_cap_2024,
-            -- Rep concentration (raw; 0.0 on DuckDB dev — CMS data Athena-only)
-            CAST(0.0 AS DOUBLE) AS top_rep_concentration_pct_raw
-        FROM mart_benchmark
-    """
-    df = con.execute(query).df()
-    con.close()
-
-    df["hcp_id"] = df["hcp_id"].astype(str)
-    # Cast booleans to int for consistency with feature_store
-    for col in ("at_cap_2022", "at_cap_2023", "at_cap_2024", "near_cap_2024"):
-        df[col] = df[col].astype("Int64").fillna(0).astype(int)
-
-    logger.info("Raw spend features: {} rows", len(df))
-    return df
-
-
-def merge_inputs(
-    fs_df: pd.DataFrame,
-    interaction_df: pd.DataFrame,
-    spend_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Merge all data sources on hcp_id.
-
-    feature_store is the 97,011-row spine.
-    All sources are LEFT JOINed — missing rows get NaN → filled with 0.
-    """
-    df = fs_df.set_index("hcp_id")
-    df = df.join(interaction_df.set_index("hcp_id"), how="left")
-    df = df.join(spend_df.set_index("hcp_id"), how="left")
-    df = df.reset_index()
-
-    # Fill nulls from joins (non-speaker HCPs, HCPs with no interaction data)
-    raw_cols = [c for c in df.columns if c.endswith("_raw")]
-    df[raw_cols] = df[raw_cols].fillna(0.0)
-    for col in ("at_cap_2022", "at_cap_2023", "at_cap_2024", "near_cap_2024"):
-        if col in df.columns:
-            df[col] = df[col].fillna(0).astype(int)
-
-    logger.info("Merged inputs: {} rows × {} columns", len(df), len(df.columns))
-    return df
-
-
-# ─── Rule application ─────────────────────────────────────────────────────────
-
-def _col(df: pd.DataFrame, name: str, default=0) -> pd.Series:
-    """Return column or a default-filled Series if absent. Logs missing columns."""
-    if name in df.columns:
-        return df[name]
-    logger.warning("Column '{}' not found — defaulting to {}", name, default)
+    if col in df.columns:
+        return df[col].fillna(default)
+    logger.warning("Column '{}' missing from feature store — defaulting to {}", col, default)
     return pd.Series(default, index=df.index, dtype=float)
 
 
-def apply_meal_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+# ─── Load rules ───────────────────────────────────────────────────────────────
+
+def load_rules() -> dict[str, float]:
     """
-    Apply meal-related compliance rules.
+    Load compliance/rules.json and build a {rule_id: effective_threshold} lookup.
 
-    MEAL_003 ($100 Nova Pharma dinner ceiling):
-      flag_meal_limit_breach:  any meal over the per-meal limit
-      flag_meal_chronic_breach: > 10% of meals over limit
-      flag_meal_overage_severe: any single meal > 50% over limit ($150+)
+    Every threshold in this module is fetched via get_rule() — never hardcoded.
+    This ensures threshold changes in rules.json propagate automatically.
 
-    Uses meal_breach_rate_raw and max_meal_overage_pct_raw from
-    mart_hcp_risk_profile (unscaled). Values are 0.0 on DuckDB dev since
-    meal cost data comes from CMS Open Payments (Athena-only).
+    Returns:
+        dict mapping rule_id → effective_threshold (numeric)
     """
-    # Thresholds from rules.json via get_rule()
-    # MEAL_003 effective_threshold = 100 (USD per meal)
-    # We use rate/pct derivations rather than raw dollar thresholds here because
-    # meal_breach_rate and max_meal_overage_pct are pre-computed in the mart.
-    chronic_breach_rate  = 0.10   # > 10% of meals over limit (internal policy threshold)
-    severe_overage_pct   = 0.50   # any single meal > 50% above the $100 cap = $150+
+    rules_path = Path(RULES_PATH)
+    if not rules_path.exists():
+        raise FileNotFoundError(f"Rules file not found: {rules_path}")
 
-    meal_breach_rate  = _col(df, "meal_breach_rate_raw")
-    max_meal_overage  = _col(df, "max_meal_overage_pct_raw")
+    with open(rules_path) as f:
+        raw = json.load(f)
 
-    df["flag_meal_limit_breach"]   = (meal_breach_rate > 0).astype(bool)
-    df["flag_meal_chronic_breach"] = (meal_breach_rate > chronic_breach_rate).astype(bool)
-    df["flag_meal_overage_severe"] = (max_meal_overage > severe_overage_pct).astype(bool)
+    rule_ids = [r["rule_id"] for r in raw["rules"]]
+    thresholds: dict[str, float] = {}
+    for rule_id in rule_ids:
+        try:
+            thresholds[rule_id] = get_rule(rule_id)["effective_threshold"]
+        except (KeyError, TypeError) as e:
+            logger.warning("Could not load threshold for {}: {} — skipping", rule_id, e)
 
-    logger.debug(
-        "Meal flags: limit_breach={}, chronic={}, severe_overage={}",
+    logger.info(
+        "Rules loaded: {} rules from {} | thresholds: {}",
+        len(thresholds),
+        rules_path,
+        thresholds,
+    )
+    return thresholds
+
+
+# ─── Load feature store ───────────────────────────────────────────────────────
+
+def load_feature_store() -> pd.DataFrame:
+    """
+    Load features/outputs/feature_store.parquet.
+
+    Raises FileNotFoundError if absent (run features/feature_store.py first).
+    """
+    fs_path = Path(FEATURE_STORE_PATH)
+    if not fs_path.exists():
+        raise FileNotFoundError(
+            f"Feature store not found: {fs_path}\n"
+            "Run features/feature_store.py first (Athena + DuckDB required)."
+        )
+    df = pd.read_parquet(fs_path)
+    logger.info("Feature store loaded: {} rows × {} columns", len(df), len(df.columns))
+    return df
+
+
+# ─── Rule group functions ─────────────────────────────────────────────────────
+
+def apply_meal_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
+    """
+    Apply meal cost limit rules (MEAL_003: $100 Nova Pharma dinner ceiling).
+
+    Columns used from feature_store:
+      meal_breach_rate      — fraction of meals exceeding the per-meal limit
+      max_meal_overage_pct  — worst single meal overage as fraction of limit
+
+    Flags:
+      flag_meal_limit_breach    (medium)  — any meal over limit
+      flag_meal_chronic_breach  (high)    — > 10% of meals over limit
+      flag_meal_overage_severe  (high)    — worst meal > 50% over limit ($150+)
+    """
+    # MEAL_003: $100 limit. Chronic = > 10% of meals. Severe = > 50% overage.
+    chronic_threshold = 0.10
+    severe_threshold  = 0.50
+
+    meal_breach_rate     = _col(df, "meal_breach_rate")
+    max_meal_overage_pct = _col(df, "max_meal_overage_pct")
+
+    df["flag_meal_limit_breach"]   = (meal_breach_rate > 0.0).astype(bool)
+    df["flag_meal_chronic_breach"] = (meal_breach_rate > chronic_threshold).astype(bool)
+    df["flag_meal_overage_severe"] = (max_meal_overage_pct > severe_threshold).astype(bool)
+
+    logger.info(
+        "Meal rules applied: {} breaches | {} chronic | {} severe",
         df["flag_meal_limit_breach"].sum(),
         df["flag_meal_chronic_breach"].sum(),
         df["flag_meal_overage_severe"].sum(),
@@ -342,33 +229,59 @@ def apply_meal_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
     return df
 
 
-def apply_cap_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+def apply_cap_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     """
-    Apply annual compensation cap rules.
+    Apply annual compensation cap rules (COMP_001: $75,000 cap; COMP_003: 80% threshold).
 
-    COMP_001 ($75,000 annual cap):
-      flag_annual_cap_breach_2022/2023/2024: cap exceeded in that specific year
-      Uses per-year boolean flags from mart_benchmark (at_cap_2022/2023/2024).
-      These are pre-computed in the dbt mart from raw spend values.
-      All False on DuckDB dev (CMS spend Athena-only — by design).
+    Cap threshold:
+      COMP_001 effective_threshold = 75000 (USD)
 
-    COMP_001 + COMP_003 (80% of cap = $60,000 near-cap threshold):
-      flag_near_cap_2024: near-cap in 2024 specifically
-      flag_chronic_near_cap: near-cap in 2+ of 3 years
-      Uses years_near_cap_real from feature_store (computed by
-      compute_real_benchmarks() from raw spend — also 0 on dev).
+    Near-cap threshold:
+      COMP_003 effective_threshold = 0.80 (fraction of annual cap)
+      → near_cap_usd = 0.80 × 75000 = 60000
+
+    Columns used from feature_store:
+      annual_cap_pct_used_2022/2023/2024  — spend_YYYY / ANNUAL_CAP.
+          These are RobustScaled in the spend matrix but logically represent
+          fraction of cap used. Values >= 1.0 → cap was breached.
+          Values >= near_cap_fraction → near-cap threshold was met.
+      years_near_cap_real  — count of years where spend >= 60K (computed by
+          feature_store.py compute_real_benchmarks from raw Athena spend).
+          Falls back to years_near_cap (dbt, 0-filled on dev).
+
+    Flags:
+      flag_annual_cap_breach_2022/2023/2024  (critical) — spend >= $75K in that year
+      flag_near_cap_2024                     (high)     — spend >= $60K in 2024
+      flag_chronic_near_cap                  (high)     — near-cap in 2+ of 3 years
     """
-    df["flag_annual_cap_breach_2022"] = (_col(df, "at_cap_2022") == 1).astype(bool)
-    df["flag_annual_cap_breach_2023"] = (_col(df, "at_cap_2023") == 1).astype(bool)
-    df["flag_annual_cap_breach_2024"] = (_col(df, "at_cap_2024") == 1).astype(bool)
-    df["flag_near_cap_2024"]          = (_col(df, "near_cap_2024") == 1).astype(bool)
+    cap_threshold      = float(rules.get("COMP_001", 75_000))
+    near_cap_fraction  = float(rules.get("COMP_003", 0.80))
 
-    # years_near_cap_real: 0-3 integer count of years near $60K threshold
-    df["flag_chronic_near_cap"] = (_col(df, "years_near_cap_real") >= 2).astype(bool)
+    # annual_cap_pct_used_* = spend_YYYY / ANNUAL_CAP.
+    # >= 1.0 means the $75K cap was reached or exceeded.
+    # >= near_cap_fraction (0.80) means $60K threshold reached.
+    cap_pct_2022 = _col(df, "annual_cap_pct_used_2022")
+    cap_pct_2023 = _col(df, "annual_cap_pct_used_2023")
+    cap_pct_2024 = _col(df, "annual_cap_pct_used_2024")
 
-    logger.debug(
-        "Cap flags: breach_2022={}, breach_2023={}, breach_2024={}, "
-        "near_cap_2024={}, chronic_near_cap={}",
+    df["flag_annual_cap_breach_2022"] = (cap_pct_2022 >= 1.0).astype(bool)
+    df["flag_annual_cap_breach_2023"] = (cap_pct_2023 >= 1.0).astype(bool)
+    df["flag_annual_cap_breach_2024"] = (cap_pct_2024 >= 1.0).astype(bool)
+    df["flag_near_cap_2024"]          = (cap_pct_2024 >= near_cap_fraction).astype(bool)
+
+    # Chronic near-cap: near-cap in 2+ of 3 years.
+    # Prefer years_near_cap_real (computed from raw Athena spend in feature_store.py).
+    # Fall back to years_near_cap (dbt column, 0-filled on DuckDB dev).
+    if "years_near_cap_real" in df.columns:
+        years_near_cap = _col(df, "years_near_cap_real")
+    else:
+        years_near_cap = _col(df, "years_near_cap")
+
+    df["flag_chronic_near_cap"] = (years_near_cap >= 2).astype(bool)
+
+    logger.info(
+        "Cap rules applied: breach_2022={} | breach_2023={} | breach_2024={} "
+        "| near_cap_2024={} | chronic_near_cap={}",
         df["flag_annual_cap_breach_2022"].sum(),
         df["flag_annual_cap_breach_2023"].sum(),
         df["flag_annual_cap_breach_2024"].sum(),
@@ -378,45 +291,51 @@ def apply_cap_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
     return df
 
 
-def apply_speaker_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+def apply_speaker_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     """
-    Apply speaker program compliance rules.
+    Apply speaker program rules (SPEAKER_001–005).
 
-    Uses unscaled event flag counts and pct_ columns from feature_store.parquet
-    (event_features.py outputs these raw — they are in DO_NOT_SCALE).
-    HCPs with no speaker events have 0.0 for all pct_ columns and 0 for
-    all flag_sum counts — correctly producing False for all speaker flags.
+    Non-speaker HCPs have 0-filled event feature columns in feature_store.
+    All speaker flag conditions evaluate to False when the relevant count = 0,
+    so non-speakers are correctly unflagged.
 
-    SPEAKER_001 (FMV ceiling $3,500):
-      flag_speaker_fmv_breach:  any event where speaker fee > FMV
-      flag_speaker_fmv_chronic: > 25% of events over FMV
+    Columns used from feature_store:
+      speaker_fee_over_fmv_flag_sum   — count of events where fee > $3,500 FMV
+      pct_events_over_fmv             — fraction of events over FMV
+      repeat_speaker_flag_sum         — count of events where HCP was repeat speaker
+      high_repeat_speaker_flag_sum    — count of events flagged for > 6 events/yr
+      pct_events_low_attendance       — fraction of events with < 3 attendees
+      pct_events_rapid_repeat         — fraction of events within 30 days of prior
 
-    SPEAKER_002 (> 6 events/year = high repeat):
-      flag_high_repeat_speaker: any event triggering high repeat flag
-
-    SPEAKER_003 (> 6 events/year by effective_threshold in rules.json):
-      flag_repeat_speaker: any event triggering repeat speaker flag
-
-    SPEAKER_004 (min 3 attendees):
-      flag_low_attendance_pattern: > 25% of events had < 3 attendees
-
-    SPEAKER_005 (< 30 days between events):
-      flag_rapid_repeat_pattern: > 20% of events were rapid repeats
+    Flags:
+      flag_speaker_fmv_breach         (high)     — any event over FMV ceiling
+      flag_speaker_fmv_chronic        (critical) — > 25% of events over FMV
+      flag_repeat_speaker             (medium)   — any repeat speaker event (> 3/yr)
+      flag_high_repeat_speaker        (high)     — any high-repeat event (> 6/yr)
+      flag_low_attendance_pattern     (high)     — > 25% of events with < 3 attendees
+      flag_rapid_repeat_pattern       (medium)   — > 20% of events within 30 days
     """
-    fmv_chronic_pct          = 0.25   # > 25% of events over FMV ceiling
-    low_attendance_pct       = 0.25   # > 25% of events with < 3 attendees
-    rapid_repeat_pct         = 0.20   # > 20% of events < 30 days apart
+    fmv_chronic_threshold      = 0.25
+    low_attendance_threshold   = 0.25
+    rapid_repeat_threshold     = 0.20
 
-    df["flag_speaker_fmv_breach"]    = (_col(df, "speaker_fee_over_fmv_flag_sum") > 0).astype(bool)
-    df["flag_speaker_fmv_chronic"]   = (_col(df, "pct_events_over_fmv") > fmv_chronic_pct).astype(bool)
-    df["flag_repeat_speaker"]        = (_col(df, "repeat_speaker_flag_sum") > 0).astype(bool)
-    df["flag_high_repeat_speaker"]   = (_col(df, "high_repeat_speaker_flag_sum") > 0).astype(bool)
-    df["flag_low_attendance_pattern"]= (_col(df, "pct_events_low_attendance") > low_attendance_pct).astype(bool)
-    df["flag_rapid_repeat_pattern"]  = (_col(df, "pct_events_rapid_repeat") > rapid_repeat_pct).astype(bool)
+    speaker_fee_over_fmv_sum   = _col(df, "speaker_fee_over_fmv_flag_sum")
+    pct_over_fmv               = _col(df, "pct_events_over_fmv")
+    repeat_speaker_sum         = _col(df, "repeat_speaker_flag_sum")
+    high_repeat_speaker_sum    = _col(df, "high_repeat_speaker_flag_sum")
+    pct_low_attendance         = _col(df, "pct_events_low_attendance")
+    pct_rapid_repeat           = _col(df, "pct_events_rapid_repeat")
 
-    logger.debug(
-        "Speaker flags: fmv_breach={}, fmv_chronic={}, repeat={}, "
-        "high_repeat={}, low_attendance={}, rapid_repeat={}",
+    df["flag_speaker_fmv_breach"]      = (speaker_fee_over_fmv_sum > 0).astype(bool)
+    df["flag_speaker_fmv_chronic"]     = (pct_over_fmv > fmv_chronic_threshold).astype(bool)
+    df["flag_repeat_speaker"]          = (repeat_speaker_sum > 0).astype(bool)
+    df["flag_high_repeat_speaker"]     = (high_repeat_speaker_sum > 0).astype(bool)
+    df["flag_low_attendance_pattern"]  = (pct_low_attendance > low_attendance_threshold).astype(bool)
+    df["flag_rapid_repeat_pattern"]    = (pct_rapid_repeat > rapid_repeat_threshold).astype(bool)
+
+    logger.info(
+        "Speaker rules applied: fmv_breach={} | fmv_chronic={} | repeat={} "
+        "| high_repeat={} | low_attendance={} | rapid_repeat={}",
         df["flag_speaker_fmv_breach"].sum(),
         df["flag_speaker_fmv_chronic"].sum(),
         df["flag_repeat_speaker"].sum(),
@@ -427,70 +346,72 @@ def apply_speaker_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
     return df
 
 
-def apply_attestation_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+def apply_attestation_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     """
-    Apply attestation and documentation compliance rules.
+    Apply attestation and documentation rules (ATTEST_001–003).
 
-    ATTEST_001 (80% minimum signed attestation rate per event):
-      flag_missing_attestation: at least one event had < 80% signed
-          Implementation: pct_events_missing_attestation > 0
-          (pct_events_missing_attestation counts events below the 80% floor)
-      flag_chronic_missing_attestation: > 25% of events below the attestation floor
+    ATTEST_001: Signed attestation required from ≥ 80% of attendees per event.
+    ATTEST_002: Business rationale required for all HCP interactions.
+    ATTEST_003: FMV documentation required for all interactions.
 
-    Uses unscaled pct_events_missing_attestation from feature_store.parquet
-    (computed from event flag counts in event_features.py — not scaled).
+    Columns used from feature_store:
+      attendees_signed_pct_min        — worst-event signed fraction (min across events)
+      pct_events_missing_attestation  — fraction of events below 80% signed threshold
+
+    Flags:
+      flag_missing_attestation              (medium) — worst event below 80% signed
+      flag_chronic_missing_attestation      (high)   — > 25% of events missing attestation
     """
-    attest_threshold = float(rules["ATTEST_001"]["effective_threshold"])  # 0.80
-    chronic_pct      = 0.25   # > 25% of events missing attestation
+    attest_threshold         = float(rules.get("ATTEST_001", 0.80))
+    chronic_attest_threshold = 0.25
 
-    # pct_events_missing_attestation: fraction of events where attendees_signed_pct < attest_threshold
-    # > 0 means at least one event had insufficient attestation signatures
-    pct_missing = _col(df, "pct_events_missing_attestation")
+    attendees_signed_min    = _col(df, "attendees_signed_pct_min", default=1.0)
+    pct_missing_attestation = _col(df, "pct_events_missing_attestation")
 
-    df["flag_missing_attestation"]          = (pct_missing > 0).astype(bool)
-    df["flag_chronic_missing_attestation"]  = (pct_missing > chronic_pct).astype(bool)
+    df["flag_missing_attestation"]          = (attendees_signed_min < attest_threshold).astype(bool)
+    df["flag_chronic_missing_attestation"]  = (pct_missing_attestation > chronic_attest_threshold).astype(bool)
 
-    logger.debug(
-        "Attestation flags: missing={}, chronic_missing={}",
+    logger.info(
+        "Attestation rules applied: missing={} | chronic_missing={}",
         df["flag_missing_attestation"].sum(),
         df["flag_chronic_missing_attestation"].sum(),
     )
     return df
 
 
-def apply_interaction_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+def apply_interaction_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     """
-    Apply interaction documentation and FMV compliance rules.
+    Apply interaction documentation rules (ATTEST_002 vague rationale; ATTEST_003 FMV).
 
-    Uses raw values from mart_hcp_risk_profile (unscaled).
+    Columns used from feature_store:
+      interactions_with_vague_rationale  — count of interactions with vague rationale
+      total_interactions                 — total interaction count
+      fmv_compliance_rate                — fraction of interactions with FMV docs
 
-    ATTEST_002 (business rationale required):
-      flag_vague_rationale: any interaction with vague/empty rationale
-      flag_vague_rationale_pattern: > 20% of interactions have vague rationale
-          Vague rationale defined in mart_hcp_risk_profile as:
-          rationale IN ('', 'Meeting', 'Other') OR IS NULL
-
-    ATTEST_003 (FMV documentation required):
-      flag_fmv_non_compliance: < 90% of interactions are FMV compliant
+    Flags:
+      flag_vague_rationale         (medium) — any interaction with vague rationale
+      flag_vague_rationale_pattern (high)   — > 20% of interactions have vague rationale
+      flag_fmv_non_compliance      (high)   — FMV compliance rate < 90%
     """
-    vague_pattern_pct   = 0.20   # > 20% of interactions have vague rationale
-    fmv_compliance_min  = 0.90   # < 90% FMV compliant
+    vague_rate_threshold = 0.20
+    fmv_threshold        = float(rules.get("ATTEST_003", 0.90))
+    # ATTEST_003 is boolean in rules.json (True = required); 90% compliance minimum
+    # is the internal policy threshold applied here.
+    if not isinstance(fmv_threshold, float) or fmv_threshold > 1.0:
+        fmv_threshold = 0.90
 
-    vague_count      = _col(df, "interactions_with_vague_rationale_raw")
-    total_interact   = _col(df, "total_interactions_raw")
-    fmv_compliance   = _col(df, "fmv_compliance_rate_raw")
+    vague_count      = _col(df, "interactions_with_vague_rationale")
+    total_interact   = _col(df, "total_interactions", default=1.0)
+    fmv_compliance   = _col(df, "fmv_compliance_rate", default=1.0)
 
-    df["flag_vague_rationale"] = (vague_count > 0).astype(bool)
-
-    # Pattern: vague_count / total_interactions > 20%
-    # Divide safely: 0/0 = 0.0 (no interactions = no vague rationale)
     vague_rate = np.where(total_interact > 0, vague_count / total_interact, 0.0)
-    df["flag_vague_rationale_pattern"] = (vague_rate > vague_pattern_pct).astype(bool)
 
-    df["flag_fmv_non_compliance"] = (fmv_compliance < fmv_compliance_min).astype(bool)
+    df["flag_vague_rationale"]         = (vague_count > 0).astype(bool)
+    df["flag_vague_rationale_pattern"] = (pd.Series(vague_rate, index=df.index) > vague_rate_threshold).astype(bool)
+    df["flag_fmv_non_compliance"]      = (fmv_compliance < fmv_threshold).astype(bool)
 
-    logger.debug(
-        "Interaction flags: vague_rationale={}, vague_pattern={}, fmv_non_compliance={}",
+    logger.info(
+        "Interaction rules applied: vague={} | vague_pattern={} | fmv_non_compliance={}",
         df["flag_vague_rationale"].sum(),
         df["flag_vague_rationale_pattern"].sum(),
         df["flag_fmv_non_compliance"].sum(),
@@ -498,150 +419,162 @@ def apply_interaction_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
     return df
 
 
-def apply_concentration_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+def apply_concentration_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     """
-    Apply rep concentration and payment mix concentration rules.
+    Apply rep and fee concentration rules (Nova Pharma internal policy + SPEAKER_001/OIG).
 
-    flag_rep_concentration (Nova Pharma internal policy):
-      top_rep_concentration_pct > 0.80 — one rep accounts for > 80% of payments
-      NOTE: top_rep_concentration_pct_raw = 0.0 on DuckDB dev (CMS rep data
-      is Athena-only). This flag will be False on dev by design.
+    High rep concentration (one rep > 80% of payments) suggests potential
+    quid-pro-quo or insufficient program diversification.
 
-    flag_speaking_fee_concentration (SPEAKER_001 + OIG guidance):
-      pct_speaking_fee_raw > 0.70 — > 70% of total payments are speaking fees
-      Uses pct_speaking_fee from mart_hcp_risk_profile (raw, unscaled).
-      0.0 on DuckDB dev — CMS spend is Athena-only.
+    High speaking-fee concentration (> 70% of total payments are speaking fees)
+    raises OIG concerns about disguised compensation under the Anti-Kickback Statute.
+
+    Columns used from feature_store:
+      top_rep_concentration_pct  — fraction of total payments from the top rep
+      pct_speaking_fee           — fraction of total payments that are speaking fees
+
+    Flags:
+      flag_rep_concentration           (medium) — top rep > 80% of payments
+      flag_speaking_fee_concentration  (high)   — speaking fees > 70% of total payments
     """
-    rep_concentration_threshold   = 0.80   # one rep > 80% of payments
-    speaking_fee_concentration_pct = 0.70   # > 70% of payments are speaking fees
+    rep_conc_threshold  = 0.80
+    fee_conc_threshold  = 0.70
 
-    df["flag_rep_concentration"] = (
-        _col(df, "top_rep_concentration_pct_raw") > rep_concentration_threshold
-    ).astype(bool)
+    top_rep_conc  = _col(df, "top_rep_concentration_pct")
+    pct_speak_fee = _col(df, "pct_speaking_fee")
 
-    df["flag_speaking_fee_concentration"] = (
-        _col(df, "pct_speaking_fee_raw") > speaking_fee_concentration_pct
-    ).astype(bool)
+    df["flag_rep_concentration"]          = (top_rep_conc > rep_conc_threshold).astype(bool)
+    df["flag_speaking_fee_concentration"] = (pct_speak_fee > fee_conc_threshold).astype(bool)
 
-    logger.debug(
-        "Concentration flags: rep_concentration={}, speaking_fee={}",
+    logger.info(
+        "Concentration rules applied: rep_concentration={} | speaking_fee_concentration={}",
         df["flag_rep_concentration"].sum(),
         df["flag_speaking_fee_concentration"].sum(),
     )
     return df
 
 
-def apply_trend_rules(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+def apply_trend_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     """
-    Apply escalation and spend trend rules.
+    Apply escalation and peer-rank trend rules (Nova Pharma internal monitoring policy).
 
-    flag_escalating_spend (Nova Pharma internal monitoring):
-      multi_year_increasing_flag = 1 — spend increased every year 2022→2024
-      From hcp_spend_features.py SPEND_BINARY_FEATURES (unscaled 0/1).
+    Escalating spend (YoY increase 2022→2024) combined with escalating peer rank
+    signals a systematic increase in compliance risk, not a single-year anomaly.
+    These flags are medium severity on their own but critical in combination with
+    cap or FMV flags in scorer.py.
 
-    flag_escalating_rank (Nova Pharma internal monitoring):
-      np_escalating_rank = 1 — peer rank worsened both 2022→2023 and 2023→2024
-      From hcp_spend_features.py BENCHMARK_FEATURES loaded from mart_benchmark.
-      Encoded as 0/1 binary in feature_store.parquet (unscaled).
-      0 on DuckDB dev (spend = 0, all ranks = 0, no rank change).
+    Columns used from feature_store:
+      multi_year_increasing_flag  — 1 if spend increased in both 2022→2023 and 2023→2024
+      np_escalating_rank_real     — True/1 if peer rank worsened year-over-year
+                                    (computed by feature_store.py compute_real_benchmarks)
+
+    Flags:
+      flag_escalating_spend  (medium) — spend increased every year 2022→2024
+      flag_escalating_rank   (medium) — specialty peer rank worsened every year
     """
-    df["flag_escalating_spend"] = (
-        _col(df, "multi_year_increasing_flag") == 1
-    ).astype(bool)
+    multi_yr_flag       = _col(df, "multi_year_increasing_flag")
+    escalating_rank     = _col(df, "np_escalating_rank_real")
 
-    df["flag_escalating_rank"] = (
-        _col(df, "np_escalating_rank") == 1
-    ).astype(bool)
+    df["flag_escalating_spend"] = (multi_yr_flag == 1).astype(bool)
+    df["flag_escalating_rank"]  = (escalating_rank.astype(float) > 0).astype(bool)
 
-    logger.debug(
-        "Trend flags: escalating_spend={}, escalating_rank={}",
+    logger.info(
+        "Trend rules applied: escalating_spend={} | escalating_rank={}",
         df["flag_escalating_spend"].sum(),
         df["flag_escalating_rank"].sum(),
     )
     return df
 
 
-# ─── Summary computation ──────────────────────────────────────────────────────
+# ─── Summary ─────────────────────────────────────────────────────────────────
 
-def compute_flag_summary(df: pd.DataFrame) -> pd.DataFrame:
+def compute_flag_summary(flags_df: pd.DataFrame) -> pd.DataFrame:
     """
     Add summary columns to the flags DataFrame.
 
-    total_rule_flags:  count of True flags per HCP (0–23)
-    critical_flags:    count of critical severity flags
-    high_flags:        count of high severity flags
-    medium_flags:      count of medium severity flags
-    has_any_flag:      total_rule_flags > 0
-    has_critical_flag: critical_flags > 0
-    most_severe_flag:  'critical' | 'high' | 'medium' | 'none'
-    flagged_rule_ids:  comma-separated policy IDs that fired
-                       (e.g. "COMP_001,SPEAKER_001")
-                       Used for Phase 3 Policy Agent citation lookup.
+    Summary columns:
+      total_rule_flags   — count of True flags per HCP across all 23 rules
+      critical_flags     — count of critical-severity flags per HCP
+      high_flags         — count of high-severity flags per HCP
+      medium_flags       — count of medium-severity flags per HCP
+      has_any_flag       — bool: total_rule_flags > 0
+      has_critical_flag  — bool: critical_flags > 0
+      most_severe_flag   — 'critical' | 'high' | 'medium' | 'none'
+      flagged_rule_ids   — comma-separated policy rule IDs for fired flags
+                           e.g. "MEAL_003,COMP_001,SPEAKER_001"
+                           Used by Phase 3 Policy Agent for citation
+
+    Only columns present in ALL_FLAGS are counted.
     """
-    flag_cols = [c for c in ALL_FLAGS if c in df.columns]
+    flag_cols      = [c for c in ALL_FLAGS if c in flags_df.columns]
+    critical_flags = [c for c in flag_cols if RULE_SEVERITY.get(c) == "critical"]
+    high_flags     = [c for c in flag_cols if RULE_SEVERITY.get(c) == "high"]
+    medium_flags   = [c for c in flag_cols if RULE_SEVERITY.get(c) == "medium"]
 
-    df["total_rule_flags"] = df[flag_cols].sum(axis=1).astype(int)
+    flag_matrix = flags_df[flag_cols].astype(int)
 
-    critical_cols = [c for c in flag_cols if c in CRITICAL_FLAGS]
-    high_cols     = [c for c in flag_cols if c in HIGH_FLAGS]
-    medium_cols   = [c for c in flag_cols if c in MEDIUM_FLAGS]
+    flags_df["total_rule_flags"]  = flag_matrix.sum(axis=1)
+    flags_df["critical_flags"]    = flag_matrix[critical_flags].sum(axis=1) if critical_flags else 0
+    flags_df["high_flags"]        = flag_matrix[high_flags].sum(axis=1) if high_flags else 0
+    flags_df["medium_flags"]      = flag_matrix[medium_flags].sum(axis=1) if medium_flags else 0
+    flags_df["has_any_flag"]      = (flags_df["total_rule_flags"] > 0)
+    flags_df["has_critical_flag"] = (flags_df["critical_flags"] > 0)
 
-    df["critical_flags"] = (df[critical_cols].sum(axis=1).astype(int)
-                            if critical_cols else pd.Series(0, index=df.index))
-    df["high_flags"]     = (df[high_cols].sum(axis=1).astype(int)
-                            if high_cols else pd.Series(0, index=df.index))
-    df["medium_flags"]   = (df[medium_cols].sum(axis=1).astype(int)
-                            if medium_cols else pd.Series(0, index=df.index))
-
-    df["has_any_flag"]      = (df["total_rule_flags"] > 0)
-    df["has_critical_flag"] = (df["critical_flags"] > 0)
-
-    df["most_severe_flag"] = np.select(
-        [df["critical_flags"] > 0, df["high_flags"] > 0, df["medium_flags"] > 0],
+    flags_df["most_severe_flag"] = np.select(
+        [
+            flags_df["critical_flags"] > 0,
+            flags_df["high_flags"] > 0,
+            flags_df["medium_flags"] > 0,
+        ],
         ["critical", "high", "medium"],
         default="none",
     )
 
-    # flagged_rule_ids: collect policy IDs for each fired flag
-    def _get_policy_ids(row: pd.Series) -> str:
-        fired_policies = sorted({
+    # Build comma-separated policy rule_ids for each HCP's fired flags
+    def _flagged_rule_ids(row: pd.Series) -> str:
+        fired = [
             RULE_TO_POLICY[flag]
             for flag in flag_cols
-            if row.get(flag, False) is True or row.get(flag, 0) == 1
-        })
-        return ",".join(fired_policies) if fired_policies else ""
+            if row[flag]
+        ]
+        # deduplicate while preserving order
+        seen = set()
+        unique_fired = []
+        for r in fired:
+            if r not in seen:
+                seen.add(r)
+                unique_fired.append(r)
+        return ",".join(unique_fired)
 
-    df["flagged_rule_ids"] = df.apply(_get_policy_ids, axis=1)
+    flags_df["flagged_rule_ids"] = flags_df[flag_cols].apply(_flagged_rule_ids, axis=1)
 
     logger.info(
-        "Summary: {} HCPs flagged ({:.1f}%) | {} critical | {} high | {} medium",
-        df["has_any_flag"].sum(),
-        df["has_any_flag"].mean() * 100,
-        df["has_critical_flag"].sum(),
-        (df["high_flags"] > 0).sum(),
-        (df["medium_flags"] > 0).sum(),
+        "Flag summary: {} HCPs with any flag ({:.1f}%) | {} critical ({:.1f}%)",
+        flags_df["has_any_flag"].sum(),
+        flags_df["has_any_flag"].mean() * 100,
+        flags_df["has_critical_flag"].sum(),
+        flags_df["has_critical_flag"].mean() * 100,
     )
-    return df
+    return flags_df
 
 
 # ─── Validation ───────────────────────────────────────────────────────────────
 
 def validate_flags(flags_df: pd.DataFrame) -> bool:
     """
-    Validate the rule flags output.
+    Validate the flags DataFrame before saving.
 
     Checks:
-      - Row count == 97,011
-      - All flag columns are boolean dtype
-      - No nulls in any flag column
-      - total_rule_flags range [0, 23]
-      - has_any_flag rate in [5%, 50%] (sanity range)
-      - has_critical_flag rate < 5% (critical = cap breach, FMV chronic — rare)
+      1. Row count == 97,011
+      2. All flag columns are boolean dtype
+      3. No nulls in any flag column
+      4. total_rule_flags range [0, 23]
+      5. has_any_flag rate in [5%, 50%]
+      6. has_critical_flag rate < 5% (critical flags should be rare)
 
-    Raises ValueError if critical checks fail.
+    Logs PASS/FAIL per check. Raises ValueError if any check fails.
     Returns True if all pass.
     """
-    EXPECTED_ROWS = 97_011
     checks_passed = 0
     checks_failed = 0
 
@@ -658,40 +591,53 @@ def validate_flags(flags_df: pd.DataFrame) -> bool:
             logger.error(msg)
             checks_failed += 1
 
-    _check("Row count", len(flags_df) == EXPECTED_ROWS,
-           f"{len(flags_df)} (expected {EXPECTED_ROWS})")
+    _check(
+        "Row count",
+        len(flags_df) == EXPECTED_ROWS,
+        f"{len(flags_df)} (expected {EXPECTED_ROWS})",
+    )
 
-    # All flag columns are boolean
     flag_cols = [c for c in ALL_FLAGS if c in flags_df.columns]
     non_bool  = [c for c in flag_cols if flags_df[c].dtype != bool]
-    _check("All flag columns are bool dtype", len(non_bool) == 0,
-           f"Non-bool: {non_bool}")
+    _check(
+        "All flag columns are bool dtype",
+        len(non_bool) == 0,
+        f"Non-bool: {non_bool}" if non_bool else "",
+    )
 
-    # No nulls in flag columns
-    flag_nulls = flags_df[flag_cols].isnull().sum().sum()
-    _check("No nulls in flag columns", flag_nulls == 0, f"{flag_nulls} nulls")
+    null_totals = {c: int(flags_df[c].isnull().sum()) for c in flag_cols if flags_df[c].isnull().any()}
+    _check(
+        "No nulls in flag columns",
+        len(null_totals) == 0,
+        f"Nulls: {null_totals}" if null_totals else "",
+    )
 
-    # total_rule_flags in valid range
-    max_flags = flags_df["total_rule_flags"].max()
-    min_flags = flags_df["total_rule_flags"].min()
-    _check("total_rule_flags range [0, 23]",
-           min_flags >= 0 and max_flags <= len(ALL_FLAGS),
-           f"range [{min_flags}, {max_flags}]")
+    max_flags = int(flags_df["total_rule_flags"].max())
+    _check(
+        f"total_rule_flags in [0, {len(ALL_FLAGS)}]",
+        max_flags <= len(ALL_FLAGS),
+        f"max = {max_flags}",
+    )
 
-    # has_any_flag rate in sanity range
-    flag_rate = flags_df["has_any_flag"].mean()
-    _check("has_any_flag rate in [5%, 50%]",
-           0.05 <= flag_rate <= 0.50,
-           f"{flag_rate:.1%}")
+    any_flag_rate = float(flags_df["has_any_flag"].mean())
+    _check(
+        "has_any_flag rate in [5%, 50%]",
+        0.05 <= any_flag_rate <= 0.50,
+        f"{any_flag_rate:.3f} ({any_flag_rate * 100:.1f}%)",
+    )
 
-    # has_critical_flag rate < 5%
-    critical_rate = flags_df["has_critical_flag"].mean()
-    _check("has_critical_flag rate < 5%",
-           critical_rate < 0.05,
-           f"{critical_rate:.1%}")
+    critical_rate = float(flags_df["has_critical_flag"].mean())
+    _check(
+        "has_critical_flag rate < 5%",
+        critical_rate < 0.05,
+        f"{critical_rate:.3f} ({critical_rate * 100:.1f}%)",
+    )
 
-    logger.info("Validation: {}/{} checks passed", checks_passed, checks_passed + checks_failed)
-
+    logger.info(
+        "Validation: {}/{} checks passed",
+        checks_passed,
+        checks_passed + checks_failed,
+    )
     if checks_failed > 0:
         raise ValueError(
             f"Flag validation failed: {checks_failed} check(s) — see logs above"
@@ -699,21 +645,20 @@ def validate_flags(flags_df: pd.DataFrame) -> bool:
     return True
 
 
-# ─── Output ───────────────────────────────────────────────────────────────────
+# ─── Save outputs ─────────────────────────────────────────────────────────────
 
 def save_outputs(flags_df: pd.DataFrame) -> dict:
     """
-    Save rule flags parquet and metadata JSON.
+    Save rule flags and metadata.
 
-    rule_flags.parquet contains:
-      - hcp_id (join key)
-      - One boolean column per rule flag (23 columns)
-      - Summary columns: total_rule_flags, critical_flags, high_flags,
-        medium_flags, has_any_flag, has_critical_flag, most_severe_flag,
-        flagged_rule_ids
+    models/outputs/rule_flags.parquet:
+        One row per HCP. Flag columns + summary columns.
+        Read by scorer.py (Task 2.10) for unified risk scoring.
 
-    rule_flags_metadata.json contains flag rates and rule summaries
-    for monitoring and audit trail.
+    models/outputs/rule_flags_metadata.json:
+        Rule counts, per-rule flag rates, severity distribution, generated_at.
+
+    Returns dict of output paths.
     """
     out_dir = Path(OUTPUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -721,37 +666,31 @@ def save_outputs(flags_df: pd.DataFrame) -> dict:
     flags_path = out_dir / "rule_flags.parquet"
     meta_path  = out_dir / "rule_flags_metadata.json"
 
-    # Output columns: hcp_id + all flags + summary columns
-    output_cols = ["hcp_id"] + ALL_FLAGS + [
-        "total_rule_flags", "critical_flags", "high_flags", "medium_flags",
-        "has_any_flag", "has_critical_flag", "most_severe_flag", "flagged_rule_ids",
-    ]
-    out_df = flags_df[[c for c in output_cols if c in flags_df.columns]]
-    out_df.to_parquet(flags_path, index=False)
-    logger.info("Saved rule flags: {} ({} rows)", flags_path, len(out_df))
+    flags_df.to_parquet(flags_path, index=False)
+    logger.info("Saved rule flags: {} ({} rows)", flags_path, len(flags_df))
 
-    flag_cols = [c for c in ALL_FLAGS if c in flags_df.columns]
-    flags_per_rule = {
-        flag: int(flags_df[flag].sum())
-        for flag in flag_cols
-    }
-    severity_distribution = {
-        sev: int((flags_df["most_severe_flag"] == sev).sum())
-        for sev in ("critical", "high", "medium", "none")
-    }
+    flag_cols    = [c for c in ALL_FLAGS if c in flags_df.columns]
+    flags_per_rule = {col: int(flags_df[col].sum()) for col in flag_cols}
+
+    severity_dist = flags_df["most_severe_flag"].value_counts().to_dict()
 
     metadata = {
         "generated_at":   datetime.now(timezone.utc).isoformat(),
         "total_hcps":     len(flags_df),
         "rules_applied":  len(flag_cols),
         "flag_summary": {
-            "has_any_flag":      int(flags_df["has_any_flag"].sum()),
+            "has_any_flag":     int(flags_df["has_any_flag"].sum()),
             "has_critical_flag": int(flags_df["has_critical_flag"].sum()),
-            "flag_rate":         float(flags_df["has_any_flag"].mean()),
-            "critical_rate":     float(flags_df["has_critical_flag"].mean()),
-            "flags_per_rule":    flags_per_rule,
+            "flag_rate":        float(flags_df["has_any_flag"].mean()),
+            "critical_rate":    float(flags_df["has_critical_flag"].mean()),
+            "flags_per_rule":   flags_per_rule,
         },
-        "severity_distribution": severity_distribution,
+        "severity_distribution": {
+            "critical": int(severity_dist.get("critical", 0)),
+            "high":     int(severity_dist.get("high", 0)),
+            "medium":   int(severity_dist.get("medium", 0)),
+            "none":     int(severity_dist.get("none", 0)),
+        },
     }
     with open(meta_path, "w") as f:
         json.dump(metadata, f, indent=2)
@@ -768,22 +707,16 @@ def save_outputs(flags_df: pd.DataFrame) -> dict:
 def main() -> None:
     start = time.time()
     logger.info("=" * 60)
-    logger.info("rule_based_flags.py — Phase 2 compliance rule engine")
-    logger.info("Rules: compliance/rules.json | Features: {}", FEATURE_STORE_PATH)
+    logger.info("rule_based_flags.py — Phase 2 compliance rule flags")
     logger.info("=" * 60)
 
-    # 1. Load thresholds
+    # 1. Load rule thresholds from rules.json
     rules = load_rules()
 
-    # 2. Load data
-    fs_df          = load_feature_store()
-    interaction_df = load_raw_interaction_features()
-    spend_df       = load_raw_spend_features()
+    # 2. Load feature store
+    df = load_feature_store()
 
-    # 3. Merge all inputs
-    df = merge_inputs(fs_df, interaction_df, spend_df)
-
-    # 4. Apply all rule groups
+    # 3. Apply all rule groups in order
     df = apply_meal_rules(df, rules)
     df = apply_cap_rules(df, rules)
     df = apply_speaker_rules(df, rules)
@@ -792,41 +725,49 @@ def main() -> None:
     df = apply_concentration_rules(df, rules)
     df = apply_trend_rules(df, rules)
 
-    # 5. Compute summary columns
+    # 4. Compute summary columns
     df = compute_flag_summary(df)
 
-    # 6. Validate
+    # 5. Validate
     validate_flags(df)
 
-    # 7. Save
+    # 6. Save
     output_paths = save_outputs(df)
 
     elapsed = time.time() - start
+
+    # ── Summary ──────────────────────────────────────────────────────────────
     flag_cols = [c for c in ALL_FLAGS if c in df.columns]
-
-    # Top 5 most triggered rules
-    top5 = sorted(
-        [(flag, int(df[flag].sum())) for flag in flag_cols],
-        key=lambda x: x[1],
-        reverse=True,
-    )[:5]
-
-    sev_dist = {
-        sev: int((df["most_severe_flag"] == sev).sum())
-        for sev in ("critical", "high", "medium", "none")
-    }
+    top5 = (
+        df[flag_cols]
+        .sum()
+        .sort_values(ascending=False)
+        .head(5)
+    )
 
     logger.info("")
     logger.info("─" * 60)
     logger.info("Complete.")
-    logger.info("  HCPs with any flag:      {} ({:.1f}%)",
-                df["has_any_flag"].sum(), df["has_any_flag"].mean() * 100)
-    logger.info("  HCPs with critical flag: {} ({:.1f}%)",
-                df["has_critical_flag"].sum(), df["has_critical_flag"].mean() * 100)
-    logger.info("  Top 5 rules triggered:")
-    for flag, count in top5:
-        logger.info("    {}: {} ({:.1f}%)", flag, count, count / len(df) * 100)
-    logger.info("  Severity distribution: {}", sev_dist)
+    logger.info(
+        "  HCPs with any flag:      {} ({:.1f}%)",
+        df["has_any_flag"].sum(),
+        df["has_any_flag"].mean() * 100,
+    )
+    logger.info(
+        "  HCPs with critical flag: {} ({:.1f}%)",
+        df["has_critical_flag"].sum(),
+        df["has_critical_flag"].mean() * 100,
+    )
+    logger.info("  Top 5 most triggered rules:")
+    for rule, count in top5.items():
+        logger.info("    {:40s}  {}", rule, count)
+    logger.info(
+        "  Severity distribution:   critical={} | high={} | medium={} | none={}",
+        (df["most_severe_flag"] == "critical").sum(),
+        (df["most_severe_flag"] == "high").sum(),
+        (df["most_severe_flag"] == "medium").sum(),
+        (df["most_severe_flag"] == "none").sum(),
+    )
     logger.info("  Output: {}/", OUTPUT_DIR)
     logger.info("  Time taken: {:.1f}s", elapsed)
     logger.info("─" * 60)
