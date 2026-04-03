@@ -2,6 +2,178 @@
 
 ---
 
+## Task 2.8 — rule_based_flags.py
+
+### 1. Task Overview and Purpose
+
+`rule_based_flags.py` is the rule-based anomaly detection module. It applies all 23 hard compliance rules from `compliance/rules.json` to produce a boolean flag matrix — one row per HCP, one column per rule — plus a severity summary per HCP.
+
+**Rule-based vs ML-based detection:**
+These two approaches are deliberately complementary:
+- **Rule-based flags** (this task): catch *known* violations — deterministic, auditable, threshold-driven. Each flag can be cited to a specific policy document chunk via `RULE_TO_POLICY`. Zero false negatives for known rules.
+- **Isolation Forest** (Task 2.9): catches *unknown* statistical anomalies — patterns that don't match specific rules but deviate from peer behavior. Surfaces novel compliance risks not yet codified in policy.
+
+Both feed into `scorer.py` (Task 2.10), which combines them into a unified risk score.
+
+**Why every threshold comes from rules.json:**
+Every numeric threshold in this file is fetched via `get_rule(rule_id)["effective_threshold"]`. This means:
+1. Threshold changes require only a `rules.json` update — no code edits
+2. The `business_rules_registry.py` pipeline (RAG + reconciliation) controls the canonical value
+3. Audit trails can trace every flag back through `rules.json` → policy document chunk
+
+**Policy traceability:**
+Each flag column maps to a `rule_id` in `RULE_TO_POLICY`. The `rule_id` maps to a `chunk_id` in `rules.json` (e.g. `"DOC_002_chunk_0001"`). The Phase 3 Policy Agent uses this chain to cite the original policy document section for each fired flag.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `models/rule_based_flags.py` | Rule-based compliance detection — 23 flags, severity summary, policy citation |
+| `models/outputs/.gitkeep` | Tracks output directory in git without committing generated files |
+
+**All 23 flags with severity and policy rule:**
+
+| Flag | Severity | Rule ID | Logic |
+|---|---|---|---|
+| `flag_meal_limit_breach` | medium | MEAL_003 | `meal_breach_rate_raw > 0` |
+| `flag_meal_chronic_breach` | high | MEAL_003 | `meal_breach_rate_raw > 0.10` |
+| `flag_meal_overage_severe` | high | MEAL_003 | `max_meal_overage_pct_raw > 0.50` |
+| `flag_annual_cap_breach_2022` | critical | COMP_001 | `at_cap_2022 == 1` |
+| `flag_annual_cap_breach_2023` | critical | COMP_001 | `at_cap_2023 == 1` |
+| `flag_annual_cap_breach_2024` | critical | COMP_001 | `at_cap_2024 == 1` |
+| `flag_near_cap_2024` | high | COMP_001 | `near_cap_2024 == 1` |
+| `flag_chronic_near_cap` | high | COMP_001 | `years_near_cap_real >= 2` |
+| `flag_speaker_fmv_breach` | high | SPEAKER_001 | `speaker_fee_over_fmv_flag_sum > 0` |
+| `flag_speaker_fmv_chronic` | critical | SPEAKER_001 | `pct_events_over_fmv > 0.25` |
+| `flag_repeat_speaker` | medium | SPEAKER_003 | `repeat_speaker_flag_sum > 0` |
+| `flag_high_repeat_speaker` | high | SPEAKER_002 | `high_repeat_speaker_flag_sum > 0` |
+| `flag_low_attendance_pattern` | high | SPEAKER_004 | `pct_events_low_attendance > 0.25` |
+| `flag_rapid_repeat_pattern` | medium | SPEAKER_005 | `pct_events_rapid_repeat > 0.20` |
+| `flag_missing_attestation` | medium | ATTEST_001 | `pct_events_missing_attestation > 0` |
+| `flag_chronic_missing_attestation` | high | ATTEST_001 | `pct_events_missing_attestation > 0.25` |
+| `flag_vague_rationale` | medium | ATTEST_002 | `interactions_with_vague_rationale_raw > 0` |
+| `flag_vague_rationale_pattern` | high | ATTEST_002 | `vague_count / total_interactions > 0.20` |
+| `flag_fmv_non_compliance` | high | ATTEST_003 | `fmv_compliance_rate_raw < 0.90` |
+| `flag_rep_concentration` | medium | Nova Pharma Policy | `top_rep_concentration_pct_raw > 0.80` |
+| `flag_speaking_fee_concentration` | high | SPEAKER_001 | `pct_speaking_fee_raw > 0.70` |
+| `flag_escalating_spend` | medium | Nova Pharma Policy | `multi_year_increasing_flag == 1` |
+| `flag_escalating_rank` | medium | Nova Pharma Policy | `np_escalating_rank == 1` |
+
+**10 functions:**
+
+| Function | What it does |
+|---|---|
+| `load_rules()` | Fetches all rule thresholds via `get_rule()`. Returns dict keyed by rule_id |
+| `load_feature_store()` | Loads `feature_store.parquet` — HCP spine + unscaled binary/pct/ordinal columns |
+| `load_raw_interaction_features()` | Reads `mart_hcp_risk_profile` from DuckDB — raw meal, FMV, rationale metrics with `_raw` suffix |
+| `load_raw_spend_features()` | Reads `mart_benchmark` from DuckDB — per-year `at_cap_*`, `near_cap_2024` booleans |
+| `merge_inputs(fs_df, interaction_df, spend_df)` | LEFT JOIN all sources on `hcp_id`. Fills nulls with 0 |
+| `apply_meal_rules(df, rules)` | 3 meal flags from `_raw` interaction metrics |
+| `apply_cap_rules(df, rules)` | 5 cap flags from mart_benchmark booleans + `years_near_cap_real` |
+| `apply_speaker_rules(df, rules)` | 6 speaker flags from unscaled flag_sum counts and pct_ columns |
+| `apply_attestation_rules(df, rules)` | 2 attestation flags from `pct_events_missing_attestation` |
+| `apply_interaction_rules(df, rules)` | 3 interaction flags from raw rationale/FMV metrics |
+| `apply_concentration_rules(df, rules)` | 2 concentration flags from raw pct columns |
+| `apply_trend_rules(df, rules)` | 2 trend flags from binary columns in feature_store |
+| `compute_flag_summary(df)` | Adds `total_rule_flags`, severity counts, `most_severe_flag`, `flagged_rule_ids` |
+| `validate_flags(df)` | 6 checks: row count, bool dtype, no nulls, range, flag rate, critical rate |
+| `save_outputs(flags_df)` | Saves `rule_flags.parquet` + `rule_flags_metadata.json`. Returns paths dict |
+
+---
+
+### 3. Technical Decisions and Why
+
+**Why `get_rule()` instead of hardcoded thresholds:**
+`compliance/rules.json` is generated by `business_rules_registry.py` via RAG against 128 embedded policy document chunks. If a policy document is updated and `business_rules_registry.py` re-runs, `rules.json` updates automatically. Rule-based flags pick up the new thresholds on next run without any code changes.
+
+**Why boolean dtype for flag columns:**
+Boolean dtype enforces a binary semantic — either the rule fired or it didn't. This prevents float/integer encoding confusion downstream in `scorer.py`, ensures the validation check (`dtype == bool`) is unambiguous, and keeps the flag parquet compact.
+
+**Why `flagged_rule_ids` as comma-separated string:**
+The Phase 3 Policy Agent needs to look up the policy chunk for each fired rule. A comma-separated string of rule IDs (e.g. `"COMP_001,SPEAKER_001"`) is human-readable in the UI, easy to split in Python, and avoids a list column in parquet (which is less portable across tools).
+
+**Why critical flags expected < 5%:**
+Cap breach (COMP_001) and chronic FMV breach (SPEAKER_001 chronic) are the two critical-severity rules. These represent the most serious OIG/DOJ enforcement exposure. If more than 5% of HCPs hit these, either the data is wrong or there's a systemic compliance failure that requires escalation. The < 5% validation check acts as a canary for data quality issues.
+
+**Why raw DuckDB sources alongside feature_store:**
+`feature_store.parquet` was designed for ML — all continuous features are RobustScaler-transformed. Rule threshold comparisons (e.g. `meal_breach_rate > 0.10`, `fmv_compliance_rate < 0.90`) need raw values. The solution: load raw metrics directly from DuckDB (`mart_hcp_risk_profile`, `mart_benchmark`) using the `_raw` suffix to distinguish from scaled versions. Feature_store is still used for unscaled columns: binary flags (0/1), pct_ ratios, and _real ordinal integers.
+
+---
+
+### 4. Flag Design
+
+**Meal flags — MEAL_003 ($100 dinner ceiling):**
+Three escalating severity levels: any breach → chronic breach (> 10%) → severe single overage (> 50% over limit). The chronic and severe flags are the meaningful signals; the base `flag_meal_limit_breach` is a broad indicator.
+
+**Annual cap flags — COMP_001 ($75,000):**
+Per-year flags (2022/2023/2024) use mart_benchmark boolean columns (`at_cap_2022/2023/2024`) which are pre-computed in the dbt mart from raw CMS spend. `flag_chronic_near_cap` uses `years_near_cap_real` (0–3 integer count) with threshold ≥ 2 — catching HCPs who repeatedly approach the cap without technically breaching it.
+
+**Speaker flags — chronic vs single occurrence:**
+`flag_speaker_fmv_breach` (any FMV breach) vs `flag_speaker_fmv_chronic` (> 25% of events). The chronic flag has critical severity because > 25% FMV violations across a speaker's events indicates systematic overpayment, not a one-time data entry error. Similarly, `flag_low_attendance_pattern` (> 25% of events) vs a single low-attendance event.
+
+**Attestation flags — ATTEST_001 (80% signed):**
+`flag_missing_attestation` uses `pct_events_missing_attestation > 0` as a proxy for "any event had < 80% signed." `pct_events_missing_attestation` is computed from the `missing_attestation_flag` count in `event_features.py` — events where `attendees_signed_pct < 0.80`.
+
+**Concentration flags — why they matter:**
+`flag_rep_concentration` (> 80% of payments through one rep) captures a structural compliance risk: a single rep controlling the relationship creates accountability gaps and increases kickback risk. `flag_speaking_fee_concentration` (> 70% of payments are speaking fees) signals an HCP whose total compensation profile is dominated by speaking — the OIG's primary concern in the 2020 Fraud Alert.
+
+---
+
+### 5. How to Run and Verify
+
+```bash
+# Prerequisites
+python3 features/hcp_spend_features.py   # requires Athena
+python3 features/event_features.py
+python3 features/feature_store.py
+
+# Rule flags
+python3 models/rule_based_flags.py
+```
+
+Expected outputs:
+```
+models/outputs/rule_flags.parquet
+models/outputs/rule_flags_metadata.json
+```
+
+Verify:
+```python
+import pandas as pd, json
+
+df = pd.read_parquet('models/outputs/rule_flags.parquet')
+print(df.shape)                        # (97011, ~31)
+print(df['most_severe_flag'].value_counts())
+print(df['total_rule_flags'].describe())
+
+with open('models/outputs/rule_flags_metadata.json') as f:
+    meta = json.load(f)
+print(meta['flag_summary']['flag_rate'])   # 0.XX
+print(meta['severity_distribution'])
+```
+
+---
+
+### 6. Known Limitations
+
+- **Rules are point-in-time from rules.json v1.0.** If `business_rules_registry.py` re-generates `rules.json` with updated thresholds, re-run `rule_based_flags.py` to refresh the flags.
+- **No temporal sequencing.** Flags don't distinguish which calendar year a violation occurred in (except the per-year cap breach flags). An HCP flagged for `flag_speaker_fmv_breach` may have had the FMV violation in 2022 — the flag doesn't carry year context. Year information is available by joining back to `mart_event_features`.
+- **Speaker rules False for non-speakers.** HCPs with no speaker events have 0.0 for all pct_ columns and 0 for all flag_sum counts. All 6 speaker flags are correctly False for the 95,657 non-speaker HCPs. Absence of events is not a violation.
+- **`flag_rep_concentration` always False on DuckDB dev.** Rep concentration data comes from CMS Open Payments (Athena-only). `top_rep_concentration_pct_raw` is 0.0 on DuckDB dev, so this flag is False for all HCPs. Will be meaningful on Athena.
+- **Meal and cap flags always False on DuckDB dev.** CMS spend data is Athena-only. All meal_breach_rate, max_meal_overage_pct, at_cap_*, near_cap_* values are 0 on DuckDB dev. The `has_any_flag` validation check uses [5%, 50%] range — this may fail on dev since most flags depending on CMS data will be False. On Athena with real data, the range check is meaningful.
+
+---
+
+### 7. Next Steps
+
+- **Task 2.9:** `isolation_forest.py` runs independently on `feature_store.parquet` to produce anomaly scores for each HCP
+- **Task 2.10:** `scorer.py` combines `rule_flags.parquet` and the Isolation Forest output into a unified 0–100 risk score per HCP
+- **Phase 3 Policy Agent:** Uses `flagged_rule_ids` from `rule_flags.parquet` to look up `chunk_id` from `rules.json` and cite the exact policy document section for each fired flag in the UI explanation
+
+---
+
 ## Task 2.7 — feature_store.py
 
 ### 1. Task Overview and Purpose
