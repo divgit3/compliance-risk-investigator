@@ -2,6 +2,111 @@
 
 ---
 
+## Task 2.9 — isolation_forest.py
+
+### 1. Task Overview and Purpose
+
+`isolation_forest.py` is the unsupervised anomaly detection module. It fits a `sklearn.ensemble.IsolationForest` on all 97,011 HCPs using the full scaled feature matrix from `feature_store.parquet`, producing a `[0, 100]` anomaly score per HCP — with higher = more statistically deviant from peer behavior.
+
+**Why Isolation Forest for compliance?**
+Isolation Forest is purpose-built for high-dimensional anomaly detection. For compliance:
+- It catches *unknown* violations — HCPs with unusual *combinations* of features that don't fire any specific rule but deviate from peer norms.
+- It requires no labeled training data (unsupervised). Ground truth labels are never used during fitting — only in `test_anomaly_models.py` (Task 2.12) for post-hoc evaluation.
+- It scales well: O(n log n) with `n_estimators=200, n_samples=97,011` — runtime ~10–20s.
+- The `contamination=0.10` hyperparameter sets sklearn's outlier/inlier threshold at the 10th percentile of raw scores. This is used only for the binary `if_is_outlier` label — the continuous `anomaly_score` provides full granularity.
+
+**Complementarity with rule_based_flags.py:**
+| | rule_based_flags | isolation_forest |
+|---|---|---|
+| Detects | Known rule violations | Unknown statistical patterns |
+| Interpretable | Yes (per-rule citations) | Partial (feature importance post-hoc) |
+| Requires thresholds | Yes (rules.json) | No |
+| Ground truth needed | No | No |
+
+Both feed `scorer.py` (Task 2.10).
+
+**hcp_id alignment design:**
+`feature_store.parquet` excludes `hcp_id` (dropped as an identity column before ML). `isolation_forest.py` reconstructs the hcp_id→row mapping by loading `mart_benchmark ORDER BY hcp_id ASC` from DuckDB and positionally attaching it. Row count equality (both must be 97,011) is validated before attachment. This is safe because both the DuckDB HCP spine and the Athena-driven feature_store are built from the same 97,011-HCP universe in consistent sort order.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `models/isolation_forest.py` | Isolation Forest anomaly scoring — 97,011 HCPs → anomaly_score [0, 100] |
+
+**Functions:**
+
+| Function | Purpose |
+|---|---|
+| `load_feature_store()` | Load feature_store.parquet + feature_store_metadata.json |
+| `load_hcp_ids()` | Load hcp_ids from mart_benchmark DuckDB, ORDER BY hcp_id ASC |
+| `align_hcp_ids(X_df, hcp_ids)` | Positional attachment with row count validation |
+| `train_isolation_forest(X)` | Fit sklearn IsolationForest, return (clf, params_dict) |
+| `compute_anomaly_scores(clf, X)` | decision_function() → negate → min-max scale to [0, 100] |
+| `build_scores_df(aligned_df, raw, labels, scores)` | Assemble output DataFrame with all score columns |
+| `validate_scores(scores_df)` | 6-check validation including outlier rate + score spread |
+| `save_outputs(scores_df, params, timing, stats)` | Write if_scores.parquet + if_metadata.json |
+| `main()` | End-to-end pipeline |
+
+---
+
+### 3. Key Design Decisions
+
+**Score transformation:**
+```
+raw_score = clf.decision_function(X)   # more negative → more anomalous
+inverted  = -raw_score                 # more positive → more anomalous
+anomaly_score = 100 × (inverted - min) / (max - min)
+```
+- `anomaly_score = 0`: most normal HCP in the population
+- `anomaly_score = 100`: most anomalous HCP in the population
+- The `if_is_outlier` binary (1 = sklearn `predict = -1`) uses `contamination=0.10` as the threshold
+
+**Hyperparameters:**
+```
+n_estimators  = 200   (more stable than default 100 for 97K rows)
+contamination = 0.10  (expected ~10% statistical outliers)
+max_samples   = "auto" → min(256, n_samples)
+max_features  = 1.0   (all features per tree — compliance features all relevant)
+random_state  = 42    (reproducibility)
+n_jobs        = -1    (all CPU cores for parallel tree building)
+```
+
+**Feature matrix:** All columns from `feature_store.parquet` are used — the store was already cleaned of strings, nulls, GT columns, and identity columns by `feature_store.py`. No additional feature selection step needed.
+
+---
+
+### 4. Output Schema
+
+**`models/outputs/if_scores.parquet`** (97,011 rows):
+
+| Column | Type | Description |
+|---|---|---|
+| `hcp_id` | str | HCP identifier |
+| `anomaly_score` | float32 | [0, 100] IF anomaly score (100 = most anomalous) |
+| `if_raw_score` | float32 | Raw `decision_function()` output (negative = more anomalous) |
+| `if_is_outlier` | int8 | 1 if sklearn `predict = -1` (top ~10% anomalous), else 0 |
+| `anomaly_percentile` | float32 | Percentile rank of anomaly_score [0.0 = most normal, 1.0 = most anomalous] |
+
+**`models/outputs/if_metadata.json`**: model hyperparameters, score distribution (mean, median, std, p25/75/90/95/99), fit duration, feature count.
+
+---
+
+### 5. Validation Checks
+
+| Check | Bound | Why |
+|---|---|---|
+| Row count | == 97,011 | Full HCP coverage |
+| No nulls in anomaly_score | 0 nulls | No imputation gap |
+| anomaly_score range | [0.0, 100.0] | Score bounded |
+| Outlier rate | [5%, 20%] | Not trivially all-normal or all-flagged |
+| Score spread (p95 - p5) | >= 30.0 | Sufficient discriminative power |
+| hcp_id unique | all unique | No duplicate HCP rows |
+
+---
+
 ## Task 2.8 — rule_based_flags.py
 
 ### 1. Task Overview and Purpose
