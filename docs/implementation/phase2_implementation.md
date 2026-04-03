@@ -2,6 +2,168 @@
 
 ---
 
+## Task 2.7 — feature_store.py
+
+### 1. Task Overview and Purpose
+
+`feature_store.py` is the central feature store — the single source of truth for all downstream ML tasks (Tasks 2.8–2.12). It:
+
+1. **Merges all feature matrices** into a single 97,011-row DataFrame
+2. **Resolves the Athena/DuckDB split** that was a known limitation since Tasks 2.3 and 2.4 — by recomputing benchmark signals in Python now that Athena spend data is available in memory
+3. **Separates ground truth** into its own parquet file so it can never accidentally contaminate the ML feature matrix
+
+**Why it exists as a separate layer from the dbt marts:**
+The dbt marts are split across two engines (Athena for CMS data, DuckDB for synthetic data) and cannot cross-join. Once all data is loaded into Python memory, `feature_store.py` can:
+- Merge across the engine boundary on `hcp_id`
+- Recompute benchmark signals using real Athena spend data (unavailable to the DuckDB mart)
+- Apply type coercions and null fills that belong in the Python ML pipeline, not SQL
+
+**How it resolves the Athena/DuckDB split:**
+`mart_benchmark` on DuckDB has 0-filled spend and benchmark columns because `mart_hcp_spend_features` is Athena-only. Once `hcp_spend_feature_matrix.parquet` (Athena data) is loaded into Python, `compute_real_benchmarks()` uses the real CMS spend values to compute percentile ranks, cap patterns, and engagement priority scores that were impossible in the dbt layer.
+
+**Why ground truth is kept separate:**
+`mart_hcp_risk_profile` carries `ground_truth_violation_count` and `ground_truth_max_severity` — synthetic violation labels used for model validation. Including these in the feature matrix would be label leakage (the ML model would learn to predict what it's supposed to detect). The ground truth parquet is the only file that `test_anomaly_models.py` reads from.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `features/feature_store.py` | Central feature store — merge, recompute, validate, save |
+
+**9 functions:**
+
+| Function | What it does |
+|---|---|
+| `load_spend_matrix()` | Loads `hcp_spend_feature_matrix.parquet` (Athena, 97,011 rows, scaled). Raises `FileNotFoundError` if not present |
+| `load_event_matrix()` | Loads `event_feature_matrix.parquet` (~1,354 speaker rows). Raises `FileNotFoundError` if not present |
+| `load_risk_profile()` | Reads `mart_hcp_risk_profile` from DuckDB — interaction features + ground truth. Selects only columns not already in spend_matrix |
+| `load_benchmark_context()` | Reads `mart_benchmark` from DuckDB — engagement/outlier signals + `spend_2022/2023/2024` as `_raw` aliases for recompute |
+| `merge_all(spend_df, event_df, risk_df, benchmark_df)` | 4-way LEFT JOIN on `hcp_id`. Spend matrix is the 97,011-row spine. Non-speaker HCPs get NaN→0 for event columns |
+| `compute_real_benchmarks(df)` | 7-step benchmark recompute using real Athena spend data. Adds `_real` suffix columns |
+| `extract_ground_truth(df)` | Extracts `hcp_id + ground_truth_* + has_violation` to separate DataFrame. **VALIDATION ONLY** |
+| `build_feature_matrix(df)` | Drops `EXCLUDE_FROM_FEATURES`, string columns, GT columns. Fills nulls. Encodes booleans as int |
+| `validate_feature_store(feature_df, gt_df)` | 8 checks including row count, no nulls, no strings, violation rate in [20%, 30%], no GT columns in feature matrix |
+| `save_outputs(...)` | Saves 3 files, returns paths dict |
+
+**Output files:**
+
+| File | Rows | Consumers |
+|---|---|---|
+| `features/outputs/feature_store.parquet` | 97,011 | Task 2.8 (rule_based_flags.py), Task 2.9 (Isolation Forest) |
+| `features/outputs/ground_truth_labels.parquet` | 97,011 | Task 2.12 (test_anomaly_models.py) only |
+| `features/outputs/feature_store_metadata.json` | — | Metadata: merge stats, benchmark recompute stats, feature column list |
+
+**Merge strategy (join order):**
+```
+spend_matrix (97,011 rows — Athena HCP spine)
+  LEFT JOIN event_matrix    (~1,354 rows → 0-fill for 95,657 non-speakers)
+  LEFT JOIN risk_profile    (97,011 rows — interaction features + GT)
+  LEFT JOIN benchmark       (97,011 rows — engagement signals + _raw spend)
+```
+
+---
+
+### 3. Technical Decisions and Why
+
+**LEFT JOIN from spend matrix spine:**
+`hcp_spend_feature_matrix.parquet` comes from Athena and contains all HCPs Nova Pharma has ever paid. This is the correct spine — it represents the full population under compliance scrutiny. Using risk_profile or benchmark as spine would also work on DuckDB dev (both have 97,011 rows), but the Athena spend matrix is the authoritative HCP list for the compliance use case.
+
+**`_real` suffix for recomputed benchmarks:**
+The dbt mart_benchmark columns (np_spend_pct_rank_specialty_2024, etc.) remain in the feature matrix as-is (even though 0-filled on DuckDB dev). The `_real` suffix columns from `compute_real_benchmarks()` are added alongside them. This allows the ML model to see both: the dbt version (0 on DuckDB, meaningful on Athena with correct specialty segmentation when HCP master is joined) and the Python version (computed from whatever spend data is available in memory). Overwriting the dbt columns would obscure which value came from which pipeline stage.
+
+**Ground truth in separate parquet:**
+Having a separate file creates a physical barrier that makes accidental contamination detectable. It also makes `test_anomaly_models.py` self-documenting — any test that reads `feature_store.parquet` is operating on features only, and any test that reads `ground_truth_labels.parquet` is doing validation.
+
+**Event features 0-filled for non-speakers:**
+95,657 HCPs have no speaker events. 0-fill is semantically correct: no events means zero speaker fees, zero attendance issues, zero FMV violations. The Isolation Forest treats a 0-vector event feature block as "no speaker program exposure," which is the right representation. Filling with mean or median would introduce false signal for inactive HCPs.
+
+**`EXCLUDE_FROM_FEATURES` list:**
+Columns are excluded for three reasons:
+1. Identity (hcp_id, hcp_name, specialty, state, city) — needed for joining but not numeric signal
+2. Categorical strings (engagement_quadrant, cap_pattern, spend_trend) — replaced by ordinal integer `_real` versions
+3. Raw spend aliases (spend_2022_raw, etc.) — used only for recompute, already captured in scaled spend features
+4. Metadata (mart_created_at) — timestamp, not signal
+
+---
+
+### 4. Benchmark Recompute
+
+`compute_real_benchmarks()` resolves the known limitation documented in Tasks 2.3 and 2.4. On DuckDB dev, all spend-based benchmark columns in `mart_benchmark` are 0-filled because `mart_hcp_spend_features` (the CMS data source) is Athena-only. Once the Athena spend data is loaded into Python via `hcp_spend_features.py`, the recompute provides real values.
+
+**7-step process:**
+
+| Step | Input | Output columns |
+|---|---|---|
+| 1: Peer averages | `spend_YYYY_raw`, `specialty` | `peer_avg_2022/2023/2024` (temporary, not output columns) |
+| 2: Percentile ranks | Per-specialty `rank(pct=True)` | `np_spend_pct_rank_specialty_2022/2023/2024_real` |
+| 3: Spend vs peer avg | `spend / peer_avg` capped at 10.0 | `np_spend_vs_peer_avg_2022/2023/2024_real` |
+| 4: Outlier flags | `rank > 0.90` | `np_spend_outlier_2022/2023/2024_real`, `np_outlier_years_count_real`, `np_persistent_outlier_real` |
+| 5: Spend trend | Ordinal: decreasing=0, stable=1, net_increasing=2, increasing=3 | `spend_trend_real` |
+| 6: Cap pattern | Ordinal: compliant=0, near_cap=1, chronic_near_cap=2, single_breach=3, chronic_breach=4 | `years_at_cap_real`, `years_near_cap_real`, `cap_pattern_real` |
+| 7: Engagement score | `rank × 30 + outlier_count × 5` (max 45 pts without industry data) | `engagement_priority_score_real` |
+
+**What changes after recompute vs dbt values:**
+- On DuckDB dev: all `_real` columns remain 0/0.0 because `spend_2022_raw` is 0. Same behavior as dbt, but now documented explicitly.
+- On Athena prod: `_real` columns carry meaningful percentile ranks and cap pattern classifications that were 0-filled in the dbt mart. The engagement_priority_score_real will correctly reflect relative spend positioning within peer groups.
+
+---
+
+### 5. How to Run and Verify
+
+```bash
+# Prerequisites
+python3 features/hcp_spend_features.py   # requires Athena
+python3 features/event_features.py        # DuckDB only
+
+# Feature store
+python3 features/feature_store.py
+```
+
+Expected outputs:
+```
+features/outputs/feature_store.parquet
+features/outputs/ground_truth_labels.parquet
+features/outputs/feature_store_metadata.json
+```
+
+Verify:
+```python
+import pandas as pd, json
+
+df = pd.read_parquet('features/outputs/feature_store.parquet')
+gt = pd.read_parquet('features/outputs/ground_truth_labels.parquet')
+
+print(df.shape)                  # (97011, N)
+print(df.isnull().sum().sum())   # 0
+print(gt.shape)                  # (97011, 4)
+print(gt.has_violation.mean())   # ~0.245
+
+# Confirm no GT columns in feature matrix
+assert 'ground_truth_violation_count' not in df.columns
+assert 'has_violation' not in df.columns
+```
+
+---
+
+### 6. Known Limitations
+
+- **Industry benchmarks (sow_, ind_) remain 0.0** — `mart_population_payments` and `mart_competitor_payments` are Athena-only and are not loaded into the Python layer. The `np_vs_industry_ratio_*` and `sow_*` columns from mart_benchmark remain 0-filled. These are included in the feature matrix but contribute no signal on DuckDB dev. Planned for Phase 3 API layer.
+- **`compute_real_benchmarks()` uses Nova Pharma spend only** — the percentile ranks are computed within the Nova Pharma HCP population, not against the CMS-wide HCP population. This is a Nova Pharma internal benchmark (TIER 1), not a true industry comparison (TIER 2).
+- **Benchmark recompute uses simple percentile rank, not weighted by specialty size** — all 97,011 HCPs have `specialty = 'Unknown'` on current data (not in synthetic interactions). The recompute produces national percentile ranks until HCP master data with specialty is joined.
+- **`engagement_priority_score_real` capped at 45 pts on current data** — without industry/SOW components (25+25 pts), the maximum score from available signals is 30 (NP rank) + 15 (3 outlier years × 5 pts) = 45. On Athena with real industry data loaded, the cap rises to 100.
+
+---
+
+### 7. Next Steps
+
+- **Task 2.8:** `rule_based_flags.py` reads `feature_store.parquet` and applies the compliance/rules.json thresholds as binary flags for each HCP
+- **Task 2.9:** Isolation Forest reads `feature_store.parquet` as its sole input
+- **Task 2.12:** `test_anomaly_models.py` reads `ground_truth_labels.parquet` to measure Isolation Forest precision/recall against known violations
+
+---
+
 ## Task 2.6 — event_features.py
 
 ### 1. Task Overview and Purpose
