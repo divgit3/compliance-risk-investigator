@@ -2,6 +2,147 @@
 
 ---
 
+## Task 2.6 — event_features.py
+
+### 1. Task Overview and Purpose
+
+`event_features.py` aggregates `mart_event_features` (5,241 event-level rows) to one row per HCP speaker (1,354 rows). It is the second of two feature engineering scripts feeding into `feature_store.py` (Task 2.7).
+
+**Why event features need separate aggregation:**
+The dbt mart `mart_event_features` is intentionally one row per event — the natural grain for compliance checks like per-event meal cost or attendee count. ML models require one row per HCP. Aggregating in Python (rather than adding another dbt mart) keeps the mart grain clean and puts the aggregation logic where it can be tested and version-controlled alongside the rest of the ML pipeline.
+
+**How 5,241 event rows become 1,354 HCP rows:**
+The 5,241 events cover 1,354 distinct HCP speakers (`DISTINCT speaker_hcp_id`). Each HCP has between 1 and N events. Statistical aggregations (mean, max, sum, std, min) compress the event series into HCP-level signals. 1,165 of the 1,354 speakers have more than one event — their variability across events is captured by `std` and `event_risk_score_cv`.
+
+**Role in feeding feature_store.py:**
+This script outputs `features/outputs/event_feature_matrix.parquet` with 1,354 rows and `hcp_id` as the join key. `feature_store.py` (Task 2.7) left-joins this onto the 97,011-row HCP spend matrix — the 95,657 non-speaker HCPs receive 0-fill for all event columns.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `features/event_features.py` | Event feature engineering — load, aggregate, derive, clean, scale, save |
+
+**8 functions:**
+
+| Function | What it does |
+|---|---|
+| `load_event_features()` | Reads all columns from `mart_event_features` (DuckDB). Logs row count. Raises on failure |
+| `aggregate_to_hcp_level(df)` | GROUP BY `speaker_hcp_id`. Applies `EVENT_AGG_FEATURES` (mean/max/std/sum/min). Sums `EVENT_FLAG_FEATURES` to integer counts. Adds `total_events_as_speaker`. Flattens column names |
+| `compute_derived_features(df)` | Computes `pct_events_*` ratios and `event_risk_score_cv` from aggregated values. Uses `np.where` for div-by-zero safety |
+| `handle_nulls(df)` | Per-column null fill: std→0.0, min→0.0, pct_→0.0, cv→0.0, catch-all→0.0 |
+| `scale_features(df)` | RobustScaler on continuous cost/risk aggregations. pct_, flag counts, cv, and `total_events_as_speaker` excluded. `total_events_as_speaker` normalized to [0,1] by `/max` |
+| `add_identity_columns(scaled_df)` | Resets index, renames `speaker_hcp_id` → `hcp_id`, casts to str |
+| `validate_output(df)` | 5 checks: row count ≤ 1,354, no nulls, no infinities, pct_ in [0,1], total_events_as_speaker ≥ 0 |
+| `save_outputs(df, scaler_params, source_rows)` | Saves parquet + metadata JSON. Returns paths dict |
+| `main()` | Orchestrates all steps, logs summary |
+
+**All output columns after aggregation:**
+
+| Group | Columns |
+|---|---|
+| Risk score | `raw_event_risk_score_mean`, `raw_event_risk_score_max`, `raw_event_risk_score_std` |
+| Attendance | `attendee_count_mean`, `attendee_count_min`, `attendee_count_sum` |
+| Cost | `speaker_fee_mean`, `speaker_fee_max`, `speaker_fee_sum`, `total_program_cost_mean`, `total_program_cost_max`, `total_program_cost_sum`, `meal_cost_per_attendee_mean`, `meal_cost_per_attendee_max` |
+| FMV | `speaker_fee_fmv_pct_mean`, `speaker_fee_fmv_pct_max` |
+| Attestation | `attendees_signed_pct_mean`, `attendees_signed_pct_min` |
+| Flag counts (integer) | `low_attendance_flag_sum`, `very_low_attendance_flag_sum`, `cost_per_head_over_limit_sum`, `high_venue_cost_flag_sum`, `over_total_cost_ceiling_flag_sum`, `speaker_fee_over_fmv_flag_sum`, `repeat_speaker_flag_sum`, `high_repeat_speaker_flag_sum`, `rapid_repeat_flag_sum`, `missing_attestation_flag_sum` |
+| Derived | `total_events_as_speaker`, `pct_events_low_attendance`, `pct_events_over_fmv`, `pct_events_missing_attestation`, `pct_events_rapid_repeat`, `event_risk_score_cv` |
+| Identity | `hcp_id` |
+
+**Derived feature meanings:**
+
+| Feature | Formula | Business meaning |
+|---|---|---|
+| `total_events_as_speaker` | `COUNT(event_id)` per HCP | Total speaker program participation — volume signal |
+| `pct_events_low_attendance` | `low_attendance_flag_sum / total_events` | Fraction of events with < 3 attendees (SPEAKER_004) — pattern of nominal "programs" |
+| `pct_events_over_fmv` | `speaker_fee_over_fmv_flag_sum / total_events` | Fraction of events where fee exceeded $3,500 FMV ceiling — systematic overpayment |
+| `pct_events_missing_attestation` | `missing_attestation_flag_sum / total_events` | Fraction of events with < 80% signed attestations — documentation failure pattern |
+| `pct_events_rapid_repeat` | `rapid_repeat_flag_sum / total_events` | Fraction of events occurring < 30 days after prior event (SPEAKER_005) |
+| `event_risk_score_cv` | `raw_event_risk_score_std / raw_event_risk_score_mean` | Coefficient of variation of risk — high CV = erratic pattern; low CV + high mean = consistently risky |
+
+---
+
+### 3. Technical Decisions and Why
+
+**Aggregate to HCP level in Python, not dbt:**
+A `mart_event_hcp_features` dbt model would introduce another materialized table purely as an intermediate for the ML pipeline. Keeping aggregation in Python alongside the rest of the feature engineering pipeline makes the ML layer self-contained and independently testable. The dbt mart grain (one row per event) remains clean for other consumers (e.g. violation ground truth, dashboards).
+
+**RobustScaler on cost/risk aggregations:**
+Cost aggregations (`speaker_fee_max`, `total_program_cost_sum`, etc.) are the primary targets for scaling — they span several orders of magnitude (e.g. `speaker_fee_sum` ranges from a few hundred to tens of thousands). RobustScaler's median/IQR approach handles this without the extreme values collapsing the distribution that StandardScaler would cause.
+
+**pct_ features not rescaled:**
+All `pct_events_*` columns are computed as a count divided by `total_events_as_speaker`, so their natural range is [0.0, 1.0]. Rescaling would compress this range further without adding information. The Isolation Forest will treat these as already-normalized continuous inputs.
+
+**event_risk_score_cv as sophistication signal:**
+The coefficient of variation captures a compliance pattern that raw mean/max miss: erratic risk across events. An HCP whose events alternate between very high and very low risk scores may be strategically structuring programs to avoid detection — some compliant events "covering" for non-compliant ones. A uniformly high CV with a high mean is also suspicious. Both extremes are anomalous; this feature helps the Isolation Forest separate them.
+
+**Flag columns become integer counts (not booleans):**
+At the HCP level, the question is not "did this HCP ever have a low-attendance event" (binary) but "how many of their events had low attendance" (count). A speaker with 12 low-attendance events out of 12 total is different from one with 1 out of 12. The integer count carries the frequency signal that `pct_events_low_attendance` normalizes — both are included.
+
+**`total_events_as_speaker` scaled by max (not RobustScaler):**
+`total_events_as_speaker` is a count with a natural lower bound of 1. Dividing by the population maximum normalizes it to [0, 1] while preserving ordinal meaning and avoiding the median-centering of RobustScaler (which would make a speaker with the median number of events appear at 0 — no signal). The scale parameter (max value) is saved in `scaler_params` for reproducibility.
+
+---
+
+### 4. Aggregation Strategy
+
+| Aggregation | Columns it applies to | Business meaning |
+|---|---|---|
+| `mean` | risk score, costs, attendance, FMV, attestation | Typical event for this speaker — baseline behavior |
+| `max` | risk score, costs, FMV | Single worst-case exposure — most dangerous individual event |
+| `sum` | speaker_fee, total_program_cost, attendee_count | Total exposure across all events — volume of activity |
+| `min` | attendee_count, attendees_signed_pct | Worst-case floor — the event with fewest attendees or worst attestation |
+| `std` | raw_event_risk_score | Variability of risk — is this speaker consistently risky or erratic? |
+| `sum` (flags) | all `EVENT_FLAG_FEATURES` | Count of events where each compliance flag fired |
+
+---
+
+### 5. How to Run and Verify
+
+```bash
+python3 features/event_features.py
+```
+
+Expected output:
+```
+features/outputs/event_feature_matrix.parquet
+features/outputs/event_feature_metadata.json
+```
+
+Verify:
+```python
+import pandas as pd, json
+
+df = pd.read_parquet('features/outputs/event_feature_matrix.parquet')
+print(df.shape)                  # (~1354, N)
+print(df.isnull().sum().sum())   # 0
+
+with open('features/outputs/event_feature_metadata.json') as f:
+    meta = json.load(f)
+print(meta['source_rows'])       # 5241
+print(meta['hcp_speakers'])      # 1354
+```
+
+---
+
+### 6. Known Limitations
+
+- **Only 1,354 of 97,011 HCPs have speaker events.** The remaining 95,657 receive 0-fill for all event feature columns in `feature_store.py` (Task 2.7). 0-fill is appropriate — these HCPs have no speaker program exposure, so all event-derived signals should be zero.
+- **std aggregations = 0 for single-event speakers.** 189 of the 1,354 speakers have exactly 1 event. Their `raw_event_risk_score_std` and `event_risk_score_cv` are 0.0 by definition — this is not a data quality issue.
+- **`event_risk_score_cv` = 0 for single-event speakers.** Same root cause as above. These speakers have a point estimate of risk, not a distribution.
+- **`days_since_last_event_same_speaker` not aggregated.** This column from `mart_event_features` captures the inter-event gap in days. The `rapid_repeat_flag` (< 30 days) is aggregated as a count, but the raw day counts are not included to avoid adding sparsely populated columns (NULL for all first-events-per-year).
+
+---
+
+### 7. Next Steps
+
+- **Task 2.7:** `feature_store.py` merges `event_feature_matrix.parquet` with `hcp_spend_feature_matrix.parquet` on `hcp_id`. The 95,657 non-speaker HCPs receive 0-fill for all event columns. This produces the final combined feature matrix for the Isolation Forest.
+
+---
+
 ## Task 2.5 — hcp_spend_features.py
 
 ### 1. Task Overview and Purpose
