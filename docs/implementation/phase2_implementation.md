@@ -2,6 +2,141 @@
 
 ---
 
+## Task 2.5 — hcp_spend_features.py
+
+### 1. Task Overview and Purpose
+
+`hcp_spend_features.py` is the first layer of the Python feature engineering pipeline. It sits between the dbt mart layer and the ML model layer (Isolation Forest, Task 2.9), performing transformations that belong in Python rather than SQL:
+
+- **Scaling** — RobustScaler needs Python/sklearn; cannot be done in SQL without hardcoding params
+- **Null fill decisions** — some null semantics (e.g. yoy_growth=NULL means no prior year, not missing) require code-level documentation and per-column intent
+- **Binary encoding** — boolean → int64 for sklearn compatibility
+- **Metadata emission** — scaler params, feature lists, timestamps written alongside the matrix for reproducibility
+
+**How it begins resolving the Athena/DuckDB split:**
+The dbt layer keeps Athena and DuckDB as separate targets with 0-filled stubs for cross-engine data. This script reads from both simultaneously — `mart_hcp_spend_features` from Athena (CMS spend signals) and `mart_benchmark` from DuckDB (risk score ranks, peer percentiles) — and merges them on `hcp_id` into a single feature matrix. The DuckDB benchmark features are 0-filled until the feature store (Task 2.7) fully resolves the split on Athena.
+
+---
+
+### 2. What Was Built
+
+| File | Purpose |
+|---|---|
+| `features/hcp_spend_features.py` | HCP spend feature engineering — load, merge, clean, scale, save |
+| `features/outputs/.gitkeep` | Tracks the output directory in git without committing generated files |
+
+**8 functions:**
+
+| Function | What it does |
+|---|---|
+| `load_athena_spend_features()` | Connects to Athena via pyathena, reads `mart_hcp_spend_features`, derives `annual_cap_pct_used_2022/2023/2024` from per-year spend columns, returns DataFrame indexed by `hcp_id` |
+| `load_duckdb_benchmark_features()` | Connects to DuckDB, reads `mart_benchmark` benchmark columns, returns DataFrame indexed by `hcp_id`. Non-fatal: logs warning and returns empty DataFrame on failure |
+| `merge_features(spend_df, benchmark_df)` | Left-joins on `hcp_id` — all 97,011 Athena HCPs preserved. HCPs with no benchmark data receive 0.0 fill |
+| `handle_nulls(df)` | Per-column null fill with documented semantics (see section 4) |
+| `encode_binary_features(df)` | Converts bool/object boolean columns to int64 (0/1) for sklearn compatibility |
+| `scale_features(df)` | RobustScaler on continuous features; percentile ranks and binary features skipped; `raw_spend_risk_score` divided by 100. Returns (scaled_df, scaler_params dict) |
+| `add_identity_columns(scaled_df, original_df)` | Restores `hcp_id`, `hcp_name`, `specialty`, `state` from pre-scale DataFrame for output joining |
+| `validate_output(df)` | 6 checks: row count == 97,011, no nulls, all numeric, binary 0/1 only, no infinities, `raw_spend_risk_score` in [0, 1] |
+| `save_outputs(df, scaler_params)` | Saves parquet + metadata JSON to `features/outputs/`, returns paths dict |
+| `main()` | Orchestrates all steps, logs summary (rows, feature count, time) |
+
+**Output files:**
+
+| File | Contents |
+|---|---|
+| `features/outputs/hcp_spend_feature_matrix.parquet` | One row per HCP · all feature columns scaled · identity columns for joining |
+| `features/outputs/hcp_spend_feature_metadata.json` | `generated_at`, `source_tables`, `row_count`, `feature_columns`, `binary_columns`, `identity_columns`, `scaler`, `scaler_params`, `null_fill_strategy` |
+
+**Feature lists:**
+
+| Group | Columns |
+|---|---|
+| SPEND_FEATURES (continuous) | `spend_2022/2023/2024`, `peak_year_spend`, `annual_cap_pct_used_2022/2023/2024` (derived), `meals_over_limit_count`, `meal_breach_rate`, `max_meal_overage_pct`, `pct_food_beverage`, `pct_speaking_fee`, `pct_consulting`, `speaking_fee_total`, `speaking_fee_count`, `avg_unique_reps`, `top_rep_concentration_pct`, `yoy_growth_2223`, `yoy_growth_2324`, `raw_spend_risk_score` |
+| SPEND_BINARY_FEATURES | `at_cap_flag`, `near_cap_flag`, `multi_year_increasing_flag`, `has_cms_payments`, `is_high_prescriber`, `is_kol` |
+| BENCHMARK_FEATURES (from DuckDB) | `np_spend_pct_rank_specialty_2024/2023/2022`, `np_spend_vs_peer_avg_2024`, `np_outlier_years_count`, `np_persistent_outlier`, `np_escalating_rank`, `engagement_priority_score` |
+
+---
+
+### 3. Technical Decisions and Why
+
+**RobustScaler over StandardScaler:**
+RobustScaler uses median and IQR (interquartile range) rather than mean and standard deviation. Compliance data contains intentional outliers by design — HCPs at 2× the annual cap, speaker fees well above FMV, unusual rep concentration. StandardScaler would compress these signals toward the center; RobustScaler preserves their relative magnitude while centering on the median HCP. This is important because outliers are the anomalies the Isolation Forest needs to detect.
+
+**Percentile ranks not rescaled:**
+`np_spend_pct_rank_specialty_*` columns are already in [0.0, 1.0] from `PERCENT_RANK()` in the dbt mart. Applying RobustScaler would compress the range further (the IQR of a uniform [0,1] distribution is 0.5, so RobustScaler would roughly double the values). The existing scale directly represents the HCP's position in the peer distribution — meaningful as-is.
+
+**Binary features not scaled:**
+Boolean compliance flags (at_cap, near_cap, etc.) encode a categorical yes/no determination. Scaling them numerically would introduce a false notion of distance between 0 and 1 that carries no compliance meaning. Isolation Forest handles mixed binary/continuous inputs; binary features just need to be integer dtype.
+
+**yoy_growth nulls filled with 0.0:**
+`yoy_growth_2223` and `yoy_growth_2324` are NULL when an HCP had no spend in the prior year (`spend_2022 = 0` or `spend_2023 = 0`). NULL here means "no growth because there was no base" — not missing data. Filling with 0.0 correctly represents "no change relative to a zero baseline." Filling with mean or median would introduce false growth signals for inactive HCPs.
+
+**Identity columns removed before scaling:**
+`hcp_name`, `specialty`, `state` are strings — not compatible with sklearn transformers. `hcp_id` is the join key. All four are restored after scaling via `add_identity_columns()` so the output parquet can be joined back to other marts by `hcp_id`.
+
+**`annual_cap_pct_used_2022/2023/2024` derived in Python:**
+`mart_hcp_spend_features` stores a single `annual_cap_pct_used` column (peak-year spend / 75,000). Per-year versions are computed in `load_athena_spend_features()` as `spend_YYYY / 75000.0`. This is identical to what `mart_benchmark` computes internally. Deriving in Python avoids adding 3 columns to the SQL mart for the sole purpose of this feature script.
+
+---
+
+### 4. Null Handling Strategy
+
+| Feature group | Fill value | Why |
+|---|---|---|
+| `yoy_growth_2223`, `yoy_growth_2324` | `0.0` | NULL = no prior year spend. Not a risk signal — represents "no growth from zero," not missing data |
+| Ratio features (`top_rep_concentration_pct`, `pct_*`) | `0.0` | NULL = no activity recorded. Zero concentration/share is the correct representation |
+| Binary features (`at_cap_flag`, `near_cap_flag`, etc.) | `0` (int) | NULL = flag is absent/false. Absence of a breach flag means compliant |
+| Percentile ranks (`np_spend_pct_rank_specialty_*`) | `0.0` | NULL = no peer data available. Floor rank (0th percentile) is the conservative safe default |
+| All other nulls | `0.0` | Safe default; logged before fill so unexpected nulls are visible in logs |
+
+---
+
+### 5. How to Run and Verify
+
+```bash
+python3 features/hcp_spend_features.py
+```
+
+Expected output:
+```
+features/outputs/hcp_spend_feature_matrix.parquet
+features/outputs/hcp_spend_feature_metadata.json
+```
+
+Verify:
+```python
+import pandas as pd, json
+
+df = pd.read_parquet('features/outputs/hcp_spend_feature_matrix.parquet')
+print(df.shape)               # (97011, N)
+print(df.isnull().sum().sum()) # 0
+
+with open('features/outputs/hcp_spend_feature_metadata.json') as f:
+    meta = json.load(f)
+print(meta['row_count'])        # 97011
+print(meta['scaler'])           # RobustScaler
+print(len(meta['feature_columns']))  # 28
+```
+
+---
+
+### 6. Known Limitations
+
+- **Benchmark features 0-filled on DuckDB until Task 2.7:** `mart_benchmark` on DuckDB returns 0.0 for all spend-based ranks (`np_spend_pct_rank_specialty_*`) since CMS data is Athena-only. The benchmark columns in the matrix will be 0-filled until `feature_store.py` (Task 2.7) resolves the Athena/DuckDB split and registers all data on a single target.
+- **Athena query latency:** The `mart_hcp_spend_features` query may take 30–60 seconds on a cold Athena cluster start. Subsequent runs in the same session will be faster.
+- **Inverse transform not yet implemented:** `scaler_params` are saved in metadata for reproducibility and future inverse transform support, but no `inverse_transform()` function is provided in this script.
+- **`is_high_prescriber` and `is_kol` are NULL everywhere:** These fields are not in the synthetic interactions data and will be NULL on both targets until HCP master data is joined. They are filled with 0 (false) via the binary null fill strategy.
+
+---
+
+### 7. Next Steps
+
+- **Task 2.6:** `event_features.py` builds the event-level feature matrix from DuckDB (`mart_event_features`, `mart_speaker_events_features`, `mart_attendees_features`)
+- **Task 2.7:** `feature_store.py` merges the HCP spend matrix and event matrix into a single combined feature store and fully resolves the Athena/DuckDB split
+- **Task 2.9:** Isolation Forest reads from `feature_store.py` output as its primary input
+
+---
+
 ## Task 2.4 — mart_benchmark
 
 ### 1. Task Overview and Purpose

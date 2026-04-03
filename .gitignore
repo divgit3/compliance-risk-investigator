@@ -15,6 +15,10 @@ data/raw/
 data/processed/
 data/synthetic/
 
+# Feature engineering outputs (generated files — tracked by .gitkeep only)
+features/outputs/*.parquet
+features/outputs/*.json
+
 # MLflow
 mlruns/
 
