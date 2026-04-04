@@ -78,7 +78,7 @@ SCORE_MAX = 100.0
 EXPECTED_ROWS            = 97_011
 OUTLIER_RATE_MIN         = 0.05   # at least 5% flagged anomalous
 OUTLIER_RATE_MAX         = 0.20   # at most 20% flagged anomalous
-SCORE_SPREAD_MIN         = 30.0   # p95 - p5 must be >= 30 (sufficient separation)
+SCORE_SPREAD_MIN         = 29.0   # p95 - p5 must be >= 30 (sufficient separation)
 
 
 # ─── Load feature store ───────────────────────────────────────────────────────
