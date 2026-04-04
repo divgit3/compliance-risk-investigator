@@ -2,6 +2,94 @@
 
 ---
 
+## Task 2.13 — notebooks/phase2_eda.ipynb
+
+### 1. Task Overview and Purpose
+
+`notebooks/phase2_eda.ipynb` is the Phase 2 Exploratory Data Analysis notebook for the Compliance Risk Investigator AI platform. It provides a 12-cell, 10-section visual investigation of all Phase 2 pipeline outputs — rule flags, Isolation Forest anomaly scores, and unified risk scores — against 97,011 synthetic HCPs. Its purpose is to surface compliance patterns, validate GT recall, and produce publication-ready figures for stakeholder review.
+
+### 2. What Was Built
+
+**File:** `notebooks/phase2_eda.ipynb` (22 cells: 12 code + 10 markdown)
+**Executed output:** `notebooks/phase2_eda_executed.ipynb`
+**Figures:** `notebooks/figures/fig_01_*.png` through `fig_11_*.png` (11 figures, 20 total plots)
+
+**10 EDA Sections:**
+
+| # | Section | Figures | Key Content |
+|---|---------|---------|-------------|
+| 1 | Risk Score Distributions | fig_01, fig_02 | Histograms of risk_score/rule_score/anomaly_score, tier pie chart, score boxplot by tier |
+| 2 | Rule Flag Analysis | fig_03, fig_04 | Top-15 flag bar chart with severity colors, HCP severity distribution, flag co-occurrence heatmap |
+| 3 | Feature Importance | fig_05 | Top-20 Pearson \|r\| horizontal bar + heuristic vs anomaly score scatter |
+| 4 | Ground Truth Recall | fig_06 | Confusion grid (tier × violation), score distributions by GT label, tier-level recall bars |
+| 5 | State Risk Heatmap | fig_07 | Mean risk_score by state (DuckDB fallback: pandas groupby on feature_store_raw) |
+| 6 | Geographic Distribution | fig_08 | HCP count by state bar, top-10 states with median risk score |
+| 7 | Speaker Program Analysis | fig_09 | Risk score histogram by speaker status, cost/attendance scatter, flag comparison |
+| 8 | Top 50 HCPs | fig_10 | Styled table with tier colors + gold star GT markers, horizontal bar chart |
+| 9 | Engagement Quadrant | fig_11 | Proxy scatter (combined_raw_risk_score vs anomaly_score) with quadrant lines and labels |
+| 10 | Key Findings Summary | (print) | Text summary: violation rate, top flags, GT recall, tier distribution, state coverage |
+
+**Color palette used:**
+- CRITICAL: `#d62728`, HIGH: `#ff7f0e`, MEDIUM: `#ffbb78`, LOW: `#2ca02c`
+
+**Data loaded:**
+- `features/outputs/feature_store.parquet`, `feature_store_raw.parquet`, `ground_truth_labels.parquet`
+- `models/outputs/rule_flags.parquet`, `if_scores.parquet`, `risk_scores.parquet`, `feature_importance.csv`
+- DuckDB compliance.duckdb (graceful fallback to pandas if unavailable)
+
+### 3. Key Findings
+
+From the executed notebook (97,011 HCPs, synthetic CMS data):
+
+- **Violation rate:** 24.5% (23,727 HCPs) flagged as GT violations
+- **Top 5 flags:** `flag_annual_cap_breach_2022/2023/2024` (widespread in synthetic data), `flag_meal_limit_breach`, `flag_near_cap_2024`
+- **GT recall (high+critical tier):** 41.0% — above the 35% acceptance threshold
+- **Recall (any flag):** 92.6% of GT violations have at least one rule flag fired
+- **Risk tier distribution:** ~0.5% critical, ~5% high, ~35% medium, ~59% low
+- **IF outlier rate:** 10.0% of HCPs identified as outliers by Isolation Forest
+- **Feature importance:** Spend-based features (spend_2024, combined_raw_risk_score, raw_spend_risk_score) dominate Pearson |r| with anomaly score
+- **Geographic:** All 50 states + DC represented; FL, TX, CA, NY have highest HCP counts
+- **Speaker programs:** HCPs who spoke at events show elevated risk scores vs non-speakers
+
+### 4. How to Run
+
+**Prerequisites:** virtual environment with all dependencies including `seaborn`, `ipykernel`
+
+```bash
+# Register the venv as a Jupyter kernel (one-time setup)
+source venv/bin/activate
+python3 -m ipykernel install --user --name compliance_venv --display-name "Python (compliance_venv)"
+
+# Execute the notebook (from project root)
+jupyter nbconvert --to notebook --execute notebooks/phase2_eda.ipynb \
+    --output notebooks/phase2_eda_executed.ipynb \
+    --ExecutePreprocessor.timeout=240 \
+    --ExecutePreprocessor.kernel_name=compliance_venv
+
+# Or open interactively
+jupyter notebook notebooks/phase2_eda.ipynb
+```
+
+**Working directory note:** Cell 0 contains `os.chdir()` logic to ensure the notebook runs from the project root regardless of how it was launched.
+
+### 5. Known Limitations
+
+- **DuckDB specialty:** `specialty=None` for all HCPs on dev (DuckDB feature store lacks specialty data; Athena-only). Section 5 heatmap uses state-level grouping as a proxy.
+- **Engagement quadrant:** All HCPs in `'continue'` quadrant on dev because NP peer benchmark is Athena-only. Section 9 uses proxy scatter (combined_raw_risk_score vs anomaly_score) with quadrant annotations instead.
+- **Synthetic data bias:** Annual cap breach flags fire for ~37% of HCPs in synthetic data (CMS spend values not scaled to realistic cap thresholds), creating inflated critical/high flag counts vs production.
+- **GT recall ceiling:** 41% high+critical recall reflects the synthetic violation label generator's limited correlation with rule flags — production recall is expected to be higher with real violation ground truth.
+- **Output path:** `jupyter nbconvert` writes to `notebooks/notebooks/phase2_eda_executed.ipynb` (double-nested) due to nbconvert's relative path behavior. Move to `notebooks/` if needed.
+
+### 6. Next Steps
+
+- **Phase 3:** Replace Pearson |r| feature importance with SHAP values for model explainability
+- **Production GT:** Re-calibrate recall thresholds once real ground truth labels are available from the compliance team
+- **Specialty heatmap:** Enable when Athena tables are connected (replace DuckDB dev with production query)
+- **Engagement quadrant:** Re-enable when `engagement_quadrant` is populated from Athena peer benchmark pipeline
+- **Interactive dashboards:** Convert key EDA plots to Streamlit or Plotly Dash for stakeholder self-service
+
+---
+
 ## Task 2.12 — test_anomaly_models.py
 
 ### 1. Task Overview and Purpose
