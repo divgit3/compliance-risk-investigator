@@ -37,6 +37,7 @@ Prerequisite:
 """
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -57,6 +58,7 @@ load_dotenv()
 FEATURE_STORE_PATH = "features/outputs/feature_store_raw.parquet"
 RULES_PATH         = "compliance/rules.json"
 OUTPUT_DIR         = "models/outputs"
+RAW_DOLLARS_PATH = "features/outputs/hcp_spend_raw_dollars.parquet"
 
 # ─── Severity mapping ─────────────────────────────────────────────────────────
 # One entry per flag column. Used by compute_flag_summary() to bucket HCPs
@@ -229,66 +231,42 @@ def apply_meal_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
     return df
 
 
-def apply_cap_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
-    """
-    Apply annual compensation cap rules (COMP_001: $75,000 cap; COMP_003: 80% threshold).
 
-    Cap threshold:
-      COMP_001 effective_threshold = 75000 (USD)
 
-    Near-cap threshold:
-      COMP_003 effective_threshold = 0.80 (fraction of annual cap)
-      → near_cap_usd = 0.80 × 75000 = 60000
+def apply_cap_rules(df, raw_df, rules):
+    cap      = rules.get("COMP_001", 75000)
+    near_cap = rules.get("COMP_003", 0.80) * cap
 
-    Columns used from feature_store:
-      annual_cap_pct_used_2022/2023/2024  — spend_YYYY / ANNUAL_CAP.
-          These are RobustScaled in the spend matrix but logically represent
-          fraction of cap used. Values >= 1.0 → cap was breached.
-          Values >= near_cap_fraction → near-cap threshold was met.
-      years_near_cap_real  — count of years where spend >= 60K (computed by
-          feature_store.py compute_real_benchmarks from raw Athena spend).
-          Falls back to years_near_cap (dbt, 0-filled on dev).
+    # Merge raw dollar spend onto df for cap checks
+    spend = raw_df[["hcp_id", "spend_2022", "spend_2023",
+                    "spend_2024", "annual_cap_pct_used_2022",
+                    "annual_cap_pct_used_2023",
+                    "annual_cap_pct_used_2024"]].copy()
+    merged = df.merge(spend, on="hcp_id", how="left",
+                      suffixes=("", "_raw"))
 
-    Flags:
-      flag_annual_cap_breach_2022/2023/2024  (critical) — spend >= $75K in that year
-      flag_near_cap_2024                     (high)     — spend >= $60K in 2024
-      flag_chronic_near_cap                  (high)     — near-cap in 2+ of 3 years
-    """
-    cap_threshold      = float(rules.get("COMP_001", 75_000))
-    near_cap_fraction  = float(rules.get("COMP_003", 0.80))
+    # Use real dollar amounts for cap rules
+    df["flag_annual_cap_breach_2022"] = merged["spend_2022"] >= cap
+    df["flag_annual_cap_breach_2023"] = merged["spend_2023"] >= cap
+    df["flag_annual_cap_breach_2024"] = merged["spend_2024"] >= cap
+    df["flag_near_cap_2024"]          = merged["spend_2024"] >= near_cap
+    df["flag_chronic_near_cap"]       = (
+        (merged["spend_2022"] >= near_cap).astype(int) +
+        (merged["spend_2023"] >= near_cap).astype(int) +
+        (merged["spend_2024"] >= near_cap).astype(int)
+    ) >= 2
 
-    # annual_cap_pct_used_* = spend_YYYY / ANNUAL_CAP.
-    # >= 1.0 means the $75K cap was reached or exceeded.
-    # >= near_cap_fraction (0.80) means $60K threshold reached.
-    cap_pct_2022 = _col(df, "annual_cap_pct_used_2022")
-    cap_pct_2023 = _col(df, "annual_cap_pct_used_2023")
-    cap_pct_2024 = _col(df, "annual_cap_pct_used_2024")
-
-    df["flag_annual_cap_breach_2022"] = (cap_pct_2022 >= 1.0).astype(bool)
-    df["flag_annual_cap_breach_2023"] = (cap_pct_2023 >= 1.0).astype(bool)
-    df["flag_annual_cap_breach_2024"] = (cap_pct_2024 >= 1.0).astype(bool)
-    df["flag_near_cap_2024"]          = (cap_pct_2024 >= near_cap_fraction).astype(bool)
-
-    # Chronic near-cap: near-cap in 2+ of 3 years.
-    # Prefer years_near_cap_real (computed from raw Athena spend in feature_store.py).
-    # Fall back to years_near_cap (dbt column, 0-filled on DuckDB dev).
-    if "years_near_cap_real" in df.columns:
-        years_near_cap = _col(df, "years_near_cap_real")
-    else:
-        years_near_cap = _col(df, "years_near_cap")
-
-    df["flag_chronic_near_cap"] = (years_near_cap >= 2).astype(bool)
-
+    n_breach = df["flag_annual_cap_breach_2024"].sum()
     logger.info(
-        "Cap rules applied: breach_2022={} | breach_2023={} | breach_2024={} "
-        "| near_cap_2024={} | chronic_near_cap={}",
-        df["flag_annual_cap_breach_2022"].sum(),
-        df["flag_annual_cap_breach_2023"].sum(),
-        df["flag_annual_cap_breach_2024"].sum(),
-        df["flag_near_cap_2024"].sum(),
-        df["flag_chronic_near_cap"].sum(),
+        f"Cap rules applied (real dollars): "
+        f"breach_2022={df['flag_annual_cap_breach_2022'].sum()} | "
+        f"breach_2023={df['flag_annual_cap_breach_2023'].sum()} | "
+        f"breach_2024={n_breach} | "
+        f"near_cap_2024={df['flag_near_cap_2024'].sum()} | "
+        f"chronic_near_cap={df['flag_chronic_near_cap'].sum()}"
     )
     return df
+
 
 
 def apply_speaker_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame:
@@ -465,15 +443,15 @@ def apply_trend_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame
 
     Columns used from feature_store:
       multi_year_increasing_flag  — 1 if spend increased in both 2022→2023 and 2023→2024
-      np_escalating_rank_real     — True/1 if peer rank worsened year-over-year
-                                    (computed by feature_store.py compute_real_benchmarks)
+      np_escalating_rank     — True/1 if peer rank worsened year-over-year
+                                    (0 - filled due to Athena/DuckDB split - Phase 3)
 
     Flags:
       flag_escalating_spend  (medium) — spend increased every year 2022→2024
       flag_escalating_rank   (medium) — specialty peer rank worsened every year
     """
     multi_yr_flag       = _col(df, "multi_year_increasing_flag")
-    escalating_rank     = _col(df, "np_escalating_rank_real")
+    escalating_rank     = _col(df, "np_escalating_rank")
 
     df["flag_escalating_spend"] = (multi_yr_flag == 1).astype(bool)
     df["flag_escalating_rank"]  = (escalating_rank.astype(float) > 0).astype(bool)
@@ -485,6 +463,25 @@ def apply_trend_rules(df: pd.DataFrame, rules: dict[str, float]) -> pd.DataFrame
     )
     return df
 
+def load_raw_dollars() -> pd.DataFrame:
+    """
+    Load unscaled dollar amounts for rule checks.
+    Cap and meal rules must run on real dollar values
+    not RobustScaled values — see known limitation
+    documented in Task 2.8.
+    """
+    if not os.path.exists(RAW_DOLLARS_PATH):
+        raise FileNotFoundError(
+            f"Raw dollar file not found: {RAW_DOLLARS_PATH}\n"
+            "Run features/hcp_spend_features.py first."
+        )
+    df = pd.read_parquet(RAW_DOLLARS_PATH)
+    if "hcp_id" not in df.columns:
+        df = df.reset_index(drop=True)
+
+    df["hcp_id"] = df["hcp_id"].astype(str)
+    logger.info(f"Raw dollars loaded: {len(df)} rows × {len(df.columns)} columns")
+    return df
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
@@ -713,10 +710,11 @@ def main() -> None:
 
     # 2. Load feature store
     df = load_feature_store()
+    raw_df = load_raw_dollars()
 
     # 3. Apply all rule groups in order
     df = apply_meal_rules(df, rules)
-    df = apply_cap_rules(df, rules)
+    df = apply_cap_rules(df, raw_df,rules)
     df = apply_speaker_rules(df, rules)
     df = apply_attestation_rules(df, rules)
     df = apply_interaction_rules(df, rules)

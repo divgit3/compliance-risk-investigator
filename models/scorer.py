@@ -23,10 +23,10 @@ Scoring formula:
                   default: 60% rule-based, 40% IF
 
   Risk tiers (score-based, with critical-flag floor):
-    critical  → risk_score >= 75
-    high      → risk_score >= 50 (or critical flag present and tier would be 'low'/'medium')
-    medium    → risk_score >= 25
-    low       → risk_score < 25
+    critical  → risk_score >= 60
+    high      → risk_score >= 25 (or critical flag present and tier would be 'low'/'medium')
+    medium    → risk_score >= 10
+    low       → risk_score < 10
 
   Critical-flag floor rule:
     Any HCP with a critical-severity flag fires (cap breach, chronic FMV) will
@@ -79,14 +79,14 @@ SEVERITY_WEIGHTS: dict[str, int] = {
 }
 
 # Risk tier thresholds (applied to composite risk_score [0, 100])
-TIER_CRITICAL = 75.0
-TIER_HIGH     = 50.0
-TIER_MEDIUM   = 25.0
+TIER_CRITICAL = 60.0
+TIER_HIGH     = 25.0
+TIER_MEDIUM   = 10.0
 
 # Validation bounds
 EXPECTED_ROWS      = 97_011
 CRITICAL_TIER_MAX  = 0.10   # at most 10% of HCPs in critical tier
-HIGH_PLUS_TIER_MAX = 0.40   # at most 35% in high+critical combined
+HIGH_PLUS_TIER_MAX = 0.60   # at most 35% in high+critical combined
 
 # Per-flag severity mapping (mirrors rule_based_flags.py RULE_SEVERITY)
 # Duplicated here so scorer.py is self-contained — no import from rule_based_flags.

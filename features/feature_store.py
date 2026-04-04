@@ -75,27 +75,40 @@ SPEND_TREND_ORDINAL = {
 # _real benchmark string columns (cap_pattern_real, spend_trend_real) are
 # encoded to integers before this list is applied.
 EXCLUDE_FROM_FEATURES = [
-    # Identity
+    # Identity columns
     "hcp_id",
     "hcp_name",
     "specialty",
     "state",
     "city",
-    # Metadata
     "mart_created_at",
-    # dbt categorical strings (0-filled on DuckDB — replaced by _real ints)
+
+    # Ground truth — never in ML features
+    "ground_truth_violation_count",
+    "ground_truth_max_severity",
+    "has_violation",
+
+    # Categorical — not numeric
     "engagement_quadrant",
     "engagement_quadrant_reason",
     "cap_pattern",
     "spend_trend",
-    # Ground truth — VALIDATION ONLY, never ML input
-    "ground_truth_violation_count",
-    "ground_truth_max_severity",
-    "has_violation",
-    # Raw spend used only for recompute — not scaled features
-    "spend_2022_raw",
-    "spend_2023_raw",
-    "spend_2024_raw",
+
+    # Activity proxies — not compliance signals
+    "data_completeness_score",   # data artifact
+    "has_speaker_events",        # activity flag
+    "has_cms_payments",          # data artifact
+    "has_interactions",          # data artifact
+
+    # Circular heuristic scores
+    # These are built FROM the same raw features
+    # the IF already sees — including them means
+    # the IF partially learns from our own scoring
+    # logic rather than raw data independently
+    "combined_raw_risk_score",
+    "raw_spend_risk_score",
+    "risk_signal_count",
+    "raw_event_risk_score_mean",
 ]
 
 # Ground truth columns extracted to separate parquet

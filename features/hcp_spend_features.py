@@ -592,17 +592,28 @@ def main() -> None:
     # 5. Binary encoding
     encoded_df = encode_binary_features(clean_df)
 
-    # 6. Scaling
+    # Save raw dollar amounts before scaling
+    raw_spend_cols = ["spend_2022", "spend_2023", "spend_2024",
+                    "peak_year_spend", "annual_cap_pct_used",
+                    "annual_cap_pct_used_2022", "annual_cap_pct_used_2023",
+                    "annual_cap_pct_used_2024",
+                    "meal_breach_rate", "max_meal_overage_pct",
+                    "meals_over_limit_count",
+                    "fmv_compliance_rate",
+                    "interactions_with_vague_rationale",
+                    "total_interactions"]
+    raw_spend_cols_present = [c for c in raw_spend_cols if c in encoded_df.columns]
+    raw_dollar_df = encoded_df[raw_spend_cols_present].copy()
+    # hcp_id lives in merged_df as identity column — add it back
+    raw_dollar_path = os.path.join(OUTPUT_DIR, "hcp_spend_raw_dollars.parquet")
+    raw_dollar_df.insert(0, "hcp_id", merged_df.index.values)
+    raw_dollar_df.to_parquet(raw_dollar_path, index=False)
+    logger.info(f"Saved raw dollar amounts: {raw_dollar_path} ({len(raw_dollar_df)} rows)")
+
     scaled_df, scaler_params = scale_features(encoded_df)
-
-    # 7. Restore identity columns
-    final_df = add_identity_columns(scaled_df, original_df)
-
-    # 8. Validate
+    final_df = add_identity_columns(scaled_df, merged_df)
     validate_output(final_df)
-
-    # 9. Save
-    output_paths = save_outputs(final_df, scaler_params)
+    save_outputs(final_df, scaler_params)
 
     elapsed = time.time() - start
     feature_cols = [c for c in (SPEND_FEATURES + BENCHMARK_FEATURES) if c in final_df.columns]
