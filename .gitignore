@@ -19,6 +19,10 @@ data/synthetic/
 features/outputs/*.parquet
 features/outputs/*.json
 
+# Model outputs (generated files — tracked by .gitkeep only)
+models/outputs/*.parquet
+models/outputs/*.json
+
 # MLflow
 mlruns/
 

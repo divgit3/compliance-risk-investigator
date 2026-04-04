@@ -89,8 +89,8 @@ SPEND_BINARY_FEATURES = [
     "near_cap_flag",
     "multi_year_increasing_flag",
     "has_cms_payments",
-    "is_high_prescriber",
-    "is_kol",
+    # is_high_prescriber and is_kol come from DuckDB mart_hcp_risk_profile
+    # joined in feature_store.py — not available in Athena mart
 ]
 
 # Benchmark features from mart_benchmark (DuckDB).
@@ -121,7 +121,7 @@ BENCHMARK_BINARY_FEATURES = [
 ]
 
 # Identity columns — preserved for output joining, not ML features.
-IDENTITY_COLUMNS = ["hcp_id", "hcp_name", "specialty", "state"]
+IDENTITY_COLUMNS = ["hcp_id"]
 
 
 # ─── Data loading ─────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ def load_athena_spend_features() -> pd.DataFrame:
         c for c in SPEND_FEATURES
         if c not in ("annual_cap_pct_used_2022", "annual_cap_pct_used_2023", "annual_cap_pct_used_2024")
     ]
-    identity_in_mart = ["hcp_name", "specialty", "state"]
+    identity_in_mart = []
     select_cols = (
         ["hcp_id"]
         + identity_in_mart
@@ -409,7 +409,7 @@ def add_identity_columns(scaled_df: pd.DataFrame, original_df: pd.DataFrame) -> 
     """
     Add back non-feature identity columns removed before scaling.
 
-    hcp_id, hcp_name, specialty, state are needed for output joining
+    hcp_id is needed for output joining
     but are not ML features. They are sourced from original_df (pre-scale).
     """
     for col in IDENTITY_COLUMNS:
