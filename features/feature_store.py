@@ -173,6 +173,11 @@ def load_risk_profile() -> pd.DataFrame:
     query = """
         SELECT
             hcp_id,
+            specialty,
+            state,
+            hcp_name,
+            is_high_prescriber,
+            is_kol,
             city,
             combined_raw_risk_score,
             risk_signal_count,
@@ -509,8 +514,7 @@ def extract_ground_truth(df: pd.DataFrame) -> pd.DataFrame:
     It is used exclusively in test_anomaly_models.py (Task 2.12) to measure
     how well the Isolation Forest surfaces true violations.
     """
-    gt = df[GROUND_TRUTH_COLS + ["hcp_id"]].drop_duplicates(subset=["hcp_id"]).copy()
-    gt = gt[["hcp_id"] + [c for c in GROUND_TRUTH_COLS if c != "hcp_id"]]
+    gt = df[GROUND_TRUTH_COLS].drop_duplicates(subset=["hcp_id"]).copy()
     gt["has_violation"] = (gt["ground_truth_violation_count"] > 0).astype(int)
 
     total_violations = gt["has_violation"].sum()
@@ -555,7 +559,7 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     # Drop boolean columns — encode as int
     bool_cols = feat_df.select_dtypes(include="bool").columns.tolist()
     for col in bool_cols:
-        feat_df[col] = feat_df[col].astype(int)
+        feat_df[col] = feat_df[col].fillna(False).astype(int)
 
     # Fill nulls (event 0-fill for non-speakers, any residual from joins)
     null_count = feat_df.isnull().sum().sum()
@@ -661,6 +665,17 @@ def validate_feature_store(
 
 
 # ─── Output ───────────────────────────────────────────────────────────────────
+import numpy as np
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 def save_outputs(
     feature_df: pd.DataFrame,
@@ -713,7 +728,7 @@ def save_outputs(
         "excluded_columns":          EXCLUDE_FROM_FEATURES,
     }
     with open(meta_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+        json.dump(metadata, f, indent=2, cls=NumpyEncoder)
     logger.info("Saved metadata: {}", meta_path)
 
     return {
@@ -759,20 +774,22 @@ def main() -> None:
     # 4. Extract ground truth BEFORE building feature matrix
     ground_truth_df = extract_ground_truth(merged_df)
 
-    ground_truth_stats = {
-        "total_violations": int(ground_truth_df["has_violation"].sum()),
-        "severity_distribution": dict(
-            ground_truth_df["ground_truth_max_severity"].value_counts().astype(int)
-        ),
-        "violation_rate": float(ground_truth_df["has_violation"].mean()),
-    }
+    # Save unscaled version for rule_based_flags.py
+    # Rule checks must run on original values not RobustScaled values
+    raw_path = os.path.join(OUTPUT_DIR, "feature_store_raw.parquet")
+    merged_df.to_parquet(raw_path, index=False)
+    logger.info(f"Saved raw (unscaled) feature store: {raw_path}")
 
-    # 5. Build clean feature matrix (no GT, no strings, no nulls)
     feature_df = build_feature_matrix(merged_df)
 
     # 6. Validate
     validate_feature_store(feature_df, ground_truth_df)
-
+    # ADD before line 794 (before save_outputs call)
+    ground_truth_stats = {
+        "total_violations": int(ground_truth_df["has_violation"].sum()),
+        "violation_rate": float(ground_truth_df["has_violation"].mean()),
+        "severity_distribution": ground_truth_df["ground_truth_max_severity"].value_counts().to_dict()
+    }
     # 7. Save
     output_paths = save_outputs(
         feature_df,
