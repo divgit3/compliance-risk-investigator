@@ -610,20 +610,58 @@ python models/isolation_forest.py   # regenerates IF scores + shap_values.parque
 
 ## Task 3.8: API Tests
 
-**File:** `tests/test_api.py`
-**Status:** 🔲 Planned
+**Files:** `tests/test_api.py`, updated `tests/conftest.py`, updated `pytest.ini`
+**Status:** ✅ Complete
 
-pytest suite using `httpx.AsyncClient` against FastAPI test client:
-- `test_health_check`
-- `test_list_hcps_default`
-- `test_list_hcps_filter_by_tier`
-- `test_get_hcp_profile_valid`
-- `test_get_hcp_profile_not_found`
-- `test_get_hcp_flags`
-- `test_get_events`
-- `test_policy_query`
-- `test_benchmarks`
-- `test_investigate_critical_hcp` (spot-check report structure)
+### Test suite summary
+
+38 tests total across 7 classes:
+
+| Class | Tests | Agent-marked | CI-safe |
+|-------|-------|-------------|---------|
+| `TestHealth` | 3 | 0 | ✅ |
+| `TestHCPList` | 8 | 0 | ✅ |
+| `TestHCPDetail` | 4 | 0 | ✅ |
+| `TestHCPFlags` | 4 | 0 | ✅ |
+| `TestEvents` | 3 | 0 | ✅ |
+| `TestBenchmarks` | 6 | 0 | ✅ |
+| `TestPolicyQuery` | 6 | 4 | 2 non-agent |
+| `TestAgentEndpoints` | 4 | 4 | 0 |
+| **Total** | **38** | **8** | **30** |
+
+### Implementation (actuals)
+
+**`tests/conftest.py`** updated:
+- `_init_app_state()` directly populates `api.dependencies._STATE` at import time — necessary because `httpx.ASGITransport` does NOT fire ASGI lifespan events
+- Agents initialised with real `InvestigationAgent / MonitoringAgent / PolicyAgent` only when `OPENAI_API_KEY` is a non-dummy value; otherwise `None` (non-agent tests never call agents)
+- `@pytest_asyncio.fixture(scope="module") async def async_client()` — one HTTPX client per test module, lifespan handled by conftest state init
+
+**`pytest.ini`** updated:
+- `asyncio_mode = auto` — all async test functions run under pytest-asyncio automatically
+- `markers = agent: ...` — registered to avoid unknown-mark warnings
+
+**`requirements.txt`** updated:
+- `pytest-asyncio>=0.23.0` added
+
+**Key implementation choices:**
+- `test_policy_query_empty_question_returns_400_or_422` accepts 400/422/503 — with `agent=None` the 503 check fires before the 400 validation check in the router
+- `test_list_filter_by_state` asserts 200 (state filter is a no-op since `risk_scores` has no `state` column)
+- `test_benchmarks_peer_count_is_97011` — all HCPs have null specialty/state in dev, so peer group = full population
+- `critical_hcp_id` module fixture resolves once via `/hcps?risk_tier=critical&limit=1`
+
+### Run commands
+
+```bash
+# CI — no OpenAI calls (30 tests)
+pytest tests/test_api.py -m "not agent" -v
+
+# Full suite with agents (38 tests — real OPENAI_API_KEY required)
+pytest tests/test_api.py -v
+
+# All Phase 3 tests (api + anomaly models)
+pytest tests/test_api.py tests/test_anomaly_models.py -m "not agent" -v
+# → 80 passed in ~0.8s
+```
 
 ---
 
