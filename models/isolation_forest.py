@@ -413,6 +413,70 @@ def validate_scores(scores_df: pd.DataFrame) -> bool:
     return True
 
 
+# ─── SHAP computation ─────────────────────────────────────────────────────────
+
+def compute_shap_values(
+    clf: IsolationForest,
+    X: np.ndarray,
+    feature_cols: list[str],
+    hcp_ids: pd.Series,
+) -> bool:
+    """
+    Compute per-HCP SHAP values using shap.TreeExplainer and save to
+    models/outputs/shap_values.parquet.
+
+    Columns: hcp_id + one column per feature (99 cols). Values are raw SHAP
+    values (not absolute): positive = pushes anomaly score up, negative = down.
+
+    Returns True on success, False on failure (never crashes the pipeline).
+
+    Notes:
+      - TreeExplainer supports sklearn IsolationForest natively.
+      - check_additivity=False avoids an O(n) verification pass — safe for IF.
+      - 97K rows × 99 features with 200 trees: ~30-90s depending on hardware.
+    """
+    out_path = Path(OUTPUT_DIR) / "shap_values.parquet"
+    try:
+        import shap
+
+        logger.info("Computing SHAP values with TreeExplainer ({} samples × {} features)…",
+                    X.shape[0], X.shape[1])
+        t0 = time.time()
+
+        explainer   = shap.TreeExplainer(clf)
+        shap_matrix = explainer.shap_values(X, check_additivity=False)
+
+        elapsed = time.time() - t0
+        logger.info("SHAP computation complete in {:.1f}s", elapsed)
+
+        # shap_matrix shape: (n_samples, n_features) for IsolationForest
+        shap_df = pd.DataFrame(shap_matrix, columns=feature_cols)
+        shap_df.insert(0, "hcp_id", hcp_ids.values)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shap_df.to_parquet(out_path, index=False)
+
+        logger.info(
+            "Saved shap_values.parquet: {} rows × {} feature cols  ({})",
+            len(shap_df),
+            len(feature_cols),
+            out_path,
+        )
+
+        # Quick sanity: mean |SHAP| per feature (top 5)
+        mean_abs = shap_df[feature_cols].abs().mean().sort_values(ascending=False)
+        logger.info("Top 5 features by mean |SHAP|:\n{}",
+                    mean_abs.head(5).to_string())
+        return True
+
+    except ImportError:
+        logger.warning("shap package not installed — skipping SHAP computation")
+        return False
+    except Exception as exc:
+        logger.warning("SHAP computation failed: {} — skipping (IF scores unaffected)", exc)
+        return False
+
+
 # ─── Save outputs ─────────────────────────────────────────────────────────────
 
 def save_outputs(
@@ -527,6 +591,9 @@ def main() -> None:
         fit_duration,
         score_stats,
     )
+
+    # 11. SHAP values (best-effort — never blocks the pipeline)
+    compute_shap_values(clf, X, feature_cols, aligned_df["hcp_id"])
 
     elapsed = time.time() - start
 
