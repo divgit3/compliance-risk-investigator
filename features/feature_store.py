@@ -478,16 +478,40 @@ def compute_real_benchmarks(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # ── Step 7: Engagement priority score ────────────────────────────────────
-    # Industry/competitor components remain 0 (data not in Python layer yet).
-    # Score = NP rank component (30 pts) + persistence component (10 pts max).
+    # Prefer full 100pt score from industry_benchmarks.py if already computed.
+    # Falls back to NP rank (30pts) + persistence (10pts max) ≈ 45pt cap.
+    _POP_BM_PATH = Path(OUTPUT_DIR) / "population_benchmarks.parquet"
+
     np_rank_2024  = df["np_spend_pct_rank_specialty_2024_real"]
     outlier_count = df["np_outlier_years_count_real"].astype(float)
 
-    df["engagement_priority_score_real"] = np.minimum(
-        100.0,
-        np_rank_2024 * 30.0
-        + np.minimum(10.0, outlier_count * 5.0)
+    base_score = np.minimum(
+        40.0,
+        np_rank_2024 * 30.0 + np.minimum(10.0, outlier_count * 5.0),
     )
+
+    if _POP_BM_PATH.exists():
+        try:
+            pop_bm = pd.read_parquet(_POP_BM_PATH)[["hcp_id", "engagement_priority_score_full"]]
+            pop_bm = pop_bm.set_index("hcp_id")["engagement_priority_score_full"]
+            hcp_ids = df["hcp_id"] if "hcp_id" in df.columns else df.index
+            eps_full = hcp_ids.map(pop_bm).fillna(base_score)
+            df["engagement_priority_score_real"] = np.minimum(100.0, eps_full.values)
+            logger.info(
+                "EPS loaded from population_benchmarks.parquet — "
+                "mean={:.1f}  max={:.1f}",
+                df["engagement_priority_score_real"].mean(),
+                df["engagement_priority_score_real"].max(),
+            )
+        except Exception as exc:
+            logger.warning("Failed to load population_benchmarks.parquet: {} — using base score", exc)
+            df["engagement_priority_score_real"] = np.minimum(100.0, base_score)
+    else:
+        df["engagement_priority_score_real"] = np.minimum(100.0, base_score)
+        logger.info(
+            "population_benchmarks.parquet not found — using base EPS "
+            "(run features/industry_benchmarks.py to compute full 100pt score)"
+        )
 
     # Logging
     nonzero_rank = (df["np_spend_pct_rank_specialty_2024_real"] > 0).sum()
