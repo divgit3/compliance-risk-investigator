@@ -66,7 +66,7 @@ Prompt: LangChain Hub `hwchase17/react` with Nova Pharma system prefix prepended
 | `get_hcp_risk_profile` | risk_scores.parquet + feature_store_raw.parquet | Risk score, tier, key metrics |
 | `get_rule_flags` | rule_flags.parquet + compliance/rules.json | Fired flags with policy citations |
 | `get_peer_benchmark` | hcp_spend_raw_dollars.parquet + feature_store_raw.parquet | Percentile rank vs specialty peers |
-| `get_top_anomalous_features` | feature_importance.csv + feature_store_raw.parquet | Top 5 IF-driving features |
+| `get_top_anomalous_features` | shap_values.parquet (per-HCP) → feature_importance.csv fallback | Top 5 IF-driving features |
 | `search_policy_docs` | Qdrant localhost:6333 — policy_docs collection | Policy grounding + chunk citations |
 
 ### Tool Implementation Details
@@ -195,7 +195,7 @@ each, plus total elapsed time.
 ### Known Limitations
 
 - SHAP not yet implemented — feature importance uses global Pearson proxy from
-  `feature_importance.csv`; Task 3.7 will replace with per-HCP SHAP values
+  `feature_importance.csv` (global Pearson proxy); `shap_values.parquet` (per-HCP SHAP, Task 3.7 ✅)
 - Industry benchmarks incomplete — `engagement_priority_score` capped at 45pts
   until Task 3.5 loads `mart_competitor_payments` + `mart_population_payments`
 - `peer_benchmark` uses specialty-only filter; no geographic sub-filter within
@@ -471,38 +471,45 @@ OIG speaker fraud, and an edge-case question potentially outside the knowledge b
 
 ## Task 3.4: FastAPI Backend
 
-**File:** `api/main.py` + `api/routers/`
-**Status:** 🔲 Planned
+**Files:** `api/main.py`, `api/dependencies.py`, `api/routers/{hcps,events,monitoring,policy,benchmarks}.py`, `api/test_api.py`
+**Status:** ✅ Complete
 
-### Endpoints
+### Endpoints (actuals)
 
 | Method | Path | Handler | Source |
 |--------|------|---------|--------|
 | GET | `/health` | health check | system |
-| GET | `/hcps` | list HCPs with risk scores + filters | risk_scores.parquet |
-| GET | `/hcps/{hcp_id}` | full HCP risk profile | risk_scores + feature_store_raw |
+| GET | `/hcps` | list HCPs sorted by risk_score desc | risk_scores.parquet |
+| GET | `/hcps/{hcp_id}` | full HCP risk profile | risk_scores.parquet |
 | GET | `/hcps/{hcp_id}/investigate` | InvestigationAgent | Task 3.1 |
-| GET | `/hcps/{hcp_id}/flags` | rule flags + citations | rule_flags + rules.json |
-| GET | `/events` | speaker events with risk | event_feature_matrix.parquet |
-| GET | `/monitoring` | MonitoringAgent report | Task 3.2 |
-| POST | `/policy/query` | PolicyAgent RAG | Task 3.3 |
-| GET | `/benchmarks/{hcp_id}` | peer benchmark | Task 3.5 |
+| GET | `/hcps/{hcp_id}/flags` | fired rule flags (23 boolean cols) | rule_flags.parquet |
+| GET | `/events` | speaker event aggregates per HCP | event_feature_matrix.parquet |
+| GET | `/monitoring` | MonitoringAgent population report | Task 3.2 |
+| POST | `/policy/query` | PolicyAgent RAG Q&A | Task 3.3 |
+| GET | `/benchmarks/{hcp_id}` | peer + industry benchmark | rule_flags + population_benchmarks |
 
-### Design Decisions
+### Implementation (actuals)
 
-- Parquet files loaded once at startup into module-level DataFrames
-  (FastAPI `lifespan` context manager)
-- Agent endpoints are `async` — `InvestigationAgent.investigate()` awaited
-- `/hcps` supports query params: `specialty`, `state`, `risk_tier`, `limit`, `offset`
-- All responses are Pydantic models from `agents/schemas.py`
-- CORS enabled for `localhost:8501` (Streamlit)
+- `api/dependencies.py`: module-level `_STATE` dict; `set_parquet/set_agent` from lifespan; typed `get_*()` dependency functions
+- `api/main.py`: lifespan loads 3 parquets + 2 benchmark parquets + inits 3 agents; CORS for `localhost:8501`; agents initialise only if `OPENAI_API_KEY` set (503 otherwise)
+- `GET /hcps` supports `limit`, `offset`, `tier`, `state` query params
+- `GET /hcps/{id}/flags` iterates over 23 boolean `flag_*` columns
+- All agent endpoints are `async`; 404 on missing hcp_id, 500 with JSON detail on agent failure
+- `api/test_api.py`: 11-step smoke test covering all endpoints + 404 check
+
+### Run
+
+```bash
+uvicorn api.main:app --reload --port 8000
+python api/test_api.py   # separate terminal
+```
 
 ---
 
 ## Task 3.5: Industry Benchmarks
 
 **Files:** `features/industry_benchmarks.py`, `features/outputs/competitor_benchmarks.parquet`, `features/outputs/population_benchmarks.parquet`, updated `features/feature_store.py` Step 7, updated `api/routers/benchmarks.py`
-**Status:** ✅ Complete (with Athena fallback active in dev)
+**Status:** ✅ Complete (Athena fallback active in dev)
 
 ### Problem
 
@@ -513,53 +520,31 @@ OIG speaker fraud, and an edge-case question potentially outside the knowledge b
 
 ### Implementation (actuals)
 
-**`features/industry_benchmarks.py`** — standalone script that:
-1. Tries `awswrangler.athena.read_sql_query` for `mart_competitor_payments` and `mart_population_payments`
-2. Falls back to `hcp_spend_raw_dollars.parquet` when Athena is not reachable
-3. Computes per-HCP:
-   - `sow` = nova_spend / (nova_spend + competitor_spend) — `NaN` in fallback
-   - `industry_ratio` = nova_spend / population_avg_spend (capped at 10.0)
-   - `population_avg_spend` = specialty-level mean (or global mean in fallback)
-   - `engagement_priority_score_full` (100pt formula below)
-4. Saves `competitor_benchmarks.parquet` and `population_benchmarks.parquet`
-
 **Score formula (100pts total):**
 ```
-sow_component      = (1 - SOW) × 40        ← 40pts max  (0 when Athena unavailable)
-industry_component = min(ratio, 2) / 2 × 30 ← 30pts max
-base_component     = min(NP_rank × 20 + persistence × 10, 30) ← 30pts max
-total              = min(100, sum of above)
+sow_component      = (1 - SOW) × 40         — 40pts max  (0 when Athena unavailable)
+industry_component = min(ratio, 2) / 2 × 30  — 30pts max
+base_component     = min(NP_rank × 20 + persistence × 10, 30) — 30pts max
 ```
 
-**`features/feature_store.py` Step 7** — now checks for `population_benchmarks.parquet` at startup; loads `engagement_priority_score_full` if present and merges by `hcp_id`.
-
-**`api/routers/benchmarks.py`** — `GET /benchmarks/{hcp_id}` now returns:
-- All Task 3.4 peer fields (`percentile_rank`, `peer_avg_spend`, etc.)
-- `sow`, `industry_ratio`, `engagement_priority_score`, `competitor_avg_spend`, `population_avg_spend`, `athena_available`, `data_limitations`
-- `hcp_spend` now uses raw dollar value from `population_benchmarks.nova_spend_2024`
-
-**`api/dependencies.py` + `api/main.py`** — two new parquets loaded at lifespan startup; gracefully absent when not yet generated (`None`).
+- `features/industry_benchmarks.py` tries `awswrangler` Athena → falls back to local spend
+- `GET /benchmarks/{hcp_id}` now returns: `sow`, `industry_ratio`, `engagement_priority_score`, `competitor_avg_spend`, `population_avg_spend`, `athena_available`, `data_limitations`
+- `features/feature_store.py` Step 7 loads `population_benchmarks.parquet` when present
 
 ### Dev environment results (Athena fallback)
 
 | Metric | Value |
 |--------|-------|
 | Athena available | `False` — `awswrangler` not installed |
-| EPS mean (full formula) | 12.4 / 100 |
-| EPS max (full formula) | 56.7 / 100 (capped by missing SOW component) |
-| EPS p90 | 29.8 / 100 |
+| EPS mean | 12.4 / 100 |
+| EPS max | 56.7 / 100 (missing SOW component) |
 | Population avg spend | $195 / year |
-| HCPs with SOW | 0 (requires Athena competitor data) |
-| `data_limitations` field | "Athena not reachable — competitor benchmarks unavailable, engagement_priority_score capped at 45pts" |
-
-When Athena is reachable, run `python features/industry_benchmarks.py` then restart uvicorn — the `/benchmarks/{hcp_id}` endpoint will return real SOW and full 100pt EPS automatically.
 
 ### Run
 
 ```bash
 python features/industry_benchmarks.py
 # then restart uvicorn
-curl http://localhost:8000/benchmarks/HCP_338715
 ```
 
 ---
@@ -580,17 +565,46 @@ Compare Isolation Forest vs LOF vs OCSVM on 2024 holdout:
 
 ## Task 3.7: SHAP Explanations
 
-**Status:** 🔲 Planned
+**Files:** `models/isolation_forest.py` (new `compute_shap_values()`), `models/outputs/shap_values.parquet` (new), updated `agents/tools/data_tools.py`
+**Status:** ✅ Complete
 
-Replace Pearson proxy in `feature_importance.csv` with true SHAP values:
-- Add `shap.TreeExplainer` to `models/isolation_forest.py`
-- Compute per-HCP SHAP values (97,011 × 99 features)
-- Save `shap_values.parquet` to `models/outputs/`
-- Update `get_top_anomalous_features` tool to use SHAP per-HCP values
-  instead of global `feature_importance.csv`
+### Implementation (actuals)
 
-Impact: Investigation Agent will show HCP-specific feature drivers instead of
-global importance rankings, significantly improving report quality.
+**`models/isolation_forest.py` — new step 11 `compute_shap_values()`:**
+- Uses `shap.TreeExplainer(clf)` — natively supports sklearn `IsolationForest`
+- Calls `explainer.shap_values(X, check_additivity=False)` on full 97,011 × 99 matrix
+- Saves `models/outputs/shap_values.parquet`: 97,011 rows × 100 cols (hcp_id + 99 feature cols)
+- Values are raw SHAP contributions: positive = pushes anomaly score up, negative = down
+- Wrapped in `try/except` — failure logs a warning and never blocks IF scoring
+- Runtime: ~43s on Apple M-series (97K rows × 99 features, 200 trees)
+
+**`agents/tools/data_tools.py` — `get_top_anomalous_features()`:**
+- Adds `"shap_values"` to `_PATHS`; loaded via new `_load_optional()` (returns `None` if absent)
+- **Path A (SHAP active):** looks up hcp_id row in `shap_values.parquet`, sorts by `abs(shap_value)` descending, returns top 5 with `importance_score=abs(shap)`, `direction="high" if shap>0 else "low"`, `note="SHAP TreeExplainer per-HCP values"`
+- **Path B (fallback):** existing global Pearson |r| logic from `feature_importance.csv`, `note="Pearson |r| proxy importance (run models/isolation_forest.py to generate SHAP)"`
+- All `_IF_EXCLUDED` filters preserved in both paths
+
+### Output stats
+
+| Metric | Value |
+|--------|-------|
+| `shap_values.parquet` size | 32 MB |
+| Row count | 97,011 |
+| Feature columns | 99 |
+| Computation time | 43s |
+| Top feature by mean \|SHAP\| | `fmv_compliance_rate` (0.172) |
+
+### Regression
+
+```
+pytest tests/test_anomaly_models.py -v   # 50/50 passed
+```
+
+### Run
+
+```bash
+python models/isolation_forest.py   # regenerates IF scores + shap_values.parquet
+```
 
 ---
 
