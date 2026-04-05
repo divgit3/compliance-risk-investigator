@@ -61,3 +61,4 @@ boto3
 # ── Testing ──────────────────────────────────────────────────────────────────
 # pytest for unit + integration tests; httpx provides async client for API tests
 pytest
+pytest-asyncio>=0.23.0
