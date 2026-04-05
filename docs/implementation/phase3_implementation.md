@@ -501,24 +501,66 @@ OIG speaker fraud, and an edge-case question potentially outside the knowledge b
 
 ## Task 3.5: Industry Benchmarks
 
-**Status:** 🔲 Planned
+**Files:** `features/industry_benchmarks.py`, `features/outputs/competitor_benchmarks.parquet`, `features/outputs/population_benchmarks.parquet`, updated `features/feature_store.py` Step 7, updated `api/routers/benchmarks.py`
+**Status:** ✅ Complete (with Athena fallback active in dev)
 
 ### Problem
 
-`engagement_priority_score` is capped at 45/100 because:
+`engagement_priority_score` was capped at 45/100 because:
 - `mart_competitor_payments` (Athena) not yet loaded at Python layer
 - `mart_population_payments` (Athena) not yet loaded at Python layer
-- SOW (share of wallet) and industry ratios are 0-filled
+- SOW (share of wallet) and industry ratios were 0-filled
 
-### Plan
+### Implementation (actuals)
 
-1. Load `mart_competitor_payments` from Athena via boto3/awswrangler
-2. Load `mart_population_payments` from Athena
-3. Compute per-HCP SOW: `nova_spend / (nova_spend + competitor_spend)`
-4. Compute industry ratios vs population baseline
-5. Update `engagement_priority_score` to full 100pts
-6. Wire into `/benchmarks/{hcp_id}` FastAPI endpoint
-7. Re-run `features/feature_store.py` with updated benchmarks
+**`features/industry_benchmarks.py`** — standalone script that:
+1. Tries `awswrangler.athena.read_sql_query` for `mart_competitor_payments` and `mart_population_payments`
+2. Falls back to `hcp_spend_raw_dollars.parquet` when Athena is not reachable
+3. Computes per-HCP:
+   - `sow` = nova_spend / (nova_spend + competitor_spend) — `NaN` in fallback
+   - `industry_ratio` = nova_spend / population_avg_spend (capped at 10.0)
+   - `population_avg_spend` = specialty-level mean (or global mean in fallback)
+   - `engagement_priority_score_full` (100pt formula below)
+4. Saves `competitor_benchmarks.parquet` and `population_benchmarks.parquet`
+
+**Score formula (100pts total):**
+```
+sow_component      = (1 - SOW) × 40        ← 40pts max  (0 when Athena unavailable)
+industry_component = min(ratio, 2) / 2 × 30 ← 30pts max
+base_component     = min(NP_rank × 20 + persistence × 10, 30) ← 30pts max
+total              = min(100, sum of above)
+```
+
+**`features/feature_store.py` Step 7** — now checks for `population_benchmarks.parquet` at startup; loads `engagement_priority_score_full` if present and merges by `hcp_id`.
+
+**`api/routers/benchmarks.py`** — `GET /benchmarks/{hcp_id}` now returns:
+- All Task 3.4 peer fields (`percentile_rank`, `peer_avg_spend`, etc.)
+- `sow`, `industry_ratio`, `engagement_priority_score`, `competitor_avg_spend`, `population_avg_spend`, `athena_available`, `data_limitations`
+- `hcp_spend` now uses raw dollar value from `population_benchmarks.nova_spend_2024`
+
+**`api/dependencies.py` + `api/main.py`** — two new parquets loaded at lifespan startup; gracefully absent when not yet generated (`None`).
+
+### Dev environment results (Athena fallback)
+
+| Metric | Value |
+|--------|-------|
+| Athena available | `False` — `awswrangler` not installed |
+| EPS mean (full formula) | 12.4 / 100 |
+| EPS max (full formula) | 56.7 / 100 (capped by missing SOW component) |
+| EPS p90 | 29.8 / 100 |
+| Population avg spend | $195 / year |
+| HCPs with SOW | 0 (requires Athena competitor data) |
+| `data_limitations` field | "Athena not reachable — competitor benchmarks unavailable, engagement_priority_score capped at 45pts" |
+
+When Athena is reachable, run `python features/industry_benchmarks.py` then restart uvicorn — the `/benchmarks/{hcp_id}` endpoint will return real SOW and full 100pt EPS automatically.
+
+### Run
+
+```bash
+python features/industry_benchmarks.py
+# then restart uvicorn
+curl http://localhost:8000/benchmarks/HCP_338715
+```
 
 ---
 

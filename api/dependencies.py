@@ -41,6 +41,14 @@ def get_event_features() -> pd.DataFrame:
     return _STATE["parquet_event_features"]
 
 
+def get_competitor_benchmarks() -> pd.DataFrame | None:
+    return _STATE.get("parquet_competitor_benchmarks")
+
+
+def get_population_benchmarks() -> pd.DataFrame | None:
+    return _STATE.get("parquet_population_benchmarks")
+
+
 def get_investigation_agent():
     return _STATE["agent_investigation"]
 
