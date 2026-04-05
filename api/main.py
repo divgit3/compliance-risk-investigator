@@ -41,6 +41,16 @@ async def lifespan(app: FastAPI):
     set_parquet("rule_flags",     pd.read_parquet(_MODELS_DIR   / "rule_flags.parquet"))
     set_parquet("event_features", pd.read_parquet(_FEATURES_DIR / "event_feature_matrix.parquet"))
 
+    # ── Industry benchmark parquets (Task 3.5 — optional, graceful absent) ───
+    for _bm_name, _bm_path in [
+        ("competitor_benchmarks", _FEATURES_DIR / "competitor_benchmarks.parquet"),
+        ("population_benchmarks", _FEATURES_DIR / "population_benchmarks.parquet"),
+    ]:
+        if _bm_path.exists():
+            set_parquet(_bm_name, pd.read_parquet(_bm_path))
+        else:
+            set_parquet(_bm_name, None)
+
     # ── Agents ────────────────────────────────────────────────────────────────
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
