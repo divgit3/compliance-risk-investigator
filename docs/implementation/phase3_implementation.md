@@ -471,31 +471,46 @@ OIG speaker fraud, and an edge-case question potentially outside the knowledge b
 
 ## Task 3.4: FastAPI Backend
 
-**File:** `api/main.py` + `api/routers/`
-**Status:** 🔲 Planned
+**Files:** `api/main.py`, `api/dependencies.py`, `api/routers/{hcps,events,monitoring,policy,benchmarks}.py`, `api/test_api.py`
+**Status:** ✅ Complete
 
-### Endpoints
+### Endpoints (actuals)
 
 | Method | Path | Handler | Source |
 |--------|------|---------|--------|
 | GET | `/health` | health check | system |
-| GET | `/hcps` | list HCPs with risk scores + filters | risk_scores.parquet |
-| GET | `/hcps/{hcp_id}` | full HCP risk profile | risk_scores + feature_store_raw |
+| GET | `/hcps` | list HCPs sorted by risk_score desc | risk_scores.parquet |
+| GET | `/hcps/{hcp_id}` | full HCP risk profile | risk_scores.parquet |
 | GET | `/hcps/{hcp_id}/investigate` | InvestigationAgent | Task 3.1 |
-| GET | `/hcps/{hcp_id}/flags` | rule flags + citations | rule_flags + rules.json |
-| GET | `/events` | speaker events with risk | event_feature_matrix.parquet |
-| GET | `/monitoring` | MonitoringAgent report | Task 3.2 |
-| POST | `/policy/query` | PolicyAgent RAG | Task 3.3 |
-| GET | `/benchmarks/{hcp_id}` | peer benchmark | Task 3.5 |
+| GET | `/hcps/{hcp_id}/flags` | fired rule flags | rule_flags.parquet |
+| GET | `/events` | speaker event aggregates per HCP | event_feature_matrix.parquet |
+| GET | `/monitoring` | MonitoringAgent population report | Task 3.2 |
+| POST | `/policy/query` | PolicyAgent RAG Q&A | Task 3.3 |
+| GET | `/benchmarks/{hcp_id}` | peer benchmark (spend_2024 from rule_flags) | rule_flags.parquet |
 
-### Design Decisions
+### Implementation (actuals)
 
-- Parquet files loaded once at startup into module-level DataFrames
-  (FastAPI `lifespan` context manager)
-- Agent endpoints are `async` — `InvestigationAgent.investigate()` awaited
-- `/hcps` supports query params: `specialty`, `state`, `risk_tier`, `limit`, `offset`
-- All responses are Pydantic models from `agents/schemas.py`
-- CORS enabled for `localhost:8501` (Streamlit)
+- **`api/dependencies.py`**: module-level `_STATE` dict; `set_parquet()` / `set_agent()` called from lifespan; `get_*()` FastAPI dependency functions
+- **`api/main.py`**: `@asynccontextmanager lifespan` loads 3 parquets + inits 3 agents once at startup; agents initialised only if `OPENAI_API_KEY` is set (returns 503 on agent endpoints otherwise); CORS for `localhost:8501`
+- **`api/routers/hcps.py`**: `GET /hcps` supports `limit`, `offset`, `tier`, `state` query params; `GET /hcps/{hcp_id}` returns full risk_scores row; `/investigate` is `async`, returns `InvestigationReport.model_dump()`; `/flags` iterates over 23 boolean `flag_*` columns
+- **`api/routers/events.py`**: `GET /events` with `has_fmv_breach` filter; `GET /events/{hcp_id}` returns row from `event_feature_matrix.parquet`
+- **`api/routers/monitoring.py`**: `GET /monitoring` with optional `specialty`, `state`, `risk_tier` query params passed through to `MonitoringAgent.analyze()`
+- **`api/routers/policy.py`**: `POST /policy/query` accepts `{"question": str}` body; returns `PolicyAnswer.model_dump()`
+- **`api/routers/benchmarks.py`**: `GET /benchmarks/{hcp_id}` uses `spend_2024` from `rule_flags.parquet`; peer group from `risk_scores` specialty/state (falls back to full population when specialty/state is None)
+- **`api/test_api.py`**: 11-step smoke test covering all 9 endpoints + 404 check
+
+### Run
+
+```bash
+uvicorn api.main:app --reload --port 8000
+python api/test_api.py   # separate terminal
+```
+
+### Observations
+
+- `specialty` and `state` are `null` for all 97,011 HCPs in dev data (DuckDB limitation from Phase 2) — peer groups default to full population
+- `spend_2024` in `rule_flags.parquet` is normalised (z-scored), not raw dollars; raw dollars are in `rule_flags.spend_2022_raw` / `spend_2023_raw` / `spend_2024_raw`
+- Agent endpoints accept 503 gracefully in smoke test when `OPENAI_API_KEY` is absent
 
 ---
 
