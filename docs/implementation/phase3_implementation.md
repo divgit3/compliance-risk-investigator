@@ -817,6 +817,34 @@ compliance-risk-investigator/
 
 ---
 
+## Task 3.10: README Update + Phase 3 Close-out
+
+**File:** `README.md`
+**Status:** ✅ Complete
+
+### What was added to README.md
+
+- **Phase 3 badge** added to header
+- **Architecture overview** updated to show all 4 phases as a text pipeline diagram
+- **Project status table** updated: Phase 3 → ✅ Complete, Phase 4 → 🔲 In progress
+- **Quick Start section** — prerequisites, setup, data generation, infrastructure
+  startup, API start, test run commands
+- **API endpoints table** — all 9 endpoints with method, path, description, and
+  latency note for agent vs non-agent endpoints
+- **Phase 3 section** — full task table (3.1–3.10), agent descriptions with tool
+  counts, test summary
+- **Repository structure** updated to include `agents/`, `api/`, `docker/` trees
+- **Key design decisions** expanded with 3 Phase 3 additions:
+  deterministic decisions / LLM narratives only, per-HCP SHAP explanations,
+  MLflow audit trail, zero DB writes from agents
+- **Known Limitations** split into Phase 2 and Phase 3 subsections; Phase 3
+  limitations: specialty=None in dev, Athena benchmarks fallback, no temporal
+  split, agent cold-start, embedding model mismatch
+- **Tech stack table** updated with Phase 3 layers
+- **Target client note** added at footer
+
+---
+
 ## Fixes / Improvements
 
 ### Embedding model mismatch in `search_policy_docs`

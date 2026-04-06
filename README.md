@@ -1,19 +1,19 @@
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![Phase 1](https://img.shields.io/badge/Phase%201-Complete-brightgreen)
 ![Phase 2](https://img.shields.io/badge/Phase%202-Complete-brightgreen)
+![Phase 3](https://img.shields.io/badge/Phase%203-Complete-brightgreen)
 
 # Compliance Risk Investigator AI
 
-> Pharma compliance analytics platform for Nova Pharma Inc
-> Anomaly detection · Policy grounding · HCP risk scoring
+> Pharma HCP compliance analytics platform built for Nova Pharma Inc. (Takeda pseudonym)
+> Anomaly detection · AI agents · Policy grounding · FastAPI backend
 
 A production-style compliance analytics platform that detects anomalies in
 pharmaceutical HCP interactions using real CMS Open Payments data and synthetic
 internal compliance records. Ingests 18GB+ of public data, transforms it via dbt,
-scores 97K HCPs with a rule-based + Isolation Forest dual detection engine, and
-grounds all flags in policy documents via RAG (LangChain + OpenAI + Qdrant).
-Findings surface through an AI copilot UI in Streamlit, backed by a FastAPI service
-layer.
+scores 97K HCPs with a rule-based + Isolation Forest dual detection engine, grounds
+all flags in policy documents via RAG (LangChain + OpenAI + Qdrant), and serves
+structured compliance reports through a FastAPI backend backed by three AI agents.
 
 > **Data Notice:** All HCP identities are pseudonymized. Nova Pharma Inc is a
 > fictional company (based on Takeda publicly reported data). No real proprietary
@@ -24,63 +24,108 @@ layer.
 
 ## Architecture
 
-See `docs/architecture/phase1_architecture.svg` for the full system diagram.
-
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  INGEST LAYER                                                       │
-│  CMS Open Payments CSVs (18GB) ──► S3 ──► Glue Catalog ──► Athena  │
-│  Synthetic HCP Data (1.1M rows) ──► S3 (Parquet)                   │
-│  Policy PDFs (5 docs) ──► S3 ──► chunks JSON ──► Qdrant (128 vecs) │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-┌─────────────────────────────────▼───────────────────────────────────┐
-│  TRANSFORM LAYER (dbt)                                              │
-│  Staging: stg_cms_general_payments, stg_synthetic_*                 │
-│  Phase 1 Marts: mart_target_payments · mart_competitor_payments     │
-│                 mart_population_payments · mart_violation_gt        │
-│  Phase 2 Marts: mart_hcp_spend_features · mart_event_features       │
-│                 mart_hcp_risk_profile · mart_benchmark              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-┌─────────────────────────────────▼───────────────────────────────────┐
-│  FEATURE LAYER (Phase 2)                                            │
-│  hcp_spend_features.py · event_features.py · feature_store.py      │
-│  104 features · 97,011 HCPs · ground truth separated               │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-┌─────────────────────────────────▼───────────────────────────────────┐
-│  ML LAYER (Phase 2)                                                 │
-│  rule_based_flags.py (23 policy-traceable flags)                    │
-│  isolation_forest.py (200 trees · 9,701 outliers)                   │
-│  scorer.py (unified 0–100 risk score · 4 tiers)                     │
-│  mlflow_tracking.py (experiment tracking · GT recall metrics)       │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-┌─────────────────────────────────▼───────────────────────────────────┐
-│  RAG + EXPLANATION LAYER (Phase 3)                                  │
-│  Qdrant (policy embeddings) + LangChain + OpenAI ──► explanations  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-┌─────────────────────────────────▼───────────────────────────────────┐
-│  API + UI LAYER (Phase 3/4)                                         │
-│  FastAPI service ──► Streamlit AI copilot UI                        │
-└─────────────────────────────────────────────────────────────────────┘
+Phase 1 — Data ingestion
+  CMS Open Payments CSVs (18GB) ──► S3 ──► Glue ──► Athena
+  Synthetic HCP data (1.1M rows) ──► S3 (Parquet)
+  Policy PDFs (5 docs) ──► S3 ──► Qdrant (128 chunks, 1536-dim)
+           │
+           ▼
+Phase 2 — Anomaly detection
+  dbt transforms ──► feature store (104 features, 97K HCPs)
+  rule_based_flags.py (23 flags) + isolation_forest.py (200 trees)
+  scorer.py ──► risk_scores.parquet (0–100 score, 4 tiers)
+           │
+           ▼
+Phase 3 — AI agents + API                    Qdrant (policy_docs)
+  InvestigationAgent ◄────────────────────────────┤
+  MonitoringAgent    ◄────────────────────────────┤
+  PolicyAgent        ◄────────────────────────────┘
+           │
+  FastAPI (9 endpoints) ──► MLflow audit trail
+           │
+           ▼
+Phase 4 — Streamlit UI (in progress)
+  Portfolio dashboard · HCP drill-down · Policy citation viewer
 ```
 
-**Stack:** Python 3.12 · dbt 1.8.3 · DuckDB · AWS S3/Glue/Athena · Qdrant 1.9.4
-· MLflow 3.10.1 · scikit-learn · OpenAI · LangChain · FastAPI · Streamlit · Docker
+**Stack:** Python 3.12 · dbt 1.8.3 · DuckDB · AWS S3/Glue/Athena · Qdrant
+· MLflow 3.10.1 · scikit-learn · SHAP · OpenAI GPT-4o-mini · LangChain
+· FastAPI · Streamlit · Docker
 
 ---
 
 ## Project Status
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| Phase 1 | ✅ Complete | Data foundation |
-| Phase 2 | ✅ Complete | Anomaly detection engine |
-| Phase 3 | 🔜 Planned | AI agents + FastAPI |
-| Phase 4 | 🔜 Planned | Streamlit UI |
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Data pipeline + synthetic data + policy RAG | ✅ Complete |
+| 2 | Anomaly detection (rule-based + IF + SHAP) | ✅ Complete |
+| 3 | AI agents + FastAPI backend + Docker | ✅ Complete |
+| 4 | Streamlit dashboard | 🔲 In progress |
+
+---
+
+## Quick Start
+
+**Prerequisites:** Python 3.12, Docker Desktop, AWS credentials, OpenAI API key
+
+```bash
+git clone <repo-url>
+cd compliance-risk-investigator
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp docker/.env.example docker/.env   # add OPENAI_API_KEY + AWS credentials
+```
+
+**Generate data (run once):**
+
+```bash
+python features/feature_store.py          # 104-feature parquet (97K HCPs)
+python models/isolation_forest.py         # risk_scores + rule_flags parquets
+python features/industry_benchmarks.py    # competitor benchmark parquets
+python pipelines/embed_policy_docs.py     # populate Qdrant policy_docs collection
+```
+
+**Start infrastructure:**
+
+```bash
+cd docker && docker-compose up -d         # Qdrant :6333 · MLflow :5002
+```
+
+**Start API:**
+
+```bash
+export OPENAI_API_KEY=sk-...
+uvicorn api.main:app --reload --port 8000
+# API docs: http://localhost:8000/docs
+```
+
+**Run tests:**
+
+```bash
+pytest tests/ -m "not agent" -v           # 80 tests, ~0.90s
+```
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| GET | `/hcps` | List HCPs sorted by risk score descending |
+| GET | `/hcps/{hcp_id}` | Risk profile for a single HCP |
+| GET | `/hcps/{hcp_id}/investigate` | Run InvestigationAgent — full compliance report |
+| GET | `/hcps/{hcp_id}/flags` | Rule flags that fired for a single HCP |
+| GET | `/events` | List event feature aggregates per HCP |
+| GET | `/events/{hcp_id}` | Event feature aggregates for a single HCP |
+| GET | `/monitoring` | Run MonitoringAgent — population-level risk analysis |
+| GET | `/benchmarks/{hcp_id}` | Industry benchmark comparison for a single HCP |
+| POST | `/policy/query` | PolicyAgent RAG — answer a natural language compliance question |
+
+All agent endpoints (`/investigate`, `/monitoring`, `/policy/query`) are async and
+call OpenAI — expect 5–30s latency. Non-agent endpoints return in <100ms.
 
 ---
 
@@ -187,16 +232,47 @@ Critical-flag floor: HCPs with any critical flag assigned ≥ high tier regardle
 
 ---
 
-## Phase 3 — AI Agents + FastAPI 🔜
+## Phase 3 — AI Agents + FastAPI Backend ✅
 
-- Investigation Agent — drill into flagged HCPs with policy citations
-- Monitoring Agent — real-time spend threshold alerting
-- Policy Agent — Qdrant RAG for compliance Q&A
-- FastAPI backend serving risk scores and explanations
+| Task | Component | Status |
+|------|-----------|--------|
+| 3.1 | InvestigationAgent — per-HCP compliance report (5 tools) | ✅ Complete |
+| 3.2 | MonitoringAgent — population risk analysis (4 tools) | ✅ Complete |
+| 3.3 | PolicyAgent — Qdrant RAG compliance Q&A (2 tools) | ✅ Complete |
+| 3.4 | FastAPI backend — 9 endpoints, lifespan loader | ✅ Complete |
+| 3.5 | Industry benchmarks — Athena + EPS fallback (100 pts) | ✅ Complete |
+| 3.7 | SHAP explanations — per-HCP feature contributions | ✅ Complete |
+| 3.8 | API test suite — 80 tests, 0.90s CI-safe | ✅ Complete |
+| 3.9 | Docker — Dockerfile + docker-compose, 11/11 smoke tests | ✅ Complete |
+| 3.10 | README update + Phase 3 close-out | ✅ Complete |
+
+### Agents
+
+**InvestigationAgent** (`agents/investigation_agent.py`) — LangChain ReAct agent
+with 5 tools: `get_hcp_risk_profile`, `get_rule_flags`, `get_peer_benchmark`,
+`get_top_anomalous_features`, `search_policy_docs`. Returns a structured
+`InvestigationReport` with policy citations, tier, SHAP-like feature drivers,
+and recommended actions.
+
+**MonitoringAgent** (`agents/monitoring_agent.py`) — 4 tools: `get_population_summary`,
+`get_flagged_hcps`, `get_benchmark_outliers`, `get_top_risk_hcps`. Returns a
+`MonitoringReport` with population-level risk distribution, trending alerts, and
+cohort-level findings.
+
+**PolicyAgent** (`agents/policy_agent.py`) — 2 tools: `search_policy_docs` (Qdrant
+semantic search, 128 chunks), `lookup_rule` (keyword search over `rules.json`).
+Returns a `PolicyAnswer` with rule thresholds, Nova vs PhRMA comparisons, and
+chunk-level citations.
+
+### Testing
+
+- **80 pytest tests** across Phase 2 + Phase 3 (50 anomaly + 30 API)
+- 0.90s total — CI-safe, no agent calls in default suite
+- Agent tests isolated under `-m agent` marker
 
 ---
 
-## Phase 4 — Streamlit UI 🔜
+## Phase 4 — Streamlit UI 🔲
 
 - 5-level drill-down UI (portfolio → HCP → interaction → event → policy)
 - Rep→HCP network diagram
@@ -210,138 +286,178 @@ Critical-flag floor: HCPs with any critical flag assigned ≥ high tier regardle
 
 ```
 compliance-risk-investigator/
+├── agents/
+│   ├── investigation_agent.py
+│   ├── monitoring_agent.py
+│   ├── policy_agent.py
+│   ├── schemas.py
+│   └── tools/
+│       ├── investigation_tools.py
+│       └── policy_tools.py
+├── api/
+│   ├── main.py
+│   ├── dependencies.py
+│   ├── test_api.py
+│   └── routers/
+│       ├── hcps.py
+│       ├── events.py
+│       ├── monitoring.py
+│       ├── policy.py
+│       └── benchmarks.py
+├── docker/
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── .env.example
+│   └── README.md
 ├── pipelines/
 │   ├── ingest/
-│   │   ├── cms_downloader.py
-│   │   ├── glue_crawler.py
-│   │   ├── policy_doc_loader.py
-│   │   └── synthetic_generator.py
 │   ├── embed_policy_docs.py
 │   ├── business_rules_registry.py
 │   └── dbt_project/
-│       └── models/
-│           ├── staging/
-│           └── marts/
 ├── features/
-│   ├── hcp_spend_features.py
-│   ├── event_features.py
 │   ├── feature_store.py
+│   ├── industry_benchmarks.py
 │   └── outputs/
 ├── models/
-│   ├── rule_based_flags.py
 │   ├── isolation_forest.py
 │   ├── scorer.py
-│   ├── mlflow_tracking.py
 │   └── outputs/
 ├── compliance/
 │   └── rules.json
 ├── tests/
-│   └── test_anomaly_models.py
-├── notebooks/
-│   ├── phase2_eda.ipynb
-│   └── figures/
-├── docs/
-│   └── implementation/
-│       ├── phase1_implementation.md
-│       └── phase2_implementation.md
-└── infrastructure/
-    ├── docker/
-    └── terraform/
+│   ├── test_anomaly_models.py
+│   └── test_api.py (30 API tests)
+└── docs/
+    └── implementation/
+        ├── phase1_implementation.md
+        ├── phase2_implementation.md
+        └── phase3_implementation.md
 ```
 
 ---
 
-## How to Run Phase 2
+## How to Run
 
-**Prerequisites:** Python 3.12, AWS credentials in `.env`, Qdrant and MLflow running
+### Phase 2 (anomaly detection only)
 
 ```bash
-# Start infrastructure
-docker compose up -d
-# Qdrant UI: http://localhost:6333/dashboard
-# MLflow UI: http://localhost:5001
-
 source venv/bin/activate
 
-# 1. Policy grounding (run once)
+# Infrastructure
+cd docker && docker-compose up -d
+
+# Policy grounding (run once)
 python pipelines/embed_policy_docs.py
 python pipelines/business_rules_registry.py
 
-# 2. dbt feature marts
-cd pipelines/dbt_project
-dbt run --select mart_hcp_spend_features
-dbt run --select mart_event_features
-dbt run --select mart_hcp_risk_profile
-dbt run --select mart_benchmark
-
-# 3. Python feature engineering
-cd ../..
+# Feature engineering
 python features/hcp_spend_features.py
 python features/event_features.py
 python features/feature_store.py
 
-# 4. Anomaly detection
+# Anomaly detection
 python models/rule_based_flags.py
 python models/isolation_forest.py
 python models/scorer.py
-python models/mlflow_tracking.py
 
-# 5. Tests
+# Tests
 pytest tests/test_anomaly_models.py -v
+```
 
-# 6. EDA notebook
-jupyter notebook notebooks/phase2_eda.ipynb
+### Phase 3 (API + agents)
+
+```bash
+# Generate all parquets first (see Phase 2 above)
+python features/industry_benchmarks.py
+python pipelines/embed_policy_docs.py   # populate Qdrant
+
+# Start API
+export OPENAI_API_KEY=sk-...
+uvicorn api.main:app --reload --port 8000
+
+# Tests (no agent calls)
+pytest tests/ -m "not agent" -v
+
+# Example: policy Q&A
+curl -X POST http://localhost:8000/policy/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the meal expense limit?"}'
+```
+
+### Docker (full stack)
+
+```bash
+cd docker
+cp .env.example .env    # add OPENAI_API_KEY + AWS credentials
+docker-compose up --build
+# API: http://localhost:8000/docs
+# MLflow: http://localhost:5002
+# Qdrant: http://localhost:6333/dashboard
 ```
 
 ---
 
 ## Key Design Decisions
 
+- **Deterministic decisions, LLM narratives only** — risk scores, tier assignments,
+  and rule flags are fully deterministic; LLMs only generate natural-language
+  summaries and citations, never numeric decisions
+- **Rule-based + Isolation Forest dual detection** — rules provide policy traceability;
+  IF catches anomalous patterns not covered by explicit rules; unified scorer blends
+  both (60% rule, 40% IF)
+- **Per-HCP SHAP explanations, not global feature importance** — each investigation
+  report explains which features drove *that specific HCP's* score, not a global average
+- **Policy grounding via Qdrant RAG (128 chunks, 5 docs)** — every agent answer is
+  grounded in specific policy chunks with chunk_id citations; thresholds sourced
+  from `rules.json`, never invented by the LLM
+- **MLflow audit trail on every agent invocation** — latency, confidence, chunk
+  counts, and rule matches logged per run for compliance auditability
+- **Zero DB writes from any agent (read-only parquets)** — agents read from parquet
+  files only; no agent can modify risk scores or flags
 - **Violations organic in synthetic data, not seeded** — violation flags emerge from
   threshold breaches in the synthetic generator, not injected post-hoc
 - **Ground truth separated from feature matrix** — violation labels never enter the
   ML pipeline; enforced at the dbt layer
-- **Business rules sourced from policy docs via RAG** — not hardcoded; every rule is
-  traceable to a specific policy chunk with citation
-- **Nova Pharma policy stricter than PhRMA** — 8 override rules with tighter
-  thresholds reflect realistic internal compliance posture
-- **Annual benchmarking, not lifetime** — OIG/CMS operate on program year basis;
-  benchmarks computed per year
-- **Rule-based + ML dual approach** — rules provide explainability; IF catches
-  patterns rules miss; unified scorer blends both (60/40)
-- **Athena/DuckDB split resolved at Python layer** — dbt runs against both targets;
-  Python feature scripts handle dev/prod branching transparently
 
 ---
 
-## Known Limitations (Phase 2)
+## Known Limitations
 
+### Phase 2
 - Cap breach flags elevated in synthetic data distribution (~37% of HCPs) — CMS
   spend values not scaled to realistic annual cap thresholds
 - `recall_high_or_critical` at 0.41 vs 0.70 long-term target — synthetic violation
   labels have limited correlation with rule flags on dev data
-- Industry specialty benchmarks incomplete on dev (Athena-only feature); engagement
-  quadrant defaults to `'continue'` for all HCPs until Athena is connected
 - Athena/DuckDB feature split resolved at Python layer only; dbt models do not yet
   abstract the target difference
+
+### Phase 3
+- `specialty=None` for all HCPs in dev environment — Athena-backed specialty lookup
+  not active locally; peer benchmarks use aggregate population instead of specialty cohort
+- Industry benchmarks require Athena connection; EPS (100-point) fallback active in dev
+- No train/test temporal split yet (Task 3.6 backlog) — model trained on full dataset
+- Agent cold-start latency ~30s on first request — LangChain agent executor
+  initialization is deferred to first call to avoid Docker startup hang
+- Embedding model mismatch: `embed_policy_docs.py` uses `text-embedding-ada-002`
+  but `policy_tools.py` queries with `text-embedding-3-small` — relevance scores
+  from `search_policy_docs` are near-random; answers remain correct via `lookup_rule`
 
 ---
 
 ## Tech Stack
 
-| Layer | Tools |
-|-------|-------|
-| Data ingestion | Python 3.12 · Requests · Boto3 · Faker |
-| Cloud storage | AWS S3 · Glue Data Catalog · Athena |
-| Data transformation | dbt 1.8.3 · dbt-duckdb · dbt-athena · DuckDB |
-| Vector database | Qdrant 1.9.4 |
-| RAG / LLM | LangChain · OpenAI (embeddings + extraction) |
-| Feature engineering | pandas · numpy · pyathena |
-| Anomaly detection | scikit-learn (IsolationForest) |
+| Layer | Technology |
+|-------|------------|
+| Data warehouse | AWS Athena + S3 + Glue |
+| Feature store | dbt + DuckDB |
+| ML models | scikit-learn (Isolation Forest) + SHAP |
+| Vector store | Qdrant |
+| AI agents | LangChain + OpenAI GPT-4o-mini |
+| API | FastAPI + uvicorn |
 | Experiment tracking | MLflow 3.10.1 |
-| Visualization | matplotlib · seaborn · plotly |
-| Testing | pytest (50 tests · 0.67s) |
-| API layer | FastAPI · Uvicorn · Pydantic |
-| UI | Streamlit |
-| Containerisation | Docker · Docker Compose |
-| Infrastructure | Terraform (Phase 3) |
+| UI | Streamlit (Phase 4) |
+| Containerisation | Docker + docker-compose |
+
+---
+
+> Built for Nova Pharma Inc. (pseudonym for Takeda Pharmaceutical)
