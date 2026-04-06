@@ -48,3 +48,4 @@ tests/sample1.py
 .claude/notebooks/.ipynb_checkpoints/
 notebooks/figures/
 .claude/
+qdrant_storage/

@@ -96,7 +96,7 @@ def main() -> None:
 
         # 6. GET /hcps/{hcp_id}/investigate  (agent — may return 503)
         print(f"\n6. GET /hcps/{hcp_id}/investigate  (agent endpoint)")
-        resp = client.get(f"{_BASE}/hcps/{hcp_id}/investigate", timeout=120.0)
+        resp = client.get(f"{_BASE}/hcps/{hcp_id}/investigate", timeout=600.0)
         data = _ok(resp, "investigate", allow=(503,))
         if resp.status_code == 503:
             print("     (agent not available — OPENAI_API_KEY not set)")
@@ -113,7 +113,7 @@ def main() -> None:
 
         # 8. GET /monitoring  (agent — may return 503)
         print("\n8. GET /monitoring  (agent endpoint)")
-        resp = client.get(f"{_BASE}/monitoring", timeout=180.0)
+        resp = client.get(f"{_BASE}/monitoring", timeout=600.0)
         data = _ok(resp, "monitoring", allow=(503,))
         if resp.status_code == 503:
             print("     (agent not available — OPENAI_API_KEY not set)")
@@ -123,7 +123,7 @@ def main() -> None:
         # 9. POST /policy/query  (agent — may return 503)
         print("\n9. POST /policy/query  (agent endpoint)")
         payload = {"question": "What is the Nova Pharma meal limit for external events?"}
-        resp = client.post(f"{_BASE}/policy/query", json=payload, timeout=120.0)
+        resp = client.post(f"{_BASE}/policy/query", json=payload, timeout=600.0)
         data = _ok(resp, "policy query", allow=(503,))
         if resp.status_code == 503:
             print("     (agent not available — OPENAI_API_KEY not set)")
