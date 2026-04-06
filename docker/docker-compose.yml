@@ -1,0 +1,92 @@
+version: "3.9"
+
+# Compliance Risk Investigator — Full Stack (Task 3.9)
+#
+# Services:
+#   api     — FastAPI app on :8000
+#   mlflow  — Experiment tracking on :5001 (sqlite backend)
+#   qdrant  — Vector DB on :6333 (policy_docs collection)
+#
+# Prerequisites (run once on host before `docker-compose up`):
+#   python features/feature_store.py          # generates features/outputs/*.parquet
+#   python models/isolation_forest.py         # generates models/outputs/*.parquet + shap_values
+#   python features/industry_benchmarks.py    # generates benchmark parquets
+#   python pipelines/embed_policy_docs.py     # populates qdrant_storage/
+#
+# Usage:
+#   cd docker
+#   cp .env.example .env && nano .env         # add real OPENAI_API_KEY
+#   docker-compose up --build
+#   docker-compose down
+
+services:
+
+  # ── FastAPI application ────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    env_file:
+      - .env
+    volumes:
+      # Data volumes — read-only; parquets never baked into image
+      - ../features/outputs:/app/features/outputs:ro
+      - ../models/outputs:/app/models/outputs:ro
+      - ../compliance:/app/compliance:ro
+    depends_on:
+      qdrant:
+        condition: service_started
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: "30s"
+      timeout: "10s"
+      retries: 5
+      start_period: "120s"
+  # ── MLflow experiment tracking ─────────────────────────────────────────────
+  mlflow:
+    image: python:3.12-slim
+    command: >
+      bash -c "pip install mlflow==3.10.1 --quiet &&
+               mlflow server
+               --backend-store-uri sqlite:////mlflow/mlflow.db
+               --default-artifact-root /mlflow/artifacts
+               --host 0.0.0.0
+               --port 5001"
+    ports:
+      - "5002:5001"
+    volumes:
+      - ../mlflow.db:/mlflow/mlflow.db
+      - mlflow_artifacts:/mlflow/artifacts
+    restart: unless-stopped
+
+  # ── Qdrant vector database ─────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6335:6333"
+      - "6336:6334"   # gRPC port (optional)
+    volumes:
+      - compliance-risk-investigator_qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c",
+             "curl -sf http://localhost:6333/readyz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# ── Named volumes ──────────────────────────────────────────────────────────────
+volumes:
+  mlflow_artifacts:
+  compliance-risk-investigator_qdrant_data:
+    external: true

@@ -49,13 +49,38 @@ def get_population_benchmarks() -> pd.DataFrame | None:
     return _STATE.get("parquet_population_benchmarks")
 
 
-def get_investigation_agent():
+import asyncio
+
+async def get_investigation_agent():
+    if _STATE["agent_investigation"] is None:
+        api_key = _STATE.get("agent_api_key")
+        if api_key:
+            from agents.investigation_agent import InvestigationAgent
+            _STATE["agent_investigation"] = await asyncio.to_thread(
+                InvestigationAgent, openai_api_key=api_key
+            )
     return _STATE["agent_investigation"]
 
 
-def get_monitoring_agent():
+async def get_monitoring_agent():
+    if _STATE["agent_monitoring"] is None:
+        api_key = _STATE.get("agent_api_key")
+        if api_key:
+            from agents.monitoring_agent import MonitoringAgent
+            _STATE["agent_monitoring"] = await asyncio.to_thread(
+                MonitoringAgent, openai_api_key=api_key
+            )
     return _STATE["agent_monitoring"]
 
 
-def get_policy_agent():
+
+
+async def get_policy_agent():
+    if _STATE["agent_policy"] is None:
+        api_key = _STATE.get("agent_api_key")
+        if api_key:
+            from agents.policy_agent import PolicyAgent
+            _STATE["agent_policy"] = await asyncio.to_thread(
+                PolicyAgent, openai_api_key=api_key
+            )
     return _STATE["agent_policy"]

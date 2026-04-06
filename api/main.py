@@ -22,26 +22,37 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.dependencies import set_agent, set_parquet
 from api.routers import benchmarks, events, hcps, monitoring, policy
-
+import asyncio
+import threading
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 _ROOT = Path(__file__).resolve().parents[1]
 _FEATURES_DIR = _ROOT / "features" / "outputs"
 _MODELS_DIR   = _ROOT / "models"  / "outputs"
 
+def _init_agents_background(api_key: str):
+    """Initialize all agents in a background thread at startup."""
+    from agents.investigation_agent import InvestigationAgent
+    from agents.monitoring_agent import MonitoringAgent  
+    from agents.policy_agent import PolicyAgent
+    
+    set_agent("investigation", InvestigationAgent(openai_api_key=api_key))
+    set_agent("monitoring", MonitoringAgent(openai_api_key=api_key))
+    set_agent("policy", PolicyAgent(openai_api_key=api_key))
+    print("BACKGROUND: all agents ready", flush=True)
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load parquets and init agents once at startup; clean up on shutdown."""
-
-    # ── Parquets ──────────────────────────────────────────────────────────────
+    import sys
+    print("STARTUP: loading parquets...", flush=True)
     set_parquet("risk_scores",    pd.read_parquet(_MODELS_DIR   / "risk_scores.parquet"))
+    print("STARTUP: risk_scores loaded", flush=True)
     set_parquet("rule_flags",     pd.read_parquet(_MODELS_DIR   / "rule_flags.parquet"))
+    print("STARTUP: rule_flags loaded", flush=True)
     set_parquet("event_features", pd.read_parquet(_FEATURES_DIR / "event_feature_matrix.parquet"))
+    print("STARTUP: event_features loaded", flush=True)
 
-    # ── Industry benchmark parquets (Task 3.5 — optional, graceful absent) ───
     for _bm_name, _bm_path in [
         ("competitor_benchmarks", _FEATURES_DIR / "competitor_benchmarks.parquet"),
         ("population_benchmarks", _FEATURES_DIR / "population_benchmarks.parquet"),
@@ -50,25 +61,27 @@ async def lifespan(app: FastAPI):
             set_parquet(_bm_name, pd.read_parquet(_bm_path))
         else:
             set_parquet(_bm_name, None)
+    print("STARTUP: benchmarks loaded", flush=True)
 
-    # ── Agents ────────────────────────────────────────────────────────────────
     api_key = os.environ.get("OPENAI_API_KEY")
+    print(f"STARTUP: api_key present={bool(api_key)}", flush=True)
+    
+    # Store api_key for lazy agent initialization on first request
+    # Agents are NOT initialized at startup — create_openai_tools_agent
+    # makes a network call to OpenAI which hangs in Docker
+    
+    set_agent("api_key", api_key)
+    set_agent("investigation", None)
+    set_agent("monitoring", None)
+    set_agent("policy", None)
+
     if api_key:
-        from agents.investigation_agent import InvestigationAgent
-        from agents.monitoring_agent    import MonitoringAgent
-        from agents.policy_agent        import PolicyAgent
+        t = threading.Thread(target=_init_agents_background, args=(api_key,), daemon=True)
+        t.start()
+        print("STARTUP: agent initialization started in background thread", flush=True)
 
-        set_agent("investigation", InvestigationAgent(openai_api_key=api_key))
-        set_agent("monitoring",    MonitoringAgent(openai_api_key=api_key))
-        set_agent("policy",        PolicyAgent(openai_api_key=api_key))
-    else:
-        # Allow the app to start without agents (returns 503 on agent endpoints)
-        set_agent("investigation", None)
-        set_agent("monitoring",    None)
-        set_agent("policy",        None)
-
+    print("STARTUP: complete", flush=True)
     yield
-
     # Nothing to clean up — parquets and agents are in-memory only
 
 

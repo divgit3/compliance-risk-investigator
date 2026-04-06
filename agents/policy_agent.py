@@ -112,7 +112,7 @@ class PolicyAgent:
             raise EnvironmentError("OPENAI_API_KEY not set")
 
         self.model = model
-        self.llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
+        self.llm = ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=30, max_retries=2)
 
         from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -155,6 +155,7 @@ class PolicyAgent:
    
         # react_prompt.template = _SYSTEM_PROMPT + "\n\n" + react_prompt.template
         self.tools = _TOOLS 
+        print("AGENT_INIT: creating openai_tools_agent...", flush=True)
         agent = create_openai_tools_agent(
             llm=self.llm,
             tools=self.tools,
