@@ -113,6 +113,8 @@ class InvestigationAgent:
             model=model,
             api_key=OPENAI_API_KEY,
             temperature=0,
+            timeout=30,
+            max_retries=2
         )
 
 
@@ -148,6 +150,7 @@ class InvestigationAgent:
         ])
 
         self.tools = _TOOLS 
+        print("AGENT_INIT: creating openai_tools_agent...", flush=True)
         agent = create_openai_tools_agent(
             llm=self.llm,
             tools=self.tools,

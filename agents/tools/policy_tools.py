@@ -40,8 +40,9 @@ def _get_rules() -> Dict[str, Any]:
             _rules_cache = json.load(f)
     return _rules_cache
 
-_QDRANT_HOST       = "localhost"
-_QDRANT_PORT       = 6333
+import os
+_QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
+_QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 _COLLECTION        = "policy_docs"
 _EMBEDDING_MODEL   = "text-embedding-3-small"
 _EMBEDDING_DIM     = 1536

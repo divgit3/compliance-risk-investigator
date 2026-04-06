@@ -6,6 +6,8 @@ POST /policy/query — Ask a natural language compliance question
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -40,7 +42,9 @@ async def policy_query(
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
     try:
-        answer = await agent.query(body.question)
+        answer = await asyncio.wait_for(agent.query(body.question), timeout=90.0)
         return answer.model_dump()
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Policy agent timed out after 90s — check Qdrant is running")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc

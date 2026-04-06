@@ -1,0 +1,55 @@
+# docker/.dockerignore — Files excluded from the Docker build context
+#
+# Parquets and model outputs are mounted as volumes at runtime.
+# Keeping them out of the image reduces build size and avoids
+# baking sensitive or regeneratable data into the layer cache.
+
+# Version control
+.git/
+.gitignore
+
+# Python environments
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Environment files (secrets never go in image)
+.env
+.env.*
+!.env.example
+
+# Notebooks (not needed at runtime)
+notebooks/
+
+# MLflow run artifacts and database (mounted as volume)
+mlruns/
+mlflow.db
+
+# Generated feature / model outputs (mounted read-only at runtime)
+features/outputs/*.parquet
+features/outputs/*.json
+models/outputs/*.parquet
+models/outputs/*.csv
+models/outputs/*.json
+
+# Qdrant vector data (mounted as volume)
+qdrant_storage/
+
+# Claude memory / IDE config
+.claude/
+.vscode/
+.idea/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS metadata
+.DS_Store

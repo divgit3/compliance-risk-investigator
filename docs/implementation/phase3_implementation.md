@@ -667,16 +667,56 @@ pytest tests/test_api.py tests/test_anomaly_models.py -m "not agent" -v
 
 ## Task 3.9: Docker
 
-**Status:** 🔲 Planned
+**Status:** ✅ Complete
 
-`docker/Dockerfile`: FastAPI + uvicorn, `python:3.12-slim`
+### Files Created
 
-`docker/docker-compose.yml` services:
-- `api`: FastAPI on port 8000
-- `mlflow`: MLflow on port 5001 with sqlite backend
-- `qdrant`: Qdrant on port 6333 with local volume
+| File | Purpose |
+|------|---------|
+| `docker/Dockerfile` | FastAPI image — python:3.12-slim, gcc/g++/libgomp1, pip install, EXPOSE 8000, CMD uvicorn |
+| `docker/docker-compose.yml` | 3-service stack (api, mlflow, qdrant) with health checks |
+| `docker/.dockerignore` | Excludes venv, parquets, notebooks, qdrant_storage, .env, .claude |
+| `docker/.env.example` | OPENAI_API_KEY template + optional Athena vars |
+| `docker/README.md` | Prerequisites, data generation steps, run/verify/stop commands, known limitations |
 
-Volumes: mount `features/outputs/` and `models/outputs/` into api container.
+### Services
+
+| Service | Image | Port | Notes |
+|---------|-------|------|-------|
+| `api` | built from `docker/Dockerfile` | 8000 | FastAPI + uvicorn |
+| `mlflow` | `python:3.12-slim` | 5001 | sqlite backend, mlflow==3.10.1 |
+| `qdrant` | `qdrant/qdrant:latest` | 6333 | gRPC on 6334 |
+
+### Volume Mounts (api service)
+
+| Host path | Container path | Mode |
+|-----------|---------------|------|
+| `features/outputs/` | `/app/features/outputs` | `:ro` |
+| `models/outputs/` | `/app/models/outputs` | `:ro` |
+| `compliance/` | `/app/compliance` | `:ro` |
+| `mlflow.db` | `/mlflow/mlflow.db` | rw |
+| `qdrant_storage/` | `/qdrant/storage` | rw |
+
+**Parquets are mounted read-only at runtime — never baked into the image.**
+
+### Known Limitations
+
+| Limitation | Impact |
+|-----------|--------|
+| Parquets must be generated locally first | `docker-compose up` fails if outputs/ dirs are empty |
+| Qdrant storage must exist | Policy Q&A returns errors if `qdrant_storage/` is missing |
+| SHAP values must be generated | `get_top_anomalous_features` falls back to Pearson proxy |
+| Full 100pt EPS requires Athena | `engagement_priority_score` capped at ~57pts in dev |
+| MLflow first-run is slow | Installs packages on first `docker-compose up` (~2 min) |
+
+### Usage
+
+```bash
+cd docker
+cp .env.example .env        # add real OPENAI_API_KEY
+docker-compose up --build   # first build ~3 min; subsequent builds use cache
+docker-compose down         # stop and remove containers
+```
 
 ---
 
@@ -751,7 +791,7 @@ compliance-risk-investigator/
 │       └── policy_tools.py         # Task 3.1 ✅
 ├── api/
 │   ├── __init__.py
-│   ├── main.py                     # Task 3.4 🔲
+│   ├── main.py                     # Task 3.4 ✅
 │   ├── routers/
 │   │   ├── hcps.py
 │   │   ├── events.py
@@ -761,13 +801,54 @@ compliance-risk-investigator/
 │   └── dependencies.py
 ├── tests/
 │   ├── test_anomaly_models.py      # Phase 2 ✅ 50/50 passing
-│   └── test_api.py                 # Task 3.8 🔲
+│   └── test_api.py                 # Task 3.8 ✅ 38 tests
 ├── docker/
-│   ├── Dockerfile                  # Task 3.9 🔲
-│   └── docker-compose.yml
+│   ├── Dockerfile                  # Task 3.9 ✅
+│   ├── docker-compose.yml          # Task 3.9 ✅
+│   ├── .dockerignore               # Task 3.9 ✅
+│   ├── .env.example                # Task 3.9 ✅
+│   └── README.md                   # Task 3.9 ✅
 └── docs/
     └── implementation/
         ├── phase1_implementation.md
         ├── phase2_implementation.md
         └── phase3_implementation.md ✅
 ```
+
+---
+
+## Fixes / Improvements
+
+### Embedding model mismatch in `search_policy_docs`
+
+**Status:** Known bug — not yet fixed.
+
+**Problem:** `pipelines/embed_policy_docs.py` stores chunks embedded with
+`text-embedding-ada-002`, but `agents/tools/policy_tools.py` queries Qdrant
+using `text-embedding-3-small`. These are different vector spaces, so cosine
+similarity scores from `search_policy_docs` are near-random (observed ~0.04–0.05
+in production). The `/policy/query` endpoint still returns correct answers
+because `lookup_rule` (keyword-based) retrieves the right rule thresholds — but
+policy chunk citations are unreliable.
+
+**Fix (when ready):**
+1. Update `EMBEDDING_MODEL` in `pipelines/embed_policy_docs.py` from
+   `text-embedding-ada-002` to `text-embedding-3-small`.
+2. Drop and recreate the `policy_docs` Qdrant collection.
+3. Re-run `python pipelines/embed_policy_docs.py` to re-embed all 128 chunks.
+
+Both `embed_policy_docs.py` and `policy_tools.py` must use the same model.
+
+---
+
+### `POST /policy/query` — endpoint timeout (fixed 2026-04-06)
+
+**Problem:** Without Qdrant running, `search_policy_docs` failed on every tool
+call. The LangChain `AgentExecutor` retried up to `max_iterations=12`, each
+iteration making a fresh OpenAI LLM call, burning through the HTTP timeout
+with 0 bytes returned.
+
+**Fix applied:** Added `asyncio.wait_for(..., timeout=90.0)` in
+`api/routers/policy.py`. The endpoint now returns HTTP 504 with a clear error
+message if the agent does not complete within 90 seconds, instead of hanging
+silently.
