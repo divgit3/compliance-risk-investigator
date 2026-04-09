@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import mlflow
-from langchain import hub
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_openai import ChatOpenAI
 
@@ -114,7 +113,13 @@ class MonitoringAgent:
             raise EnvironmentError("OPENAI_API_KEY not set")
 
         self.model = model
-        self.llm = ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=30, max_retries=2)
+        self.llm = ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            temperature=0,
+            timeout=30,
+            max_retries=2,
+        )
 
         from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
         react_prompt = ChatPromptTemplate.from_messages([
@@ -147,28 +152,40 @@ class MonitoringAgent:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        # react_prompt.template = _SYSTEM_PROMPT + "\n\n" + react_prompt.template
-        self.tools = _TOOLS 
-        print("AGENT_INIT: creating openai_tools_agent...", flush=True)
-        agent = create_openai_tools_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=react_prompt,
-        )
-        self._executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            max_iterations=12,
-            handle_parsing_errors=True,
-            return_intermediate_steps=True,
-            verbose=False,
-        )
+        self.tools = _TOOLS
+        self._prompt = react_prompt
+        self._executor = None  # created lazily on first use
 
         try:
-            mlflow.set_tracking_uri(_MLFLOW_URI)
-            mlflow.set_experiment(_MLFLOW_EXPERIMENT)
+            import threading
+            def _init_mlflow():
+                mlflow.set_tracking_uri(_MLFLOW_URI)
+                mlflow.set_experiment(_MLFLOW_EXPERIMENT)
+            t = threading.Thread(target=_init_mlflow, daemon=True)
+            t.start()
+            t.join(timeout=3)  # max 3 seconds, then give up silently
         except Exception:
             pass
+
+    @property
+    def executor(self):
+        if self._executor is None:
+            import openai as _openai
+            _openai.api_key = self.llm.openai_api_key
+            try:
+                agent = create_openai_tools_agent(self.llm, self.tools, self._prompt)
+            except Exception as e:
+                raise RuntimeError(f"MonitoringAgent: failed to create agent executor: {e}") from e
+            self._executor = AgentExecutor(
+                agent=agent,
+                tools=self.tools,
+                max_iterations=5,
+                early_stopping_method="generate",
+                handle_parsing_errors=True,
+                return_intermediate_steps=True,
+                verbose=False,
+            )
+        return self._executor
 
     # ── Private helpers ────────────────────────────────────────────────────────
 
@@ -364,37 +381,64 @@ class MonitoringAgent:
         limitations = list(_DATA_LIMITATIONS)
 
         try:
-            prompt = (
-                f"Generate a compliance monitoring report for: {scope_description}.\n"
-                "Use all available tools to gather:\n"
-                "1. Risk tier distribution across the population in scope\n"
-                "2. Top compliance flags by frequency (top 10)\n"
-                "3. High-risk segments by specialty and state (top 5 each)\n"
-                "4. Any systemic issues requiring escalation\n"
-                "Then write a summary_narrative that a compliance officer can act on.\n"
-                "Note any data limitations in your narrative."
+            # Call tools directly — no agent loop needed
+            print("MONITOR: calling get_risk_distribution...", flush=True)
+            dist_raw = await asyncio.to_thread(get_risk_distribution.invoke, {})
+            print(f"MONITOR: get_risk_distribution done: {type(dist_raw)}", flush=True)
+
+            print("MONITOR: calling get_flag_patterns...", flush=True)
+            flag_raw = await asyncio.to_thread(get_flag_patterns.invoke, {"top_n": 10})
+            print(f"MONITOR: get_flag_patterns done: {type(flag_raw)}", flush=True)
+
+            print("MONITOR: calling get_high_risk_segments...", flush=True)
+            seg_raw = await asyncio.to_thread(get_high_risk_segments.invoke, {"segment_type": "both", "top_n": 5})
+            print(f"MONITOR: get_high_risk_segments done: {type(seg_raw)}", flush=True)
+
+            print("MONITOR: calling detect_systemic_issues...", flush=True)
+            issues_raw = await asyncio.to_thread(detect_systemic_issues.invoke, {})
+            print(f"MONITOR: detect_systemic_issues done: {type(issues_raw)}", flush=True)
+
+            print("MONITOR: calling llm.invoke...", flush=True)
+
+            # Single LLM call for narrative only
+            narrative_prompt = (
+                f"You are a pharma compliance analyst. Write a 3-4 sentence "
+                f"executive summary for a compliance officer based on this data:\n"
+                f"Risk distribution: {dist_raw}\n"
+                f"Top flags: {flag_raw}\n"
+                f"Systemic issues: {issues_raw}\n"
+                f"Be specific about numbers and actionable recommendations."
             )
+            print("MONITOR: calling llm.invoke via thread...", flush=True)
+            import openai, os, concurrent.futures
+            _api_key = os.environ.get('OPENAI_API_KEY')
 
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self._executor.invoke({"input": prompt}),
-            )
+            def _call_openai():
+                client = openai.OpenAI(api_key=_api_key)
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": narrative_prompt}],
+                    temperature=0,
+                    max_tokens=300,
+                    timeout=30,
+                )
+                return response.choices[0].message.content
 
-            steps      = result.get("intermediate_steps", [])
-            llm_output = result.get("output", "")
-            reasoning  = self._intermediate_steps_to_str(steps)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                llm_output = await asyncio.get_event_loop().run_in_executor(
+                    pool, _call_openai
+                )
+            print(f"MONITOR: narrative done, length={len(llm_output)}", flush=True)
+            reasoning = "Direct tool execution — no agent loop"
 
-            # Collect tool outputs keyed by tool name
-            tool_outputs: dict[str, dict] = {}
-            for action, observation in steps:
-                name = getattr(action, "tool", "")
-                if isinstance(observation, str):
-                    try:
-                        tool_outputs[name] = json.loads(observation)
-                    except json.JSONDecodeError:
-                        tool_outputs[name] = {"raw": observation}
-                elif isinstance(observation, dict):
-                    tool_outputs[name] = observation
+            # Build tool_outputs dict for parsing
+            tool_outputs = {
+                "get_risk_distribution": dist_raw if isinstance(dist_raw, dict) else {},
+                "get_flag_patterns": flag_raw if isinstance(flag_raw, dict) else {},
+                "get_high_risk_segments": seg_raw if isinstance(seg_raw, dict) else {},
+                "detect_systemic_issues": issues_raw if isinstance(issues_raw, dict) else {},
+            }
+            steps = []
 
             # Parse each tool's output
             dist_raw     = tool_outputs.get("get_risk_distribution", {})

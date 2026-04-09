@@ -1,5 +1,5 @@
 """
-streamlit_app/pages/2_HCP_Explorer.py — Browse and filter the full HCP list.
+streamlit_app/pages/3_HCP_Explorer.py — Browse and filter the full HCP list.
 """
 
 import streamlit as st
@@ -9,4 +9,4 @@ from config import TIER_ORDER  # noqa: F401
 
 st.set_page_config(page_title="HCP Explorer", layout="wide", page_icon="🔍")
 st.title("HCP Explorer")
-st.info("Coming in Task 4.2")
+st.info("Coming in Task 4.3")
