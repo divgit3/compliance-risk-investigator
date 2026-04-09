@@ -112,7 +112,13 @@ class PolicyAgent:
             raise EnvironmentError("OPENAI_API_KEY not set")
 
         self.model = model
-        self.llm = ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=30, max_retries=2)
+        self.llm = ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            temperature=0,
+            timeout=30,
+            max_retries=2,
+        )
 
         from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -153,27 +159,38 @@ class PolicyAgent:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
    
-        # react_prompt.template = _SYSTEM_PROMPT + "\n\n" + react_prompt.template
-        self.tools = _TOOLS 
-        print("AGENT_INIT: creating openai_tools_agent...", flush=True)
-        agent = create_openai_tools_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=react_prompt,
-        )
-        self._executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            max_iterations=12,
-            handle_parsing_errors=True,
-            return_intermediate_steps=True,
-            verbose=False,
-        )
+        self.tools = _TOOLS
+        self._prompt = react_prompt
+        self._executor = None  # created lazily on first use
         try:
-            mlflow.set_tracking_uri(_MLFLOW_URI)
-            mlflow.set_experiment(_MLFLOW_EXPERIMENT)
+            import threading
+            def _init_mlflow():
+                mlflow.set_tracking_uri(_MLFLOW_URI)
+                mlflow.set_experiment(_MLFLOW_EXPERIMENT)
+            t = threading.Thread(target=_init_mlflow, daemon=True)
+            t.start()
+            t.join(timeout=3)  # max 3 seconds, then give up silently
         except Exception:
             pass
+
+    @property
+    def executor(self):
+        if self._executor is None:
+            import openai as _openai
+            _openai.api_key = self.llm.openai_api_key
+            try:
+                agent = create_openai_tools_agent(self.llm, self.tools, self._prompt)
+            except Exception as e:
+                raise RuntimeError(f"PolicyAgent: failed to create agent executor: {e}") from e
+            self._executor = AgentExecutor(
+                agent=agent,
+                tools=self.tools,
+                max_iterations=12,
+                handle_parsing_errors=True,
+                return_intermediate_steps=True,
+                verbose=False,
+            )
+        return self._executor
 
     # ── Private helpers ────────────────────────────────────────────────────────
 
@@ -352,7 +369,7 @@ class PolicyAgent:
 
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self._executor.invoke({"input": prompt}),
+                lambda: self.executor.invoke({"input": prompt}),
             )
 
             steps      = result.get("intermediate_steps", [])

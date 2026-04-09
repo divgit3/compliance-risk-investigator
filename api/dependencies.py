@@ -49,38 +49,31 @@ def get_population_benchmarks() -> pd.DataFrame | None:
     return _STATE.get("parquet_population_benchmarks")
 
 
-import asyncio
-
 async def get_investigation_agent():
-    if _STATE["agent_investigation"] is None:
+    if _STATE.get("agent_investigation") is None:
         api_key = _STATE.get("agent_api_key")
-        if api_key:
-            from agents.investigation_agent import InvestigationAgent
-            _STATE["agent_investigation"] = await asyncio.to_thread(
-                InvestigationAgent, openai_api_key=api_key
-            )
+        if not api_key:
+            return None
+        from agents.investigation_agent import InvestigationAgent
+        _STATE["agent_investigation"] = InvestigationAgent(openai_api_key=api_key)
     return _STATE["agent_investigation"]
 
 
 async def get_monitoring_agent():
-    if _STATE["agent_monitoring"] is None:
+    if _STATE.get("agent_monitoring") is None:
         api_key = _STATE.get("agent_api_key")
-        if api_key:
-            from agents.monitoring_agent import MonitoringAgent
-            _STATE["agent_monitoring"] = await asyncio.to_thread(
-                MonitoringAgent, openai_api_key=api_key
-            )
+        if not api_key:
+            return None
+        from agents.monitoring_agent import MonitoringAgent
+        _STATE["agent_monitoring"] = MonitoringAgent(openai_api_key=api_key)
     return _STATE["agent_monitoring"]
 
 
-
-
 async def get_policy_agent():
-    if _STATE["agent_policy"] is None:
+    if _STATE.get("agent_policy") is None:
         api_key = _STATE.get("agent_api_key")
-        if api_key:
-            from agents.policy_agent import PolicyAgent
-            _STATE["agent_policy"] = await asyncio.to_thread(
-                PolicyAgent, openai_api_key=api_key
-            )
+        if not api_key:
+            return None
+        from agents.policy_agent import PolicyAgent
+        _STATE["agent_policy"] = PolicyAgent(openai_api_key=api_key)
     return _STATE["agent_policy"]

@@ -49,3 +49,6 @@ tests/sample1.py
 notebooks/figures/
 .claude/
 qdrant_storage/
+pipelines/dbt_project/*.duckdb
+pipelines/dbt_project/*.duckdb-shm
+pipelines/dbt_project/*.duckdb-wal

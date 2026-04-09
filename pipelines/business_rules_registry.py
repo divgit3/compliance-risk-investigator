@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 business_rules_registry.py
 ---------------------------

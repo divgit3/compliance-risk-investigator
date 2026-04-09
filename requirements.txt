@@ -5,6 +5,7 @@ pyarrow>=14.0.0,<16.0.0
 numpy==1.26.4
 faker==25.2.0
 requests==2.32.3
+PyAthena==3.20.0
 
 # ── dbt (Data Build Tool) ────────────────────────────────────────────────────
 # SQL-based transformation layer; dbt-duckdb runs locally without a server

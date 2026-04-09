@@ -40,6 +40,20 @@ class APIClient:
             )
         return resp.json()
 
+    def get_agent(self, endpoint: str, params: dict | None = None) -> dict | list:
+        """For agent endpoints that need longer timeout (120s)."""
+        url = f"{self._base_url}/{endpoint.lstrip('/')}"
+        try:
+            response = httpx.get(url, params=params, timeout=180)
+            response.raise_for_status()
+            return response.json()
+        except httpx.TimeoutException as exc:
+            raise APIError("Agent request timed out after 120s", 408) from exc
+        except httpx.HTTPStatusError as exc:
+            raise APIError(str(exc), exc.response.status_code) from exc
+        except httpx.RequestError as exc:
+            raise APIError(f"Network error reaching {url}: {exc}", 503) from exc
+
     def post(self, endpoint: str, json: dict | None = None) -> dict:
         url = f"{self._base_url}/{endpoint.lstrip('/')}"
         try:
