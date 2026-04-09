@@ -52,3 +52,4 @@ qdrant_storage/
 pipelines/dbt_project/*.duckdb
 pipelines/dbt_project/*.duckdb-shm
 pipelines/dbt_project/*.duckdb-wal
+lib/
