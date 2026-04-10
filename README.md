@@ -2,6 +2,7 @@
 ![Phase 1](https://img.shields.io/badge/Phase%201-Complete-brightgreen)
 ![Phase 2](https://img.shields.io/badge/Phase%202-Complete-brightgreen)
 ![Phase 3](https://img.shields.io/badge/Phase%203-Complete-brightgreen)
+![Phase 4](https://img.shields.io/badge/Phase%204-Complete-brightgreen)
 
 # Compliance Risk Investigator AI
 
@@ -45,8 +46,8 @@ Phase 3 — AI agents + API                    Qdrant (policy_docs)
   FastAPI (9 endpoints) ──► MLflow audit trail
            │
            ▼
-Phase 4 — Streamlit UI (in progress)
-  Portfolio dashboard · HCP drill-down · Policy citation viewer
+Phase 4 — Streamlit Dashboard
+  5-page compliance UI · Network graph · HCP drill-down · Policy Q&A
 ```
 
 **Stack:** Python 3.12 · dbt 1.8.3 · DuckDB · AWS S3/Glue/Athena · Qdrant
@@ -62,7 +63,7 @@ Phase 4 — Streamlit UI (in progress)
 | 1 | Data pipeline + synthetic data + policy RAG | ✅ Complete |
 | 2 | Anomaly detection (rule-based + IF + SHAP) | ✅ Complete |
 | 3 | AI agents + FastAPI backend + Docker | ✅ Complete |
-| 4 | Streamlit dashboard | 🔲 In progress |
+| 4 | Streamlit dashboard | ✅ Complete |
 
 ---
 
@@ -272,13 +273,70 @@ chunk-level citations.
 
 ---
 
-## Phase 4 — Streamlit UI 🔲
+## Phase 4 — Compliance Risk Dashboard (Streamlit) ✅
 
-- 5-level drill-down UI (portfolio → HCP → interaction → event → policy)
-- Rep→HCP network diagram
-- Year-by-year benchmark charts
-- Engagement quadrant visualization
-- Policy citation viewer
+### Overview
+
+A 5-page Streamlit dashboard that consumes the FastAPI backend and presents
+compliance risk data visually to compliance officers.
+
+### Pages
+
+1. **Compliance Risk Overview** — Population KPIs, risk tier distribution, trend
+   analysis, choropleth map, MonitoringAgent on-demand analysis
+2. **Rep–HCP Network** — Interactive pyvis network graph, 291 critical HCPs default,
+   tier toggle, top 10 riskiest table
+3. **HCP Explorer** — Paginated table of 97,011 HCPs, tier filter cards, risk score
+   bars, click-to-navigate to HCP Detail
+4. **HCP Detail** — Risk score gauge, rule flags with policy citations, peer benchmark,
+   InvestigationAgent LLM report
+5. **Policy Q&A** — RAG-powered Q&A over 5 policy documents, Nova Pharma vs PhRMA
+   comparison, citation display
+
+### Stack additions
+
+- streamlit>=1.36.0
+- plotly>=5.22.0
+- pyvis>=0.3.2
+- pydeck>=0.9.0
+- httpx>=0.27.0
+
+### Running locally
+
+```bash
+# Start backend
+export $(grep -v '^#' docker/.env | xargs)
+uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
+
+# Start Streamlit (separate terminal)
+python3 -m streamlit run streamlit_app/app.py
+```
+
+### Running with Docker
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+# API:       http://localhost:8000
+# Streamlit: http://localhost:8502
+# MLflow:    http://localhost:5001
+```
+
+### Known limitations (dev environment)
+
+- State/specialty fields NULL — choropleth and specialty charts show graceful fallbacks
+- Rep–HCP edges unavailable — `rep_id` not in API response
+- Peer benchmarks use normalized scores — Athena required for dollar amounts
+- SHAP values served from investigation report, not HCP profile
+
+### Post-Phase 4 backlog
+
+- streamlit-agraph rebuild for Rep–HCP Network (node click events)
+- Hierarchical rep → HCP drill-down (requires `rep_id` Athena fix)
+- Top flag column on HCP Explorer (requires per-HCP flags endpoint)
+- State/specialty charts after Athena re-run
+- Model comparison (IF vs LOF vs OCSVM)
+- LangGraph supervisor agent
+- Medium article: "From ML to AI Agents: Building a Pharma Compliance Platform in 2025"
 
 ---
 
@@ -304,8 +362,21 @@ compliance-risk-investigator/
 │       ├── monitoring.py
 │       ├── policy.py
 │       └── benchmarks.py
+├── streamlit_app/
+│   ├── app.py
+│   ├── config.py
+│   ├── requirements.txt
+│   ├── components/
+│   │   └── api_client.py
+│   └── pages/
+│       ├── 1_Compliance_Risk_Overview.py
+│       ├── 2_Rep_HCP_Network.py
+│       ├── 3_HCP_Explorer.py
+│       ├── 4_HCP_Detail.py
+│       └── 5_Policy_QA.py
 ├── docker/
 │   ├── Dockerfile
+│   ├── Dockerfile.streamlit
 │   ├── docker-compose.yml
 │   ├── .env.example
 │   └── README.md
@@ -384,15 +455,24 @@ curl -X POST http://localhost:8000/policy/query \
   -d '{"question": "What is the meal expense limit?"}'
 ```
 
+### Phase 4 (Streamlit dashboard)
+
+```bash
+# Backend must be running first (see Phase 3 above)
+python3 -m streamlit run streamlit_app/app.py
+# Dashboard: http://localhost:8501
+```
+
 ### Docker (full stack)
 
 ```bash
 cd docker
 cp .env.example .env    # add OPENAI_API_KEY + AWS credentials
 docker-compose up --build
-# API: http://localhost:8000/docs
-# MLflow: http://localhost:5002
-# Qdrant: http://localhost:6333/dashboard
+# API:       http://localhost:8000/docs
+# Streamlit: http://localhost:8502
+# MLflow:    http://localhost:5002
+# Qdrant:    http://localhost:6333/dashboard
 ```
 
 ---
@@ -441,6 +521,16 @@ docker-compose up --build
 - Embedding model mismatch: `embed_policy_docs.py` uses `text-embedding-ada-002`
   but `policy_tools.py` queries with `text-embedding-3-small` — relevance scores
   from `search_policy_docs` are near-random; answers remain correct via `lookup_rule`
+
+### Phase 4
+- `state` and `specialty` NULL in dev — choropleth map and specialty bar chart
+  show graceful "data unavailable" fallbacks; will populate after Athena re-run
+- Rep–HCP edges absent — `rep_id` not returned by `/hcps` endpoint; network page
+  shows HCP-only graph with rep panel stub
+- Peer benchmark values are RobustScaler-normalized scores, not dollar amounts —
+  Athena connection required for raw spend figures
+- pyvis node clicks cannot trigger Streamlit reruns (iframe boundary) — HCP
+  selection via selectbox below graph; streamlit-agraph migration in backlog
 
 ---
 
