@@ -60,7 +60,7 @@ def list_hcps(
     cols = [
         "hcp_id", "risk_score", "risk_tier", "rule_score", "anomaly_score",
         "total_rule_flags", "critical_flags", "high_flags",
-        "most_severe_flag", "specialty", "state", "hcp_name",
+        "most_severe_flag", "specialty", "state", "primary_rep_id", "hcp_name",
     ]
     available = [c for c in cols if c in page.columns]
     records = page[available].replace({float("nan"): None}).to_dict(orient="records")

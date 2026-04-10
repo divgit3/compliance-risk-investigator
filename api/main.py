@@ -28,6 +28,7 @@ from api.routers import benchmarks, events, hcps, monitoring, policy
 _ROOT = Path(__file__).resolve().parents[1]
 _FEATURES_DIR = _ROOT / "features" / "outputs"
 _MODELS_DIR   = _ROOT / "models"  / "outputs"
+_DATA_DIR     = _ROOT / "data"    / "processed"
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,14 @@ async def lifespan(app: FastAPI):
         else:
             set_parquet(_bm_name, None)
     print("STARTUP: benchmarks loaded", flush=True)
+
+    _tov_path = _DATA_DIR / "hcp_tov_summary.parquet"
+    if _tov_path.exists():
+        set_parquet("tov_summary", pd.read_parquet(_tov_path))
+        print("STARTUP: tov_summary loaded", flush=True)
+    else:
+        set_parquet("tov_summary", None)
+        print("STARTUP: tov_summary not found — CMS dollar benchmarks unavailable", flush=True)
 
     api_key = os.environ.get("OPENAI_API_KEY")
     print(f"STARTUP: api_key present={bool(api_key)}", flush=True)

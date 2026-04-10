@@ -16,12 +16,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 import numpy as np
 import pandas as pd
+from scipy.stats import percentileofscore
 
 from api.dependencies import (
     get_competitor_benchmarks,
     get_population_benchmarks,
     get_risk_scores,
     get_rule_flags,
+    get_tov_summary,
 )
 
 router = APIRouter(prefix="/benchmarks", tags=["benchmarks"])
@@ -39,15 +41,15 @@ def get_benchmark(
     rule_flags:           pd.DataFrame          = Depends(get_rule_flags),
     competitor_bm: Optional[pd.DataFrame]       = Depends(get_competitor_benchmarks),
     population_bm: Optional[pd.DataFrame]       = Depends(get_population_benchmarks),
+    tov_summary:   Optional[pd.DataFrame]       = Depends(get_tov_summary),
 ):
     """
     Return peer benchmark statistics and industry context for a single HCP.
 
-    Peer spend figures come from rule_flags.spend_2024 (Nova Pharma spend).
-    Industry benchmark fields (sow, industry_ratio, engagement_priority_score)
-    come from competitor_benchmarks.parquet and population_benchmarks.parquet
-    produced by features/industry_benchmarks.py (Task 3.5).  When those files
-    are absent, the fields are None and data_limitations is populated.
+    Peer spend figures come from hcp_tov_summary.nova_tov_2024 (real CMS dollars).
+    Falls back to rule_flags.spend_2024 (RobustScaler-normalized) when tov_summary
+    is unavailable.  Industry benchmark fields (sow, industry_ratio,
+    engagement_priority_score) come from competitor/population_benchmarks.parquet.
     """
     rs_row = risk_scores[risk_scores["hcp_id"] == hcp_id]
     if rs_row.empty:
@@ -56,14 +58,6 @@ def get_benchmark(
     r         = rs_row.iloc[0]
     specialty = r.get("specialty") if "specialty" in r.index else None
     state     = r.get("state")     if "state"     in r.index else None
-
-    # ── Nova spend (from rule_flags, which has raw spend columns) ─────────────
-    rf_row    = rule_flags[rule_flags["hcp_id"] == hcp_id]
-    spend_col = "spend_2024" if "spend_2024" in rule_flags.columns else None
-    hcp_spend = 0.0
-    if spend_col and not rf_row.empty:
-        raw = rf_row.iloc[0].get(spend_col)
-        hcp_spend = float(raw) if raw is not None and not pd.isna(raw) else 0.0
 
     # ── Peer group (by specialty + state from risk_scores) ────────────────────
     peers_rs   = risk_scores.copy()
@@ -80,15 +74,53 @@ def get_benchmark(
             peer_label = f"{peer_label}, state={state}"
 
     peer_hcp_ids = set(peers_rs["hcp_id"])
-    if spend_col:
-        peers_spend = rule_flags[rule_flags["hcp_id"].isin(peer_hcp_ids)][spend_col].dropna()
-    else:
-        peers_spend = pd.Series(dtype=float)
 
-    peer_avg    = float(peers_spend.mean())   if len(peers_spend) else 0.0
-    peer_max    = float(peers_spend.max())    if len(peers_spend) else 0.0
-    peer_median = float(peers_spend.median()) if len(peers_spend) else 0.0
-    pct_rank    = float((peers_spend < hcp_spend).sum() / len(peers_spend) * 100) if len(peers_spend) else 0.0
+    # ── Nova spend: prefer real CMS dollars from tov_summary ─────────────────
+    spend_col     = "spend_2024" if "spend_2024" in rule_flags.columns else None
+    hcp_spend     = 0.0
+    peer_avg      = 0.0
+    peer_max      = 0.0
+    peer_median   = 0.0
+    pct_rank      = 0.0
+    tov_available = False
+
+    if tov_summary is not None and "nova_tov_2024" in tov_summary.columns:
+        # Use real CMS dollars for peer comparison
+        peer_tov = tov_summary[["hcp_id", "nova_tov_2024"]].rename(
+            columns={"nova_tov_2024": "spend_real"}
+        )
+        hcp_tov_row = peer_tov[peer_tov["hcp_id"] == hcp_id]
+        if not hcp_tov_row.empty:
+            raw = hcp_tov_row.iloc[0]["spend_real"]
+            hcp_spend = float(raw) if raw is not None and not pd.isna(raw) else 0.0
+            # Filter peer_tov to peer group
+            peers_spend_series = (
+                peer_tov[peer_tov["hcp_id"].isin(peer_hcp_ids)]["spend_real"]
+                .dropna()
+            )
+            if len(peers_spend_series):
+                peer_avg    = float(peers_spend_series.mean())
+                peer_max    = float(peers_spend_series.max())
+                peer_median = float(peers_spend_series.median())
+                pct_rank    = float(percentileofscore(peers_spend_series, hcp_spend, kind="rank"))
+            tov_available = True
+        # else: hcp_id not in tov_summary — fall through to rule_flags fallback
+
+    if not tov_available:
+        # Fallback: rule_flags normalized spend (less meaningful for dollar display)
+        rf_row = rule_flags[rule_flags["hcp_id"] == hcp_id]
+        if spend_col and not rf_row.empty:
+            raw = rf_row.iloc[0].get(spend_col)
+            hcp_spend = float(raw) if raw is not None and not pd.isna(raw) else 0.0
+        if spend_col:
+            peers_spend = rule_flags[rule_flags["hcp_id"].isin(peer_hcp_ids)][spend_col].dropna()
+        else:
+            peers_spend = pd.Series(dtype=float)
+        if len(peers_spend):
+            peer_avg    = float(peers_spend.mean())
+            peer_max    = float(peers_spend.max())
+            peer_median = float(peers_spend.median())
+            pct_rank    = float((peers_spend < hcp_spend).sum() / len(peers_spend) * 100)
 
     # ── Industry benchmarks (Task 3.5 — optional) ─────────────────────────────
     sow                         = None
@@ -131,6 +163,17 @@ def get_benchmark(
     if not athena_available and competitor_bm is not None:
         data_limitations.append(_ATHENA_LIMITATION)
 
+    # CMS parquet provides real dollar benchmarks even without live Athena
+    if tov_available:
+        athena_available = True
+        data_source = "CMS open payments (hcp_tov_summary.parquet)"
+    else:
+        data_source = "rule_flags normalized spend (fallback)"
+        if not data_limitations:
+            data_limitations.append(
+                "hcp_tov_summary.parquet unavailable — spend values are RobustScaler-normalized"
+            )
+
     return {
         # ── Peer benchmark fields (Task 3.4) ──────────────────────────────
         "hcp_id":            hcp_id,
@@ -143,7 +186,8 @@ def get_benchmark(
         "peer_max_spend":    round(peer_max, 2),
         "peer_median_spend": round(peer_median, 2),
         "percentile_rank":   round(pct_rank, 1),
-        "spend_column_used": spend_col or "none",
+        "spend_column_used": "nova_tov_2024 (CMS)" if tov_available else (spend_col or "none"),
+        "data_source":       data_source,
         # ── Industry benchmark fields (Task 3.5) ──────────────────────────
         "sow":                       sow,
         "industry_ratio":            round(industry_ratio, 4) if industry_ratio is not None else None,
