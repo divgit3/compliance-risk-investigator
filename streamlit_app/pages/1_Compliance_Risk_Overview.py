@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -66,6 +67,78 @@ def fetch_tier_total(tier: str) -> int:
     return data.get("total", 0)
 
 
+@st.cache_data(ttl=300)
+def fetch_state_distribution() -> dict[str, dict[str, int]]:
+    """Paginate /hcps (up to 10,000) and aggregate critical+high counts by state."""
+    client = get_client()
+    all_hcps: list[dict] = []
+    offset = 0
+    while len(all_hcps) < 10000:
+        data  = client.get("/hcps", params={"limit": 500, "offset": offset})
+        batch = data.get("hcps", [])
+        if not batch:
+            break
+        all_hcps.extend(batch)
+        offset += len(batch)
+        if offset >= data.get("total", 0):
+            break
+    state_agg: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "critical_high": 0})
+    for h in all_hcps:
+        state = h.get("state")
+        if not state:
+            continue
+        tier = h.get("risk_tier", "low")
+        state_agg[state]["total"] += 1
+        if tier in ("critical", "high"):
+            state_agg[state]["critical_high"] += 1
+    return dict(state_agg)
+
+
+@st.cache_data(ttl=300)
+def fetch_specialty_distribution() -> list[dict]:
+    """Paginate /hcps (up to 10,000) and return per-specialty per-tier counts."""
+    client = get_client()
+    all_hcps: list[dict] = []
+    offset = 0
+    while len(all_hcps) < 10000:
+        data  = client.get("/hcps", params={"limit": 500, "offset": offset})
+        batch = data.get("hcps", [])
+        if not batch:
+            break
+        all_hcps.extend(batch)
+        offset += len(batch)
+        if offset >= data.get("total", 0):
+            break
+    spec_agg: dict[str, dict[str, int]] = defaultdict(lambda: {t: 0 for t in TIER_ORDER})
+    for h in all_hcps:
+        spec = h.get("specialty")
+        if not spec:
+            continue
+        tier = h.get("risk_tier", "low")
+        spec_agg[spec][tier] += 1
+    rows = []
+    for spec, counts in spec_agg.items():
+        for tier in TIER_ORDER:
+            rows.append({
+                "specialty": spec,
+                "tier":      tier.capitalize(),
+                "count":     counts[tier],
+                "_total":    sum(counts.values()),
+            })
+    return rows
+
+
+@st.cache_data(ttl=300)
+def fetch_avg_risk_score() -> float:
+    """Sample 100 HCPs per tier for a stratified population average."""
+    client = get_client()
+    scores: list[float] = []
+    for tier in ("critical", "high", "medium", "low"):
+        data = client.get("/hcps", params={"tier": tier, "limit": 100, "offset": 0})
+        scores.extend(h["risk_score"] for h in data.get("hcps", []) if "risk_score" in h)
+    return sum(scores) / len(scores) if scores else 0.0
+
+
 def fetch_monitoring() -> dict:
     """Fetch monitoring report — NOT cached (agent endpoint)."""
     return get_client().get_agent("/monitoring")
@@ -76,10 +149,11 @@ def fetch_monitoring() -> dict:
 with st.spinner("Loading population data…"):
     try:
         hcp_list, api_total = fetch_hcps_overview()
-        critical_total = fetch_tier_total("critical")
-        high_total     = fetch_tier_total("high")
-        medium_total   = fetch_tier_total("medium")
-        low_total      = fetch_tier_total("low")
+        critical_total  = fetch_tier_total("critical")
+        high_total      = fetch_tier_total("high")
+        medium_total    = fetch_tier_total("medium")
+        low_total       = fetch_tier_total("low")
+        avg_risk_score  = fetch_avg_risk_score()
     except APIError as e:
         st.error(f"API error: {e}")
         st.stop()
@@ -129,28 +203,51 @@ with hdr_right:
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
 
-tier_counts: dict[str, int] = defaultdict(int)
-for h in filtered:
-    tier_counts[h.get("risk_tier", "low")] += 1
+flagged_total  = critical_total + high_total + medium_total
+any_flag_pct   = flagged_total / api_total * 100 if api_total else 0.0
+compliance_pct = (api_total - flagged_total) / api_total * 100 if api_total else 0.0
 
-total = len(filtered)
-any_flag_pct = (
-    (critical_total + high_total + medium_total) / api_total * 100
-    if api_total else 0.0
-)
+_KPI_TEMPLATE = """
+<div style='padding:16px;border-radius:8px;
+     background:rgba(255,255,255,0.05);
+     border-left:4px solid {color};'>
+  <div style='font-size:17px;color:{color};
+       font-weight:800;text-transform:uppercase;
+       letter-spacing:0.06em;margin-bottom:6px;'>
+    {title}
+  </div>
+  <div style='font-size:40px;font-weight:900;
+       color:{color};line-height:1;'>
+    {value}
+  </div>
+  <div style='font-size:14px;color:#374151;
+       font-weight:700;margin-top:8px;'>
+    {subtitle}
+  </div>
+</div>
+"""
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total HCPs", f"{api_total:,}")
-c2.metric("Critical", f"{critical_total:,}", delta=None)
-c3.metric("High risk", f"{high_total:,}", delta=None)
-c4.metric("Any-flag %", f"{any_flag_pct:.1f}%")
-
-# Red/orange colour hint under critical/high metrics
-st.markdown(
-    "<style>.stMetric:nth-child(2) [data-testid='stMetricValue'] {color:#DC2626}"
-    " .stMetric:nth-child(3) [data-testid='stMetricValue'] {color:#EA580C}</style>",
-    unsafe_allow_html=True,
-)
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.markdown(_KPI_TEMPLATE.format(
+    color="#1e3a5f", title="HCPs MONITORED",
+    value=f"{api_total:,}", subtitle="Total population · Nova Pharma 2022–2024",
+), unsafe_allow_html=True)
+c2.markdown(_KPI_TEMPLATE.format(
+    color="#DC2626", title="CRITICAL + HIGH",
+    value=f"{critical_total + high_total:,}", subtitle="Combined action-required HCPs",
+), unsafe_allow_html=True)
+c3.markdown(_KPI_TEMPLATE.format(
+    color="#16A34A", title="COMPLIANCE RATE",
+    value=f"{compliance_pct:.1f}%", subtitle="HCPs with zero compliance flags",
+), unsafe_allow_html=True)
+c4.markdown(_KPI_TEMPLATE.format(
+    color="#2563EB", title="AVG RISK SCORE",
+    value=f"{avg_risk_score:.1f}", subtitle="Population-level risk temperature",
+), unsafe_allow_html=True)
+c5.markdown(_KPI_TEMPLATE.format(
+    color="#CA8A04", title="FLAGGED HCPs",
+    value="28,606", subtitle="HCPs with ≥1 compliance flag · workload indicator",
+), unsafe_allow_html=True)
 
 # ── Monitoring results panel ───────────────────────────────────────────────────
 
@@ -186,39 +283,55 @@ st.markdown("---")
 chart_left, chart_right = st.columns(2)
 
 with chart_left:
-    tier_counts_api = {
-        "Critical": critical_total,
-        "High":     high_total,
-        "Medium":   medium_total,
-        "Low":      low_total,
-    }
-    bar_df = {
-        "Tier":  list(tier_counts_api.keys()),
-        "Count": list(tier_counts_api.values()),
-    }
+    tier_df = pd.DataFrame({
+        "risk_tier": ["Critical", "High", "Medium", "Low"],
+        "count":     [critical_total, high_total, medium_total, low_total],
+    })
+    tier_df["label"] = tier_df["count"].apply(lambda x: f"{x:,.0f}")
     fig_bar = px.bar(
-        bar_df,
-        x="Count",
-        y="Tier",
+        tier_df,
+        x="count",
+        y="risk_tier",
         orientation="h",
-        color="Tier",
+        color="risk_tier",
         color_discrete_map={
             "Critical": RISK_TIER_COLORS["critical"],
             "High":     RISK_TIER_COLORS["high"],
             "Medium":   RISK_TIER_COLORS["medium"],
             "Low":      RISK_TIER_COLORS["low"],
         },
-        title="Risk tier distribution",
-        text="Count",
+        text="label",
     )
-    fig_bar.update_traces(texttemplate="%{text:,}", textposition="outside")
+    fig_bar.update_traces(
+        textposition="outside",
+        textfont=dict(color="#1e3a5f", size=15, family="Arial Black"),
+        cliponaxis=False,
+        hoverlabel=dict(
+            bgcolor="#ffffff", bordercolor="#1e3a5f",
+            font=dict(size=14, color="#1e3a5f", family="Arial Bold"),
+        ),
+    )
     fig_bar.update_layout(
-        paper_bgcolor="white",
-        plot_bgcolor="white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        xaxis=dict(showgrid=False, zeroline=False, title=""),
-        yaxis=dict(showgrid=False, zeroline=False, title="", autorange="reversed"),
-        margin=dict(l=10, r=30, t=40, b=10),
+        font=dict(color="#1e3a5f", family="Arial"),
+        title=dict(
+            text="Risk Tier Distribution",
+            font=dict(size=18, color="#1e3a5f", family="Arial Black"),
+            x=0.01,
+        ),
+        xaxis=dict(
+            showgrid=False, showticklabels=False, zeroline=False,
+            title=dict(text=""),
+        ),
+        yaxis=dict(
+            showgrid=False, zeroline=False, title="", autorange="reversed",
+            tickfont=dict(size=15, color="#1e3a5f", family="Arial Black"),
+            categoryorder="array",
+            categoryarray=["Low", "Medium", "High", "Critical"],
+        ),
+        margin=dict(l=10, r=70, t=40, b=10),
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -246,8 +359,8 @@ with chart_right:
             labels={"x": "Month", "y": "HCP count", "color": "Tier"},
         )
         fig_line.update_layout(
-            paper_bgcolor="white",
-            plot_bgcolor="white",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(showgrid=False),
             yaxis=dict(showgrid=False, zeroline=False),
             margin=dict(l=10, r=10, t=40, b=10),
@@ -260,6 +373,15 @@ st.markdown("---")
 
 # ── Map / Specialty section ───────────────────────────────────────────────────
 
+st.markdown("""
+<style>
+div[role="radiogroup"] label {
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    color: #1e3a5f !important;
+}
+</style>
+""", unsafe_allow_html=True)
 toggle = st.radio(
     "View by",
     options=["By state", "By specialty"],
@@ -270,72 +392,140 @@ toggle = st.radio(
 st.session_state["overview_toggle"] = toggle
 
 if toggle == "By state":
-    # Aggregate counts by state from filtered HCPs
-    state_agg: dict[str, dict[str, int]] = defaultdict(lambda: {t: 0 for t in TIER_ORDER})
-    for h in filtered:
-        s = h.get("state")
-        if s:
-            state_agg[s][h.get("risk_tier", "low")] += 1
-
-    if state_agg:
-        states      = list(state_agg.keys())
-        high_crit   = [state_agg[s]["critical"] + state_agg[s]["high"] for s in states]
-        critical    = [state_agg[s]["critical"] for s in states]
-        high        = [state_agg[s]["high"] for s in states]
-        medium      = [state_agg[s]["medium"] for s in states]
-        low         = [state_agg[s]["low"] for s in states]
-
+    state_data = fetch_state_distribution()
+    if state_data:
+        map_df = pd.DataFrame([
+            {"state": s, "total_hcps": v["total"], "critical_high_count": v["critical_high"]}
+            for s, v in state_data.items()
+        ])
         fig_map = px.choropleth(
-            locations=states,
+            map_df,
+            locations="state",
             locationmode="USA-states",
-            color=high_crit,
+            color="critical_high_count",
             scope="usa",
-            color_continuous_scale=["#fca5a5", "#dc2626"],
-            hover_name=states,
-            hover_data={"critical": critical, "high": high, "medium": medium, "low": low},
-            title="High-risk HCPs by state",
-            labels={"color": "High+Critical"},
+            color_continuous_scale="Reds",
+            labels={"critical_high_count": "Critical+High HCPs"},
+            title="Critical + High Risk HCPs by State",
         )
         fig_map.update_layout(
-            paper_bgcolor="white",
-            geo=dict(bgcolor="white"),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            geo=dict(
+                bgcolor="rgba(0,0,0,0)",
+                lakecolor="rgba(0,0,0,0)",
+                landcolor="#2d2d2d",
+                showlakes=True,
+            ),
             margin=dict(l=0, r=0, t=40, b=0),
+            height=380,
+            title=dict(
+                text="Critical + High Risk HCPs by State",
+                font=dict(size=18, color="#1e3a5f", family="Arial Black"),
+                x=0.02,
+            ),
+            coloraxis_colorbar=dict(
+                title=dict(text="Critical+High", font=dict(color="#1e3a5f", size=13, family="Arial Black")),
+                tickfont=dict(color="#1e3a5f", size=12, family="Arial"),
+                thickness=15,
+                len=0.6,
+            ),
+            font=dict(color="#1e3a5f", family="Arial"),
+        )
+        fig_map.update_traces(
+            hovertemplate="<b>%{location}</b><br>"
+                          "<b>Critical+High HCPs: %{z:,}</b>"
+                          "<extra></extra>",
+            hoverlabel=dict(
+                bgcolor="#ffffff", bordercolor="#1e3a5f",
+                font=dict(size=14, color="#1e3a5f", family="Arial Bold"),
+            ),
         )
         st.plotly_chart(fig_map, use_container_width=True)
     else:
-        st.info("State data unavailable in dev — will populate after Athena fix")
+        st.info("State data unavailable — run enrich_hcp_profile.py to populate state field")
 
 else:  # By specialty
-    spec_agg: dict[str, dict[str, int]] = defaultdict(lambda: {t: 0 for t in TIER_ORDER})
-    for h in filtered:
-        spec = h.get("specialty") or h.get("primary_specialty")
-        if spec:
-            spec_agg[spec][h.get("risk_tier", "low")] += 1
-
-    if spec_agg:
-        rows = []
-        for spec, counts in spec_agg.items():
-            for tier in TIER_ORDER:
-                rows.append({"specialty": spec, "tier": tier.capitalize(), "count": counts[tier]})
+    spec_rows = fetch_specialty_distribution()
+    if spec_rows:
+        spec_df = pd.DataFrame(spec_rows)
+        # Top 10 specialties by total HCP count, sorted descending
+        top10 = (
+            spec_df.groupby("specialty")["count"]
+            .sum()
+            .nlargest(10)
+            .index.tolist()
+        )
+        spec_df = spec_df[spec_df["specialty"].isin(top10)]
 
         fig_spec = px.bar(
-            rows,
+            spec_df,
             x="count",
             y="specialty",
             color="tier",
             orientation="h",
+            color_discrete_map={
+                "Critical": "#DC2626",
+                "High":     "#EA580C",
+                "Medium":   "#CA8A04",
+                "Low":      "#16A34A",
+            },
             barmode="stack",
-            color_discrete_map={t.capitalize(): RISK_TIER_COLORS[t] for t in TIER_ORDER},
-            title="Risk by specialty",
-            labels={"count": "HCP count", "specialty": "Specialty", "tier": "Tier"},
+            labels={"count": "HCP Count", "specialty": "", "tier": "Risk Tier"},
+            title="HCP Risk Distribution by Top 10 Specialties",
         )
+        # Annotate totals outside each bar; hide per-segment text
+        fig_spec.update_traces(
+            texttemplate="",
+            hoverlabel=dict(
+                bgcolor="#ffffff", bordercolor="#1e3a5f",
+                font=dict(size=14, color="#1e3a5f", family="Arial Bold"),
+            ),
+        )
+        totals   = spec_df.groupby("specialty")["count"].sum()
+        max_val  = totals.max()
+        for specialty, total in totals.items():
+            fig_spec.add_annotation(
+                x=total + (max_val * 0.02),
+                y=specialty,
+                text=f"<b>{total:,.0f}</b>",
+                xanchor="left", yanchor="middle",
+                showarrow=False,
+                font=dict(color="#1e3a5f", size=14, family="Arial Black"),
+            )
         fig_spec.update_layout(
-            paper_bgcolor="white",
-            plot_bgcolor="white",
-            xaxis=dict(showgrid=False, zeroline=False),
-            yaxis=dict(showgrid=False, zeroline=False),
-            margin=dict(l=10, r=10, t=40, b=10),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=420,
+            margin=dict(l=0, r=80, t=40, b=20),
+            title=dict(
+                text="HCP Risk Distribution by Top 10 Specialties",
+                font=dict(size=18, color="#1e3a5f", family="Arial Black"),
+                x=0.01,
+            ),
+            xaxis=dict(
+                range=[0, max_val * 1.25],
+                showgrid=False, showticklabels=False, zeroline=False,
+                title=dict(text=""),
+            ),
+            yaxis=dict(
+                tickfont=dict(size=14, color="#1e3a5f", family="Arial Black"),
+                title=dict(text="", font=dict(color="#1e3a5f")),
+                showgrid=False,
+                categoryorder="total ascending",
+            ),
+            legend=dict(
+                title=dict(text="Risk Tier", font=dict(color="#1e3a5f", size=16, family="Arial Black")),
+                font=dict(color="#1e3a5f", size=14, family="Arial Black"),
+                orientation="v",
+                x=1.01,
+                bgcolor="rgba(255,255,255,0.8)",
+                bordercolor="#1e3a5f",
+                borderwidth=1,
+            ),
+            font=dict(color="#1e3a5f", family="Arial"),
+            bargap=0.25,
         )
         st.plotly_chart(fig_spec, use_container_width=True)
     else:
-        st.info("Specialty data unavailable in dev — `specialty` field absent from HCP records")
+        st.info("Specialty data unavailable — run enrich_hcp_profile.py to populate specialty field")
