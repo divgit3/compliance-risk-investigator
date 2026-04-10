@@ -12,6 +12,7 @@ from collections import defaultdict
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from components.api_client import APIError, get_client
@@ -137,6 +138,26 @@ def fetch_avg_risk_score() -> float:
         data = client.get("/hcps", params={"tier": tier, "limit": 100, "offset": 0})
         scores.extend(h["risk_score"] for h in data.get("hcps", []) if "risk_score" in h)
     return sum(scores) / len(scores) if scores else 0.0
+
+
+@st.cache_data(ttl=300)
+def fetch_trend_data() -> pd.DataFrame:
+    try:
+        df = pd.read_parquet("features/outputs/hcp_spend_raw_dollars.parquet")
+        rows = []
+        for year in [2022, 2023, 2024]:
+            spend_col = f"spend_{year}"
+            cap_col   = f"annual_cap_pct_used_{year}"
+            rows.append({
+                "year":          str(year),
+                "total_tov_m":   round(df[spend_col].sum() / 1_000_000, 2),
+                "hcps_near_cap": int((df[cap_col] >= 0.75).sum()),
+                "hcps_over_cap": int((df[cap_col] >= 1.0).sum()),
+                "avg_spend":     round(df[spend_col].mean(), 2),
+            })
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
 
 
 def fetch_monitoring() -> dict:
@@ -304,7 +325,7 @@ with chart_left:
     )
     fig_bar.update_traces(
         textposition="outside",
-        textfont=dict(color="#1e3a5f", size=15, family="Arial Black"),
+        textfont=dict(size=15, color="#1e3a5f", family="Arial Black"),
         cliponaxis=False,
         hoverlabel=dict(
             bgcolor="#ffffff", bordercolor="#1e3a5f",
@@ -336,38 +357,101 @@ with chart_left:
     st.plotly_chart(fig_bar, use_container_width=True)
 
 with chart_right:
-    # Trend chart — requires a date/month field on HCP records.
-    # The /hcps endpoint does not currently return temporal data.
-    sample = filtered[0] if filtered else {}
-    has_month = any(k in sample for k in ("month", "year_month", "created_at", "interaction_date"))
+    trend_df = fetch_trend_data()
 
-    if has_month:
-        month_field = next(k for k in ("month", "year_month", "created_at", "interaction_date") if k in sample)
-        monthly: dict[str, dict[str, int]] = defaultdict(lambda: {"critical": 0, "high": 0})
-        for h in filtered:
-            m = str(h.get(month_field, ""))[:7]  # YYYY-MM
-            tier = h.get("risk_tier", "low")
-            if tier in ("critical", "high"):
-                monthly[m][tier] += 1
-        months = sorted(monthly.keys())
-        fig_line = px.line(
-            x=months * 2,
-            y=[monthly[m]["critical"] for m in months] + [monthly[m]["high"] for m in months],
-            color=["Critical"] * len(months) + ["High"] * len(months),
-            color_discrete_map={"Critical": RISK_TIER_COLORS["critical"], "High": RISK_TIER_COLORS["high"]},
-            title="Critical + high trend 2022–2024",
-            labels={"x": "Month", "y": "HCP count", "color": "Tier"},
-        )
-        fig_line.update_layout(
+    if trend_df.empty:
+        st.info("Trend data unavailable")
+    else:
+        fig_trend = go.Figure()
+
+        fig_trend.add_trace(go.Bar(
+            x=trend_df["year"],
+            y=trend_df["total_tov_m"],
+            name="Total ToV ($M)",
+            marker_color=["#185FA5", "#185FA5", "#DC2626"],
+            text=[f"${v:.1f}M" for v in trend_df["total_tov_m"]],
+            textposition="inside",
+            textfont=dict(size=15, color="#ffffff", family="Arial Black"),
+            yaxis="y1",
+            width=0.4,
+        ))
+
+        fig_trend.add_trace(go.Scatter(
+            x=trend_df["year"],
+            y=trend_df["hcps_near_cap"],
+            mode="lines+markers",
+            name="HCPs ≥75% of annual cap",
+            line=dict(color="#EA580C", width=3),
+            marker=dict(size=12, color="#EA580C", symbol="diamond"),
+            yaxis="y2",
+        ))
+
+        tov_2023 = trend_df.loc[trend_df["year"] == "2023", "total_tov_m"].values[0]
+        tov_2024 = trend_df.loc[trend_df["year"] == "2024", "total_tov_m"].values[0]
+        yoy_pct  = ((tov_2024 - tov_2023) / tov_2023) * 100
+
+        fig_trend.update_layout(
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=False, zeroline=False),
-            margin=dict(l=10, r=10, t=40, b=10),
+            title=dict(
+                text=(
+                    f"Transfer of Value — YoY Trend"
+                    f"  |  2023→2024: "
+                    f"{'▲' if yoy_pct > 0 else '▼'}"
+                    f" {abs(yoy_pct):.1f}%"
+                ),
+                font=dict(size=16, color="#1e3a5f", family="Arial Black"),
+                x=0.01,
+            ),
+            height=380,
+            margin=dict(l=10, r=60, t=70, b=30),
+            xaxis=dict(
+                tickmode="array",
+                tickvals=["2022", "2023", "2024"],
+                ticktext=["2022", "2023", "2024"],
+                tickfont=dict(size=16, color="#1e3a5f", family="Arial Black"),
+                showgrid=False,
+                title="",
+            ),
+            yaxis=dict(
+                title=dict(text="Total ToV ($M)", font=dict(color="#185FA5", size=13, family="Arial Black")),
+                tickfont=dict(color="#185FA5", size=13, family="Arial Black"),
+                showgrid=False,
+                tickprefix="$",
+                ticksuffix="M",
+                range=[0, max(trend_df["total_tov_m"]) * 1.5],
+            ),
+            yaxis2=dict(
+                title=dict(text="HCPs near annual cap", font=dict(color="#EA580C", size=13, family="Arial Black")),
+                tickfont=dict(color="#EA580C", size=13, family="Arial Black"),
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                range=[-20, max(trend_df["hcps_near_cap"]) * 2.5],
+            ),
+            legend=dict(
+                font=dict(size=12, color="#1e3a5f", family="Arial Bold"),
+                bgcolor="rgba(255,255,255,0.8)",
+                bordercolor="#1e3a5f",
+                borderwidth=1,
+                orientation="h",
+                y=-0.15,
+            ),
+            hoverlabel=dict(
+                bgcolor="#ffffff",
+                bordercolor="#1e3a5f",
+                font=dict(size=13, color="#1e3a5f", family="Arial Bold"),
+            ),
+            barmode="group",
         )
-        st.plotly_chart(fig_line, use_container_width=True)
-    else:
-        st.info("Trend data unavailable — requires temporal field in HCP records")
+
+        st.plotly_chart(fig_trend, use_container_width=True)
+        st.caption(
+            "ToV = Transfer of Value · Nova Pharma payments to HCPs "
+            "(meals, speaker fees, consulting) · "
+            "Near cap = HCPs at ≥75% of $75,000 annual limit · "
+            "Competitor SOW requires Athena re-run"
+        )
 
 st.markdown("---")
 
