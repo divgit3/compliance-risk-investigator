@@ -356,59 +356,39 @@ class InvestigationAgent:
         t0 = time.monotonic()
 
         try:
-            prompt = (
-                f"Investigate HCP {hcp_id}. Use all available tools to gather:\n"
-                "1. Risk profile (score, tier, key metrics)\n"
-                "2. All fired rule flags with policy citations\n"
-                "3. Peer benchmark comparison\n"
-                "4. Top anomalous features driving the IF score\n"
-                "5. Relevant policy context from the policy docs\n"
-                "Then write a score_explanation and action_rationale."
+            # Call tools directly — no agent loop needed
+            print(f"INVESTIGATE: calling get_hcp_risk_profile for {hcp_id}...", flush=True)
+            profile_raw = await asyncio.to_thread(
+                get_hcp_risk_profile.invoke, {"hcp_id": hcp_id}
             )
+            print(f"INVESTIGATE: get_hcp_risk_profile done: {type(profile_raw)}", flush=True)
 
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.executor.invoke({"input": prompt}),
+            print("INVESTIGATE: calling get_rule_flags...", flush=True)
+            flags_raw = await asyncio.to_thread(
+                get_rule_flags.invoke, {"hcp_id": hcp_id}
             )
+            print(f"INVESTIGATE: get_rule_flags done: {type(flags_raw)}", flush=True)
 
-            steps      = result.get("intermediate_steps", [])
-            llm_output = result.get("output", "")
-            reasoning  = self._intermediate_steps_to_str(steps)
+            print("INVESTIGATE: calling get_peer_benchmark...", flush=True)
+            bench_raw = await asyncio.to_thread(
+                get_peer_benchmark.invoke, {"hcp_id": hcp_id}
+            )
+            print(f"INVESTIGATE: get_peer_benchmark done: {type(bench_raw)}", flush=True)
 
-            # Extract tool results from intermediate steps
-            tool_outputs: dict[str, dict] = {}
-            for action, observation in steps:
-                name = getattr(action, "tool", "")
-                if isinstance(observation, str):
-                    try:
-                        tool_outputs[name] = json.loads(observation)
-                    except json.JSONDecodeError:
-                        tool_outputs[name] = {"raw": observation}
-                elif isinstance(observation, dict):
-                    tool_outputs[name] = observation
+            print("INVESTIGATE: calling get_top_anomalous_features...", flush=True)
+            feats_raw = await asyncio.to_thread(
+                get_top_anomalous_features.invoke, {"hcp_id": hcp_id}
+            )
+            print(f"INVESTIGATE: get_top_anomalous_features done: {type(feats_raw)}", flush=True)
 
-            # Parse structured outputs from tool results
-            profile   = tool_outputs.get("get_hcp_risk_profile", {})
-            flags_out = tool_outputs.get("get_rule_flags", {})
-            bench_out = tool_outputs.get("get_peer_benchmark", {})
-            feats_out = tool_outputs.get("get_top_anomalous_features", {})
-            policy_out= tool_outputs.get("search_policy_docs", {})
+            reasoning = "Direct tool execution — no agent loop"
 
-            # Fallback risk values from direct parquet read if tool failed
-            if "error" in profile or not profile:
-                root = Path(__file__).resolve().parents[1]
-                risk = pd.read_parquet(root / "models/outputs/risk_scores.parquet")
-                row  = risk[risk["hcp_id"] == hcp_id]
-                if not row.empty:
-                    r = row.iloc[0]
-                    profile = {
-                        "risk_score": float(r["risk_score"]),
-                        "risk_tier":  str(r["risk_tier"]),
-                        "rule_score": float(r["rule_score"]),
-                        "if_score":   float(r["anomaly_score"]),
-                    }
+            profile   = profile_raw if isinstance(profile_raw, dict) else {}
+            flags_out = flags_raw   if isinstance(flags_raw, dict)   else {}
+            bench_out = bench_raw   if isinstance(bench_raw, dict)   else {}
+            feats_out = feats_raw   if isinstance(feats_raw, dict)   else {}
 
-            risk_tier = str(profile.get("risk_tier", "medium"))
+            risk_tier  = str(profile.get("risk_tier", "medium"))
             rule_flags = self._parse_rule_flags(flags_out) if "fired_flags" in flags_out else []
             peer_bench = (
                 self._parse_peer_benchmark(bench_out)
@@ -421,23 +401,39 @@ class InvestigationAgent:
                 )
             )
             anomalous = self._parse_anomalous_features(feats_out) if "features" in feats_out else []
-            citations  = self._parse_policy_citations(policy_out) if "results" in policy_out else []
 
-            # Split LLM output into score_explanation + action_rationale
-            # Heuristic: if output contains "rationale" keyword, split there
-            if "rationale" in llm_output.lower():
-                parts = llm_output.split("rationale", 1)
-                score_explanation = parts[0].strip() if parts else ""
-                action_rationale  = ("rationale" + parts[1]).strip() if len(parts) > 1 else (
-                    f"Based on risk tier '{risk_tier}', "
-                    f"action '{_TIER_TO_ACTION.get(risk_tier, 'monitor')}' is recommended."
+            # Single LLM call for narrative
+            narrative_prompt = (
+                f"You are a pharmaceutical compliance investigator. Write a 3-4 sentence "
+                f"investigation summary for HCP {hcp_id}.\n"
+                f"Risk profile: {profile}\n"
+                f"Fired flags: {flags_out}\n"
+                f"Peer benchmark: {bench_out}\n"
+                f"Top features: {feats_out}\n"
+                f"Be specific about risk score, flags, and recommended action."
+            )
+            print("INVESTIGATE: calling OpenAI for narrative...", flush=True)
+            import openai, os as _os
+            _api_key = _os.environ.get("OPENAI_API_KEY")
+            with __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=1) as pool:
+                import asyncio as _asyncio
+                llm_output = await _asyncio.get_event_loop().run_in_executor(
+                    pool,
+                    lambda: openai.OpenAI(api_key=_api_key).chat.completions.create(
+                        model=self.model,
+                        messages=[{"role": "user", "content": narrative_prompt}],
+                        temperature=0,
+                        max_tokens=300,
+                        timeout=30,
+                    ).choices[0].message.content
                 )
-            else:
-                score_explanation = llm_output.strip()
-                action_rationale  = (
-                    f"Based on risk tier '{risk_tier}', "
-                    f"action '{_TIER_TO_ACTION.get(risk_tier, 'monitor')}' is recommended."
-                )
+            print(f"INVESTIGATE: narrative done, length={len(llm_output)}", flush=True)
+
+            score_explanation = llm_output.strip()
+            action_rationale  = (
+                f"Based on risk tier '{risk_tier}', "
+                f"action '{_TIER_TO_ACTION.get(risk_tier, 'monitor')}' is recommended."
+            )
 
             latency_ms = (time.monotonic() - t0) * 1000
 
@@ -452,7 +448,7 @@ class InvestigationAgent:
                 rule_flags=rule_flags,
                 peer_benchmark=peer_bench,
                 top_anomalous_features=anomalous,
-                policy_citations=citations,
+                policy_citations=[],
                 recommended_action=_TIER_TO_ACTION.get(risk_tier, "monitor"),
                 action_rationale=action_rationale,
                 agent_reasoning=reasoning,

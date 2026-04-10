@@ -17,14 +17,30 @@ PAGE_SIZE = 500               # rows fetched per /hcps call when aggregating
 MAX_HCPS_FOR_OVERVIEW = 5000  # cap for overview aggregation
 
 FLAG_LABELS = {
-    "speaker_fmv_exceeded":    "Speaker pay above fair market",
-    "annual_cap_exceeded":     "Annual spend cap breached",
-    "annual_cap_warning":      "Approaching annual spend cap",
-    "meal_cap_exceeded":       "Meal limit exceeded",
-    "meal_cap_warning":        "Approaching meal limit",
-    "speaker_event_frequency": "Excessive speaker events",
-    "aggregate_spend_flag":    "High aggregate spend",
-    "no_gap_between_events":   "No gap between events",
+    # Phase 2 rule names (original)
+    "speaker_fmv_exceeded":             "Speaker pay above fair market",
+    "annual_cap_exceeded":              "Annual spend cap breached",
+    "annual_cap_warning":               "Approaching annual spend cap",
+    "meal_cap_exceeded":                "Meal limit exceeded",
+    "meal_cap_warning":                 "Approaching meal limit",
+    "speaker_event_frequency":          "Excessive speaker events",
+    "aggregate_spend_flag":             "High aggregate spend",
+    "no_gap_between_events":            "No gap between events",
+    # Phase 3 API flag names
+    "flag_speaker_fmv_breach":          "Speaker pay above fair market",
+    "flag_speaker_fmv_chronic":         "Chronic speaker FMV violations",
+    "flag_repeat_speaker":              "Repeat speaker pattern",
+    "flag_rapid_repeat_pattern":        "Rapid repeat engagements",
+    "flag_missing_attestation":         "Missing interaction attestation",
+    "flag_chronic_missing_attestation": "Chronic missing attestations",
+    "flag_vague_rationale":             "Vague interaction rationale",
+    "flag_vague_rationale_pattern":     "Pattern of vague rationales",
+    "flag_fmv_non_compliance":          "FMV non-compliance",
+    "flag_escalating_spend":            "Escalating spend pattern",
+    "flag_low_attendance_pattern":      "Low speaker event attendance",
+    "flag_aggregate_spend":             "High aggregate spend",
+    "flag_annual_cap_warning":          "Approaching annual spend cap",
+    "flag_annual_cap_breach":           "Annual spend cap breached",
 }
 
 SHAP_LABELS = {
