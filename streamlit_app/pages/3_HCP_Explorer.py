@@ -47,6 +47,20 @@ def fetch_tier_total(tier: str | None) -> int:
     return data.get("total", 0)
 
 
+@st.cache_data(ttl=300)
+def fetch_hcp_top_flag(hcp_id: str) -> str:
+    """Fetch the top flag for a single HCP from /hcps/{id}/flags."""
+    try:
+        data = get_client().get(f"/hcps/{hcp_id}/flags")
+        fired_flags = data.get("fired_flags", [])
+        if not fired_flags:
+            return "—"
+        top_flag = fired_flags[0]
+        return FLAG_LABELS.get(top_flag, top_flag.replace("_", " ").title())
+    except Exception:
+        return "—"
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -201,9 +215,15 @@ st.markdown("---")
 
 # ── HCP table ─────────────────────────────────────────────────────────────────
 
+# Fetch top flags for current page (cached, fast after first load)
+top_flags = {
+    hcp["hcp_id"]: fetch_hcp_top_flag(hcp["hcp_id"])
+    for hcp in hcp_rows
+}
+
 # Header row
-hdr = st.columns([2, 3, 1])
-for col, label in zip(hdr, ["HCP ID", "Risk Score", "Tier"]):
+hdr = st.columns([2, 2, 1, 2])
+for col, label in zip(hdr, ["HCP ID", "Risk Score", "Tier", "Top Flag"]):
     col.markdown(f"**{label}**")
 
 st.markdown(
@@ -216,8 +236,9 @@ for hcp in hcp_rows:
     risk_score = float(hcp.get("risk_score", 0))
     tier       = hcp.get("risk_tier", "low")
     tier_color = RISK_TIER_COLORS.get(tier, "#888")
+    top_flag   = top_flags.get(hcp_id, "—")
 
-    row = st.columns([2, 3, 1])
+    row = st.columns([2, 2, 1, 2])
 
     # col1: clickable HCP ID button
     if row[0].button(hcp_id, key=f"hcp_{hcp_id}"):
@@ -245,7 +266,12 @@ for hcp in hcp_rows:
         unsafe_allow_html=True,
     )
 
-st.caption("Top flag column coming in polish pass — requires per-HCP flags endpoint.")
+    # col4: top flag label
+    row[3].markdown(
+        f"<span style='font-size:12px;color:#374151'>{top_flag}</span>",
+        unsafe_allow_html=True,
+    )
+
 st.markdown("---")
 
 # ── Pagination controls (bottom) ──────────────────────────────────────────────
