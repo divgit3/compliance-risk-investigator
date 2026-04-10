@@ -297,7 +297,7 @@ compliance risk data visually to compliance officers.
 
 - streamlit>=1.36.0
 - plotly>=5.22.0
-- pyvis>=0.3.2
+- streamlit-agraph>=0.0.45
 - pydeck>=0.9.0
 - httpx>=0.27.0
 
@@ -330,7 +330,6 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### Post-Phase 4 backlog
 
-- streamlit-agraph rebuild for Rep–HCP Network (node click events)
 - Hierarchical rep → HCP drill-down (requires `rep_id` Athena fix)
 - Top flag column on HCP Explorer (requires per-HCP flags endpoint)
 - State/specialty charts after Athena re-run
@@ -529,8 +528,8 @@ docker-compose up --build
   shows HCP-only graph with rep panel stub
 - Peer benchmark values are RobustScaler-normalized scores, not dollar amounts —
   Athena connection required for raw spend figures
-- pyvis node clicks cannot trigger Streamlit reruns (iframe boundary) — HCP
-  selection via selectbox below graph; streamlit-agraph migration in backlog
+- Network node clicks use streamlit-agraph — clicked node ID returned natively,
+  no iframe boundary; rep edges absent until `rep_id` schema fix
 
 ---
 

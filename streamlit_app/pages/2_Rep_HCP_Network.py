@@ -7,11 +7,10 @@ Rep-HCP edges unavailable in dev — rep_id not in API response.
 
 from __future__ import annotations
 
-import tempfile
 from collections import defaultdict
 
 import streamlit as st
-import streamlit.components.v1 as components
+from streamlit_agraph import agraph, Node, Edge, Config
 
 from components.api_client import APIError, get_client
 from config import FLAG_LABELS, RISK_TIER_COLORS, TIER_ORDER
@@ -92,8 +91,7 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown(
-        "<span style='color:#9CA3AF;font-size:1.1em'>▪</span> &nbsp;"
-        "<span style='color:#9CA3AF'>Rep node (unavailable in dev)</span>",
+        "<span style='color:#9CA3AF;font-size:0.85em'>Click a node to inspect it.</span>",
         unsafe_allow_html=True,
     )
 
@@ -127,86 +125,60 @@ with hdr_right:
 
 col_net, col_detail = st.columns([2, 1])
 
-# ── Build pyvis network ────────────────────────────────────────────────────────
+# ── Build agraph network ───────────────────────────────────────────────────────
 
-def _build_pyvis_html(hcps: list[dict]) -> str:
-    """Build a pyvis Network from HCP list and return HTML string."""
-    from pyvis.network import Network
-
-    net = Network(
-        height="500px",
-        width="100%",
-        bgcolor="#ffffff",
-        font_color="black",
-    )
-    net.force_atlas_2based(
-        gravity=-50,
-        central_gravity=0.01,
-        spring_length=100,
-        spring_strength=0.08,
-        damping=0.4,
-        overlap=0,
-    )
+def _build_agraph(hcps: list[dict]):
+    """Build streamlit-agraph nodes and edges from HCP list."""
+    nodes = []
+    edges = []  # no edges in dev — rep_id not available
 
     for hcp in hcps:
-        hcp_id    = str(hcp.get("hcp_id", ""))
-        score     = float(hcp.get("risk_score", 0))
-        tier      = hcp.get("risk_tier", "low")
-        color     = RISK_TIER_COLORS.get(tier, "#16A34A")
-        label     = hcp_id.replace("HCP_", "")  # show numeric ID only
-        size      = 10 + (score / 100) * 20  # 10–30
-        tooltip   = (
-            f"ID: {hcp_id.replace('HCP_', '')}\n"
-            f"Score: {score:.0f}\n"
-            f"Tier: {tier.title()}"
-        )
+        hcp_id  = str(hcp.get("hcp_id", ""))
+        score   = float(hcp.get("risk_score", 0))
+        tier    = hcp.get("risk_tier", "low")
+        color   = RISK_TIER_COLORS.get(tier, "#16A34A")
+        label   = hcp_id.replace("HCP_", "")
+        size    = 10 + (score / 100) * 20  # 10–30
+        tooltip = f"Score: {score:.0f} | Tier: {tier.title()}"
 
-        net.add_node(
-            hcp_id,
+        nodes.append(Node(
+            id=hcp_id,
             label=label,
-            title=tooltip,
-            color=color,
             size=size,
-            shape="circle",
-        )
+            color=color,
+            title=tooltip,
+        ))
 
-    net.set_options("""
-{
-  "physics": {
-    "enabled": true,
-    "solver": "repulsion",
-    "repulsion": {
-      "nodeDistance": 100,
-      "springLength": 200,
-      "springConstant": 0.05,
-      "damping": 0.09
-    }
-  }
-}
-""")
+    return nodes, edges
 
-    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
-        net.save_graph(f.name)
-        f.flush()
-        with open(f.name, "r") as fread:
-            return fread.read()
 
+_AGRAPH_CONFIG = Config(
+    width=900,
+    height=500,
+    directed=False,
+    physics=True,
+    hierarchical=False,
+    nodeHighlightBehavior=True,
+    highlightColor="#FF0000",
+    collapsible=False,
+    node={"labelProperty": "label"},
+    link={"labelProperty": "label", "renderLabel": False},
+)
 
 with col_net:
     if hcp_list:
-        try:
-            html_content = _build_pyvis_html(hcp_list)
-            components.html(html_content, height=520, scrolling=False)
-        except ImportError as e:
-            st.warning(f"Import error: {e}")
-        except Exception as e:
-            st.error(f"Network render error: {e}")
+        nodes, edges = _build_agraph(hcp_list)
+        clicked_id = agraph(nodes=nodes, edges=edges, config=_AGRAPH_CONFIG)
+
+        if clicked_id:
+            st.session_state["network_selected_hcp"] = clicked_id
+            st.session_state["selected_hcp_id"] = clicked_id
     else:
         st.info("No HCPs match the current filter.")
 
     st.caption(
         f"Showing {len(hcp_list):,} HCPs · Up to 500 per tier for browser performance · "
-        "Rep nodes and hierarchical drill-down coming after schema fix"
+        "Click a node to inspect · Rep edges coming after rep_id schema fix"
     )
 
     # ── Top 10 riskiest HCPs table ─────────────────────────────────────────────
@@ -243,20 +215,11 @@ with col_net:
 # ── Right column: selected HCP + rep summary ──────────────────────────────────
 
 with col_detail:
-    # Node selection via selectbox (pyvis iframe can't trigger Streamlit reruns)
-    hcp_options = ["— select —"] + [h["hcp_id"] for h in hcp_list]
-    selected_label = st.selectbox(
-        "Select HCP to inspect:",
-        options=hcp_options,
-        index=0,
-        key="network_hcp_selectbox",
-    )
-
+    selected_id = st.session_state.get("network_selected_hcp")
     selected_hcp_dict: dict | None = None
-    if selected_label and selected_label != "— select —":
-        st.session_state["network_selected_hcp"] = selected_label
+    if selected_id:
         selected_hcp_dict = next(
-            (h for h in hcp_list if str(h.get("hcp_id", "")) == selected_label),
+            (h for h in hcp_list if str(h.get("hcp_id", "")) == selected_id),
             None,
         )
 
@@ -283,7 +246,7 @@ with col_detail:
             st.switch_page("pages/4_HCP_Detail.py")
     else:
         st.markdown(
-            "<span style='color:#9CA3AF'>Click a node or select an HCP above "
+            "<span style='color:#9CA3AF'>Click a node in the graph "
             "to view details.</span>",
             unsafe_allow_html=True,
         )
