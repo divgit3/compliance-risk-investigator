@@ -2,7 +2,9 @@
 streamlit_app/config.py — Shared constants for the Streamlit dashboard.
 """
 
-API_BASE_URL = "http://localhost:8001"
+import os
+
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8001")
 
 RISK_TIER_COLORS = {
     "critical": "#DC2626",  # red

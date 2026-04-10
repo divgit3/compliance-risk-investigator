@@ -51,6 +51,22 @@ services:
       timeout: "10s"
       retries: 5
       start_period: "120s"
+  # ── Streamlit dashboard ───────────────────────────────────────────────────
+  streamlit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.streamlit
+    ports:
+      - "8502:8502"
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ../streamlit_app:/app:ro
+    restart: unless-stopped
+
   # ── MLflow experiment tracking ─────────────────────────────────────────────
   mlflow:
     image: python:3.12-slim
