@@ -29,10 +29,6 @@ st.set_page_config(
 
 # ── Session state defaults ─────────────────────────────────────────────────────
 
-if "filter_state" not in st.session_state:
-    st.session_state["filter_state"] = []
-if "filter_tier" not in st.session_state:
-    st.session_state["filter_tier"] = []
 if "monitoring_result" not in st.session_state:
     st.session_state["monitoring_result"] = None
 if "overview_toggle" not in st.session_state:
@@ -110,80 +106,10 @@ with st.sidebar:
     st.page_link("pages/4_HCP_Detail.py",               label="👤 HCP Detail", icon=None)
     st.page_link("pages/5_Policy_QA.py",                label="📋 Policy Q&A", icon=None)
 
-    st.markdown("---")
 
-    # Global filters section
-    st.markdown("**GLOBAL FILTERS**")
-
-    active_states: list[str] = st.session_state["filter_state"]
-    active_tiers: list[str]  = st.session_state["filter_tier"]
-
-    if not active_states and not active_tiers:
-        st.markdown("_<span style='color:#888'>No filters active</span>_", unsafe_allow_html=True)
-    else:
-        # Render filter chips
-        for s in list(active_states):
-            col_chip, col_x = st.columns([5, 1])
-            col_chip.markdown(
-                f"<span style='background:#DBEAFE;padding:2px 8px;border-radius:12px;"
-                f"font-size:0.85em'>State: {s}</span>",
-                unsafe_allow_html=True,
-            )
-            if col_x.button("✕", key=f"rm_state_{s}", help=f"Remove {s}"):
-                st.session_state["filter_state"] = [x for x in active_states if x != s]
-                st.rerun()
-
-        for t in list(active_tiers):
-            color = RISK_TIER_COLORS.get(t, "#888")
-            col_chip, col_x = st.columns([5, 1])
-            col_chip.markdown(
-                f"<span style='background:{color}22;border:1px solid {color};"
-                f"padding:2px 8px;border-radius:12px;font-size:0.85em;"
-                f"color:{color}'>Tier: {t} </span>",
-                unsafe_allow_html=True,
-            )
-            if col_x.button("✕", key=f"rm_tier_{t}", help=f"Remove {t}"):
-                st.session_state["filter_tier"] = [x for x in active_tiers if x != t]
-                st.rerun()
-
-        if st.button("Clear all filters", type="secondary"):
-            st.session_state["filter_state"] = []
-            st.session_state["filter_tier"] = []
-            st.rerun()
-
-    st.markdown("")
-
-    # Add state filter
-    all_states = sorted({h.get("state", "") for h in hcp_list if h.get("state")})
-    if all_states:
-        new_states = st.multiselect(
-            "+ Add state filter",
-            options=[s for s in all_states if s not in active_states],
-            default=[],
-            label_visibility="visible",
-        )
-        if new_states:
-            st.session_state["filter_state"] = list(set(active_states + new_states))
-            st.rerun()
-
-    # Add tier filter
-    new_tiers = st.multiselect(
-        "+ Add tier filter",
-        options=[t for t in TIER_ORDER if t not in active_tiers],
-        default=[],
-        label_visibility="visible",
-    )
-    if new_tiers:
-        st.session_state["filter_tier"] = list(set(active_tiers + new_tiers))
-        st.rerun()
-
-# ── Apply global filters client-side ──────────────────────────────────────────
+# ── No client-side filtering — all charts use api_total / tier totals ──────────
 
 filtered = hcp_list
-if st.session_state["filter_state"]:
-    filtered = [h for h in filtered if h.get("state") in st.session_state["filter_state"]]
-if st.session_state["filter_tier"]:
-    filtered = [h for h in filtered if h.get("risk_tier") in st.session_state["filter_tier"]]
 
 # ── Page header ───────────────────────────────────────────────────────────────
 

@@ -113,13 +113,24 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
         qdrant = _get_qdrant()
         vector = _embed(query)
 
-        results = qdrant.search(
-            collection_name=_COLLECTION,
-            query_vector=vector,
-            limit=top_k,
-            with_payload=True,
-            with_vectors=False,
-        )
+        try:
+            # qdrant-client >= 1.7: use query_points
+            results = qdrant.query_points(
+                collection_name=_COLLECTION,
+                query=vector,
+                limit=top_k,
+                with_payload=True,
+                with_vectors=False,
+            ).points
+        except AttributeError:
+            # fallback for older qdrant-client versions
+            results = qdrant.search(
+                collection_name=_COLLECTION,
+                query_vector=vector,
+                limit=top_k,
+                with_payload=True,
+                with_vectors=False,
+            )
 
         hits = []
         for hit in results:
