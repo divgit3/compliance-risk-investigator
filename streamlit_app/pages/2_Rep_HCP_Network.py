@@ -24,10 +24,6 @@ st.set_page_config(
 
 # ── Session state defaults ─────────────────────────────────────────────────────
 
-if "filter_state" not in st.session_state:
-    st.session_state["filter_state"] = []
-if "filter_tier" not in st.session_state:
-    st.session_state["filter_tier"] = []
 if "network_tier_filter" not in st.session_state:
     st.session_state["network_tier_filter"] = "Critical only"
 if "network_selected_hcp" not in st.session_state:
@@ -46,25 +42,16 @@ _TIER_FILTER_MAP = {
 
 @st.cache_data(ttl=300)
 def fetch_network_hcps(tier_filter_key: str) -> list[dict]:
-    """Fetch up to 2000 HCPs for the network, filtered by tier."""
+    """Fetch up to 500 HCPs per tier for the network graph."""
     client = get_client()
     tiers = _TIER_FILTER_MAP[tier_filter_key]
     all_hcps: list[dict] = []
+    per_tier_limit = 500
     for tier in tiers:
-        offset = 0
-        limit = 500
-        while len(all_hcps) < 2000:
-            data = client.get("/hcps", params={"tier": tier, "limit": limit, "offset": offset})
-            batch = data.get("hcps", [])
-            if not batch:
-                break
-            all_hcps.extend(batch)
-            offset += len(batch)
-            if offset >= data.get("total", 0):
-                break
-            if len(all_hcps) >= 2000:
-                break
-    return all_hcps[:2000]
+        data = client.get("/hcps", params={"tier": tier, "limit": per_tier_limit, "offset": 0})
+        batch = data.get("hcps", [])
+        all_hcps.extend(batch)
+    return all_hcps
 
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -75,10 +62,6 @@ with st.spinner("Loading HCP data…"):
     except APIError as e:
         st.error(f"API error: {e}")
         st.stop()
-
-# Apply global tier filter from session state (if set, override network filter)
-if st.session_state["filter_tier"]:
-    hcp_list = [h for h in hcp_list if h.get("risk_tier") in st.session_state["filter_tier"]]
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
@@ -101,47 +84,6 @@ with st.sidebar:
     st.page_link("pages/5_Policy_QA.py",                label="📋 Policy Q&A", icon=None)
 
     st.markdown("---")
-
-    st.markdown("**GLOBAL FILTERS**")
-
-    active_states: list[str] = st.session_state["filter_state"]
-    active_tiers: list[str]  = st.session_state["filter_tier"]
-
-    if not active_states and not active_tiers:
-        st.markdown("_<span style='color:#888'>No filters active</span>_", unsafe_allow_html=True)
-    else:
-        for s in list(active_states):
-            col_chip, col_x = st.columns([5, 1])
-            col_chip.markdown(
-                f"<span style='background:#DBEAFE;padding:2px 8px;border-radius:12px;"
-                f"font-size:0.85em'>State: {s}</span>",
-                unsafe_allow_html=True,
-            )
-            if col_x.button("✕", key=f"rm_state_{s}", help=f"Remove {s}"):
-                st.session_state["filter_state"] = [x for x in active_states if x != s]
-                st.rerun()
-
-        for t in list(active_tiers):
-            color = RISK_TIER_COLORS.get(t, "#888")
-            col_chip, col_x = st.columns([5, 1])
-            col_chip.markdown(
-                f"<span style='background:{color}22;border:1px solid {color};"
-                f"padding:2px 8px;border-radius:12px;font-size:0.85em;"
-                f"color:{color}'>Tier: {t}</span>",
-                unsafe_allow_html=True,
-            )
-            if col_x.button("✕", key=f"rm_tier_{t}", help=f"Remove {t}"):
-                st.session_state["filter_tier"] = [x for x in active_tiers if x != t]
-                st.rerun()
-
-        if st.button("Clear all filters", type="secondary"):
-            st.session_state["filter_state"] = []
-            st.session_state["filter_tier"] = []
-            st.rerun()
-
-    st.markdown("")
-
-    st.markdown("---")
     st.markdown("**LEGEND**")
     for tier, color in RISK_TIER_COLORS.items():
         st.markdown(
@@ -160,7 +102,10 @@ with st.sidebar:
 hdr_left, hdr_right = st.columns([3, 1])
 with hdr_left:
     st.markdown("## Rep–HCP Network")
-    st.caption("Default: critical HCPs only · click a node to see details")
+    st.caption(
+        "Default: critical HCPs only · Up to 500 HCPs per tier shown · "
+        "Full population available in HCP Explorer"
+    )
 
 with hdr_right:
     st.markdown("")
@@ -208,9 +153,13 @@ def _build_pyvis_html(hcps: list[dict]) -> str:
         score     = float(hcp.get("risk_score", 0))
         tier      = hcp.get("risk_tier", "low")
         color     = RISK_TIER_COLORS.get(tier, "#16A34A")
-        label     = hcp_id[-6:] if len(hcp_id) >= 6 else hcp_id
+        label     = hcp_id.replace("HCP_", "")  # show numeric ID only
         size      = 10 + (score / 100) * 20  # 10–30
-        tooltip   = f"HCP: {hcp_id}\nScore: {score:.0f}\nTier: {tier}"
+        tooltip   = (
+            f"ID: {hcp_id.replace('HCP_', '')}\n"
+            f"Score: {score:.0f}\n"
+            f"Tier: {tier.title()}"
+        )
 
         net.add_node(
             hcp_id,
@@ -256,13 +205,14 @@ with col_net:
         st.info("No HCPs match the current filter.")
 
     st.caption(
-        "Rep–HCP edges unavailable in dev — rep_id field not in API response. "
-        "Edges will populate after schema fix."
+        f"Showing {len(hcp_list):,} HCPs · Up to 500 per tier for browser performance · "
+        "Rep nodes and hierarchical drill-down coming after schema fix"
     )
 
     # ── Top 10 riskiest HCPs table ─────────────────────────────────────────────
 
-    st.markdown("#### Top 10 Riskiest HCPs")
+    network_tier_filter = st.session_state.get("network_tier_filter", "Critical only")
+    st.markdown(f"#### Top 10 Riskiest HCPs — {network_tier_filter}")
 
     top10 = sorted(hcp_list, key=lambda h: float(h.get("risk_score", 0)), reverse=True)[:10]
 
@@ -294,7 +244,7 @@ with col_net:
 
 with col_detail:
     # Node selection via selectbox (pyvis iframe can't trigger Streamlit reruns)
-    hcp_options = ["— select —"] + [str(h.get("hcp_id", "")) for h in hcp_list]
+    hcp_options = ["— select —"] + [h["hcp_id"] for h in hcp_list]
     selected_label = st.selectbox(
         "Select HCP to inspect:",
         options=hcp_options,
