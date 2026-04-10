@@ -10,6 +10,7 @@ Data sources (FastAPI only — no parquet reads):
 
 from __future__ import annotations
 
+import plotly.graph_objects as go
 import streamlit as st
 
 from components.api_client import APIError, get_client
@@ -54,6 +55,30 @@ def fetch_hcp_benchmarks(hcp_id: str) -> dict:
 def fetch_hcp_investigation(hcp_id: str) -> dict:
     """Not cached — agent endpoint with 180s timeout."""
     return get_client().get_agent(f"/hcps/{hcp_id}/investigate")
+
+
+def extract_tov(profile: dict) -> dict:
+    """Extract ToV fields from HCP profile API response."""
+    return {
+        "nova_tov_2022":          profile.get("nova_tov_2022", 0) or 0,
+        "nova_tov_2023":          profile.get("nova_tov_2023", 0) or 0,
+        "nova_tov_2024":          profile.get("nova_tov_2024", 0) or 0,
+        "nova_food_beverage_2022": profile.get("nova_food_beverage_2022", 0) or 0,
+        "nova_food_beverage_2023": profile.get("nova_food_beverage_2023", 0) or 0,
+        "nova_food_beverage_2024": profile.get("nova_food_beverage_2024", 0) or 0,
+        "nova_speaking_fee_2022":  profile.get("nova_speaking_fee_2022", 0) or 0,
+        "nova_speaking_fee_2023":  profile.get("nova_speaking_fee_2023", 0) or 0,
+        "nova_speaking_fee_2024":  profile.get("nova_speaking_fee_2024", 0) or 0,
+        "nova_consulting_2022":    profile.get("nova_consulting_2022", 0) or 0,
+        "nova_consulting_2023":    profile.get("nova_consulting_2023", 0) or 0,
+        "nova_consulting_2024":    profile.get("nova_consulting_2024", 0) or 0,
+        "total_tov_2022":          profile.get("total_tov_all_companies_2022", 0) or 0,
+        "total_tov_2023":          profile.get("total_tov_all_companies_2023", 0) or 0,
+        "total_tov_2024":          profile.get("total_tov_all_companies_2024", 0) or 0,
+        "nova_sow_2022":           profile.get("nova_sow_2022", 0) or 0,
+        "nova_sow_2023":           profile.get("nova_sow_2023", 0) or 0,
+        "nova_sow_2024":           profile.get("nova_sow_2024", 0) or 0,
+    }
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -257,7 +282,169 @@ except APIError:
 
 st.markdown("---")
 
-# ── Row 3: Investigation report ───────────────────────────────────────────────
+# ── Row 3: Transfer of Value — Spend History ─────────────────────────────────
+
+st.subheader("Transfer of Value — Spend History")
+
+spend = extract_tov(profile)
+
+if not any(spend.values()):
+    st.info("Spend history unavailable")
+else:
+    col_left, col_right = st.columns([1, 1])
+
+    with col_left:
+        years = ["2022", "2023", "2024"]
+
+        food = [
+            spend["nova_food_beverage_2022"],
+            spend["nova_food_beverage_2023"],
+            spend["nova_food_beverage_2024"],
+        ]
+        speaking = [
+            spend["nova_speaking_fee_2022"],
+            spend["nova_speaking_fee_2023"],
+            spend["nova_speaking_fee_2024"],
+        ]
+        consulting = [
+            spend["nova_consulting_2022"],
+            spend["nova_consulting_2023"],
+            spend["nova_consulting_2024"],
+        ]
+        total_all = [
+            spend["total_tov_2022"],
+            spend["total_tov_2023"],
+            spend["total_tov_2024"],
+        ]
+
+        other_2022 = max(0, spend["total_tov_2022"] - spend["nova_tov_2022"])
+        other_2023 = max(0, spend["total_tov_2023"] - spend["nova_tov_2023"])
+        other_2024 = max(0, spend["total_tov_2024"] - spend["nova_tov_2024"])
+
+        fig_spend = go.Figure()
+
+        fig_spend.add_trace(go.Bar(
+            x=years,
+            y=food,
+            name="Nova — Meals & Food",
+            marker_color="#185FA5",
+            text=[f"${v:,.0f}" if v > 0 else "" for v in food],
+            textposition="inside",
+            textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+        ))
+        fig_spend.add_trace(go.Bar(
+            x=years,
+            y=speaking,
+            name="Nova — Speaking Fees",
+            marker_color="#DC2626",
+            text=[f"${v:,.0f}" if v > 0 else "" for v in speaking],
+            textposition="inside",
+            textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+        ))
+        fig_spend.add_trace(go.Bar(
+            x=years,
+            y=consulting,
+            name="Nova — Consulting",
+            marker_color="#CA8A04",
+            text=[f"${v:,.0f}" if v > 0 else "" for v in consulting],
+            textposition="inside",
+            textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+        ))
+        fig_spend.add_trace(go.Bar(
+            x=years,
+            y=[other_2022, other_2023, other_2024],
+            name="Other Companies",
+            marker_color="rgba(148,163,184,0.6)",
+            text=[f"${v:,.0f}" if v > 0 else "" for v in [other_2022, other_2023, other_2024]],
+            textposition="inside",
+            textfont=dict(size=11, color="#374151", family="Arial Bold"),
+        ))
+
+        totals = [spend["total_tov_2022"], spend["total_tov_2023"], spend["total_tov_2024"]]
+        for yr, tot in zip(years, totals):
+            if tot > 0:
+                fig_spend.add_annotation(
+                    x=yr,
+                    y=tot,
+                    text=f"<b>Total: ${tot:,.0f}</b>",
+                    showarrow=False,
+                    yshift=10,
+                    font=dict(size=11, color="#1e3a5f", family="Arial Black"),
+                )
+
+        fig_spend.update_layout(
+            barmode="stack",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            title=dict(
+                text="Transfer of Value by Category",
+                font=dict(size=14, color="#1e3a5f", family="Arial Black"),
+                x=0.01,
+            ),
+            height=320,
+            margin=dict(l=10, r=10, t=50, b=60),
+            xaxis=dict(
+                tickmode="array",
+                tickvals=["2022", "2023", "2024"],
+                ticktext=["2022", "2023", "2024"],
+                tickfont=dict(size=13, color="#1e3a5f", family="Arial Black"),
+                showgrid=False,
+            ),
+            yaxis=dict(
+                tickprefix="$",
+                tickfont=dict(size=11, color="#1e3a5f", family="Arial Bold"),
+                showgrid=False,
+                zeroline=False,
+                title=dict(text="Amount ($)", font=dict(color="#1e3a5f", size=11, family="Arial Bold")),
+            ),
+            legend=dict(
+                font=dict(size=11, color="#1e3a5f", family="Arial Bold"),
+                bgcolor="rgba(255,255,255,0.8)",
+                bordercolor="#1e3a5f",
+                borderwidth=1,
+                orientation="h",
+                x=0,
+                y=-0.25,
+            ),
+            hoverlabel=dict(
+                bgcolor="#ffffff",
+                bordercolor="#1e3a5f",
+                font=dict(size=12, color="#1e3a5f", family="Arial Bold"),
+            ),
+        )
+        st.plotly_chart(fig_spend, use_container_width=True)
+
+    with col_right:
+        sow_values = [
+            ("2022", spend["nova_sow_2022"]),
+            ("2023", spend["nova_sow_2023"]),
+            ("2024", spend["nova_sow_2024"]),
+        ]
+        st.markdown("**Nova Pharma Share of Wallet**")
+        for year, sow in sow_values:
+            nova  = spend[f"nova_tov_{year}"]
+            total = spend[f"total_tov_{year}"]
+            color = (
+                "#DC2626" if sow >= 0.5  else
+                "#EA580C" if sow >= 0.25 else
+                "#CA8A04" if sow >= 0.1  else
+                "#16A34A"
+            )
+            st.markdown(
+                f"""<div style='margin-bottom:10px;padding:10px;border-radius:6px;
+                border-left:4px solid {color};background:rgba(0,0,0,0.03);'>
+                <span style='font-size:12px;color:#6b7280;font-weight:600;'>{year}</span><br>
+                <span style='font-size:22px;font-weight:800;color:{color};'>{sow*100:.1f}%</span>
+                <span style='font-size:11px;color:#6b7280;'> SOW</span><br>
+                <span style='font-size:11px;color:#374151;font-weight:600;'>
+                Nova ${nova:,.0f} of ${total:,.0f} total
+                </span></div>""",
+                unsafe_allow_html=True,
+            )
+
+st.markdown("---")
+
+# ── Row 4: Investigation report ───────────────────────────────────────────────
 
 st.markdown(
     "<div style='border:2px dashed #D1D5DB;border-radius:8px;padding:16px;'>",
