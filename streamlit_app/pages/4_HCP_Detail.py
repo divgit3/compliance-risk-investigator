@@ -194,10 +194,7 @@ with col_gauge:
 
 with col_shap:
     st.markdown("#### Top risk drivers")
-    st.info(
-        "SHAP explanations available in investigation report — "
-        "click 'Run investigation' to see risk driver analysis."
-    )
+    st.caption("🔍 SHAP risk drivers available in investigation report below")
 
 # ── Col 3: Peer benchmark ──────────────────────────────────────────────────────
 
@@ -210,9 +207,7 @@ with col_bench:
         peer_max   = float(bench.get("peer_max_spend", bench.get("peer_max_total_spend", 0)))
         hcp_spend  = float(bench.get("hcp_spend", bench.get("hcp_total_spend", 0)))
 
-        if percentile == 0:
-            st.info("Percentile rank unavailable — Athena not reachable")
-        else:
+        if percentile > 0:
             st.markdown(
                 f"""
                 <div style='text-align:center;padding:10px;'>
@@ -224,203 +219,159 @@ with col_bench:
                 """,
                 unsafe_allow_html=True,
             )
-
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric(
-            "This HCP", f"{hcp_spend:.2f}",
-            help="Normalized spend score for this HCP (RobustScaler). "
-                 "Positive = above median, negative = below median.",
-        )
-        col_b.metric(
-            "Peer avg", f"{peer_avg:.2f}",
-            help="Average normalized spend score across all HCPs "
-                 "in the same peer group.",
-        )
-        col_c.metric(
-            "Peer max", f"{peer_max:.0f}",
-            help="Maximum normalized spend score in the peer group. "
-                 "High values indicate outlier spenders.",
-        )
-        st.caption(
-            "Spend values are normalized scores · "
-            "Hover metrics above for definitions"
-        )
+            col_a, col_b = st.columns(2)
+            col_a.metric(
+                "Nova spend vs peers", f"${hcp_spend:.2f}",
+                help="Normalized spend score vs peer group",
+            )
+            col_b.metric(
+                "Peer avg spend", f"${peer_avg:.2f}",
+                help="Average normalized spend in peer group",
+            )
+            st.caption("Normalized scores · dollar amounts require Athena re-run")
+        else:
+            st.info("Percentile rank unavailable — Athena not reachable")
+            st.caption("Real dollar peer benchmarks require Athena")
 
     except APIError:
         st.info("Benchmark data unavailable")
 
 st.markdown("---")
 
-# ── Row 2: Rule flags + policy citations ──────────────────────────────────────
-
-st.markdown("#### Rule flags + policy citations")
-
-try:
-    flags_resp = fetch_hcp_flags(hcp_id)
-    fired_flags = flags_resp.get("fired_flags", [])
-
-    flags_list = flags_resp.get("fired_flags", [])
-
-    if flags_list:
-        total_flags    = flags_resp.get("total_flags", len(flags_list))
-        critical_flags = flags_resp.get("critical_flags", 0)
-        high_flags     = flags_resp.get("high_flags", 0)
-        st.caption(
-            f"{total_flags} flag(s) · "
-            f"{critical_flags} critical · {high_flags} high"
-        )
-
-        for flag_name in flags_list:
-            display = FLAG_LABELS.get(flag_name, flag_name.replace("_", " ").title())
-            st.error(f"**{display}**")
-            # No policy citation available from this endpoint
-    else:
-        st.success("No compliance flags for this HCP")
-
-except APIError:
-    st.warning("Flags data unavailable")
-
-st.markdown("---")
-
-# ── Row 3: Transfer of Value — Spend History ─────────────────────────────────
-
-st.subheader("Transfer of Value — Spend History")
+# ── Row 2: Flags | ToV chart | SOW ────────────────────────────────────────────
 
 spend = extract_tov(profile)
 
-if not any(spend.values()):
-    st.info("Spend history unavailable")
-else:
-    col_left, col_right = st.columns([1, 1])
+col_flags, col_tov, col_sow = st.columns([1, 1.5, 1])
 
-    with col_left:
-        years = ["2022", "2023", "2024"]
-
-        food = [
-            spend["nova_food_beverage_2022"],
-            spend["nova_food_beverage_2023"],
-            spend["nova_food_beverage_2024"],
-        ]
-        speaking = [
-            spend["nova_speaking_fee_2022"],
-            spend["nova_speaking_fee_2023"],
-            spend["nova_speaking_fee_2024"],
-        ]
-        consulting = [
-            spend["nova_consulting_2022"],
-            spend["nova_consulting_2023"],
-            spend["nova_consulting_2024"],
-        ]
-        total_all = [
-            spend["total_tov_2022"],
-            spend["total_tov_2023"],
-            spend["total_tov_2024"],
-        ]
-
-        other_2022 = max(0, spend["total_tov_2022"] - spend["nova_tov_2022"])
-        other_2023 = max(0, spend["total_tov_2023"] - spend["nova_tov_2023"])
-        other_2024 = max(0, spend["total_tov_2024"] - spend["nova_tov_2024"])
-
-        fig_spend = go.Figure()
-
-        fig_spend.add_trace(go.Bar(
-            x=years,
-            y=food,
-            name="Nova — Meals & Food",
-            marker_color="#185FA5",
-            text=[f"${v:,.0f}" if v > 0 else "" for v in food],
-            textposition="inside",
-            textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
-        ))
-        fig_spend.add_trace(go.Bar(
-            x=years,
-            y=speaking,
-            name="Nova — Speaking Fees",
-            marker_color="#DC2626",
-            text=[f"${v:,.0f}" if v > 0 else "" for v in speaking],
-            textposition="inside",
-            textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
-        ))
-        fig_spend.add_trace(go.Bar(
-            x=years,
-            y=consulting,
-            name="Nova — Consulting",
-            marker_color="#CA8A04",
-            text=[f"${v:,.0f}" if v > 0 else "" for v in consulting],
-            textposition="inside",
-            textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
-        ))
-        fig_spend.add_trace(go.Bar(
-            x=years,
-            y=[other_2022, other_2023, other_2024],
-            name="Other Companies",
-            marker_color="rgba(148,163,184,0.6)",
-            text=[f"${v:,.0f}" if v > 0 else "" for v in [other_2022, other_2023, other_2024]],
-            textposition="inside",
-            textfont=dict(size=11, color="#374151", family="Arial Bold"),
-        ))
-
-        totals = [spend["total_tov_2022"], spend["total_tov_2023"], spend["total_tov_2024"]]
-        for yr, tot in zip(years, totals):
-            if tot > 0:
-                fig_spend.add_annotation(
-                    x=yr,
-                    y=tot,
-                    text=f"<b>Total: ${tot:,.0f}</b>",
-                    showarrow=False,
-                    yshift=10,
-                    font=dict(size=11, color="#1e3a5f", family="Arial Black"),
+with col_flags:
+    st.markdown("#### Rule Flags")
+    try:
+        flags_resp     = fetch_hcp_flags(hcp_id)
+        flags_list     = flags_resp.get("fired_flags", [])
+        if flags_list:
+            total_flags    = flags_resp.get("total_flags", len(flags_list))
+            critical_flags = flags_resp.get("critical_flags", 0)
+            high_flags     = flags_resp.get("high_flags", 0)
+            st.caption(f"{total_flags} flag(s) · {critical_flags} critical · {high_flags} high")
+            for i, flag_name in enumerate(flags_list):
+                if i < critical_flags:
+                    bg_color = "#fef2f2"; border_color = "#DC2626"
+                    text_color = "#991b1b"; severity_badge = "CRITICAL"; badge_bg = "#DC2626"
+                elif i < critical_flags + high_flags:
+                    bg_color = "#fff7ed"; border_color = "#EA580C"
+                    text_color = "#9a3412"; severity_badge = "HIGH"; badge_bg = "#EA580C"
+                else:
+                    bg_color = "#fffbeb"; border_color = "#CA8A04"
+                    text_color = "#854d0e"; severity_badge = "MEDIUM"; badge_bg = "#CA8A04"
+                display = FLAG_LABELS.get(flag_name, flag_name.replace("_", " ").title())
+                st.markdown(
+                    f"""<div style='padding:6px 10px;margin-bottom:4px;border-radius:4px;
+                    background:{bg_color};border-left:3px solid {border_color};'>
+                    <span style='font-size:10px;font-weight:700;color:#ffffff;
+                    background:{badge_bg};padding:1px 5px;border-radius:3px;
+                    margin-right:6px;'>{severity_badge}</span>
+                    <span style='font-size:12px;font-weight:600;color:{text_color};'>
+                    {display}</span></div>""",
+                    unsafe_allow_html=True,
                 )
+        else:
+            st.success("No compliance flags")
+    except APIError:
+        st.warning("Flags data unavailable")
 
-        fig_spend.update_layout(
-            barmode="stack",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            title=dict(
-                text="Transfer of Value by Category",
-                font=dict(size=14, color="#1e3a5f", family="Arial Black"),
-                x=0.01,
-            ),
-            height=320,
-            margin=dict(l=10, r=10, t=50, b=60),
-            xaxis=dict(
-                tickmode="array",
-                tickvals=["2022", "2023", "2024"],
-                ticktext=["2022", "2023", "2024"],
-                tickfont=dict(size=13, color="#1e3a5f", family="Arial Black"),
-                showgrid=False,
-            ),
-            yaxis=dict(
-                tickprefix="$",
-                tickfont=dict(size=11, color="#1e3a5f", family="Arial Bold"),
-                showgrid=False,
-                zeroline=False,
-                title=dict(text="Amount ($)", font=dict(color="#1e3a5f", size=11, family="Arial Bold")),
-            ),
-            legend=dict(
-                font=dict(size=11, color="#1e3a5f", family="Arial Bold"),
-                bgcolor="rgba(255,255,255,0.8)",
-                bordercolor="#1e3a5f",
-                borderwidth=1,
-                orientation="h",
-                x=0,
-                y=-0.25,
-            ),
-            hoverlabel=dict(
-                bgcolor="#ffffff",
-                bordercolor="#1e3a5f",
-                font=dict(size=12, color="#1e3a5f", family="Arial Bold"),
-            ),
-        )
-        st.plotly_chart(fig_spend, use_container_width=True)
+with col_tov:
+    st.markdown("#### Transfer of Value")
+    if not any(spend.values()):
+        st.info("Spend history unavailable")
+    else:
+        years = ["2022", "2023", "2024"]
+        all_totals = [spend["total_tov_2022"], spend["total_tov_2023"], spend["total_tov_2024"]]
+        active_mask = [t > 0 for t in all_totals]
+        active_years = [y for y, m in zip(years, active_mask) if m]
 
-    with col_right:
+        if not active_years:
+            st.info("No CMS payment records found for this HCP")
+        else:
+            food_all      = [spend["nova_food_beverage_2022"], spend["nova_food_beverage_2023"], spend["nova_food_beverage_2024"]]
+            speaking_all  = [spend["nova_speaking_fee_2022"],  spend["nova_speaking_fee_2023"],  spend["nova_speaking_fee_2024"]]
+            consulting_all= [spend["nova_consulting_2022"],    spend["nova_consulting_2023"],    spend["nova_consulting_2024"]]
+            other_all     = [max(0, spend[f"total_tov_{y}"] - spend[f"nova_tov_{y}"]) for y in ["2022","2023","2024"]]
+
+            food       = [v for v, m in zip(food_all,       active_mask) if m]
+            speaking   = [v for v, m in zip(speaking_all,   active_mask) if m]
+            consulting = [v for v, m in zip(consulting_all, active_mask) if m]
+            other      = [v for v, m in zip(other_all,      active_mask) if m]
+            totals     = [v for v, m in zip(all_totals,     active_mask) if m]
+
+            fig_spend = go.Figure()
+            fig_spend.add_trace(go.Bar(
+                x=active_years, y=food,
+                name="Nova — Meals & Food", marker_color="#185FA5",
+                text=[f"${v:,.0f}" if v > 0 else "" for v in food],
+                textposition="inside", textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+            ))
+            fig_spend.add_trace(go.Bar(
+                x=active_years, y=speaking,
+                name="Nova — Speaking Fees", marker_color="#DC2626",
+                text=[f"${v:,.0f}" if v > 0 else "" for v in speaking],
+                textposition="inside", textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+            ))
+            fig_spend.add_trace(go.Bar(
+                x=active_years, y=consulting,
+                name="Nova — Consulting", marker_color="#CA8A04",
+                text=[f"${v:,.0f}" if v > 0 else "" for v in consulting],
+                textposition="inside", textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+            ))
+            fig_spend.add_trace(go.Bar(
+                x=active_years, y=other,
+                name="Other Companies", marker_color="rgba(148,163,184,0.6)",
+                text=[f"${v:,.0f}" if v > 0 else "" for v in other],
+                textposition="inside", textfont=dict(size=11, color="#374151", family="Arial Bold"),
+            ))
+            for yr, tot in zip(active_years, totals):
+                if tot > 0:
+                    fig_spend.add_annotation(
+                        x=yr, y=tot,
+                        text=f"<b>Total: ${tot:,.0f}</b>",
+                        showarrow=False, yshift=10,
+                        font=dict(size=11, color="#1e3a5f", family="Arial Black"),
+                    )
+            fig_spend.update_layout(
+                barmode="stack",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                title=dict(text="", font=dict(size=1)),
+                height=280,
+                margin=dict(l=10, r=10, t=10, b=60),
+                xaxis=dict(
+                    tickmode="array", tickvals=active_years, ticktext=active_years,
+                    tickfont=dict(size=12, color="#1e3a5f", family="Arial Black"),
+                    showgrid=False,
+                ),
+                yaxis=dict(
+                    tickprefix="$", tickfont=dict(size=10, color="#1e3a5f", family="Arial Bold"),
+                    showgrid=False, zeroline=False,
+                ),
+                legend=dict(
+                    font=dict(size=10, color="#1e3a5f", family="Arial Bold"),
+                    bgcolor="rgba(255,255,255,0.8)", bordercolor="#1e3a5f", borderwidth=1,
+                    orientation="h", x=0, y=-0.3,
+                ),
+                hoverlabel=dict(
+                    bgcolor="#ffffff", bordercolor="#1e3a5f",
+                    font=dict(size=12, color="#1e3a5f", family="Arial Bold"),
+                ),
+            )
+            st.plotly_chart(fig_spend, use_container_width=True)
+
+with col_sow:
+    st.markdown("#### Share of Wallet")
+    if any(spend.values()):
         sow_values = [
             ("2022", spend["nova_sow_2022"]),
             ("2023", spend["nova_sow_2023"]),
             ("2024", spend["nova_sow_2024"]),
         ]
-        st.markdown("**Nova Pharma Share of Wallet**")
         for year, sow in sow_values:
             nova  = spend[f"nova_tov_{year}"]
             total = spend[f"total_tov_{year}"]
@@ -441,10 +392,12 @@ else:
                 </span></div>""",
                 unsafe_allow_html=True,
             )
+    else:
+        st.info("SOW data unavailable")
+
+# ── Row 3: Investigation report (full width) ──────────────────────────────────
 
 st.markdown("---")
-
-# ── Row 4: Investigation report ───────────────────────────────────────────────
 
 st.markdown(
     "<div style='border:2px dashed #D1D5DB;border-radius:8px;padding:16px;'>",
@@ -463,10 +416,10 @@ inv = st.session_state.get("investigation_result")
 if inv is None:
     st.caption("Click 'Run investigation' to generate report")
 else:
-    rec_action  = inv.get("recommended_action", "monitor")
-    confidence  = float(inv.get("confidence_score", inv.get("risk_score", 0)) or 0)
-    narrative   = inv.get("score_explanation") or inv.get("summary_narrative") or ""
-    rationale   = inv.get("action_rationale", "")
+    rec_action   = inv.get("recommended_action", "monitor")
+    confidence   = float(inv.get("confidence_score", inv.get("risk_score", 0)) or 0)
+    narrative    = inv.get("score_explanation") or inv.get("summary_narrative") or ""
+    rationale    = inv.get("action_rationale", "")
     key_findings = inv.get("key_findings") or []
 
     _ACTION_COLORS = {
@@ -494,9 +447,7 @@ else:
 
     with st.expander("Full narrative", expanded=True):
         if narrative:
-            narrative_clean = (narrative
-                .replace("$", "\\$")
-                .replace("_", " "))
+            narrative_clean = narrative.replace("$", "\\$").replace("_", " ")
             st.markdown(narrative_clean)
         else:
             st.caption("No narrative available")
