@@ -140,7 +140,23 @@ if _last_hcp != hcp_id:
 hdr_left, hdr_right = st.columns([3, 1])
 with hdr_left:
     st.markdown(f"## HCP Detail — {hcp_id}")
-    st.caption("Static data loads instantly · Investigation is LLM-generated on demand")
+
+    # Derive last engagement year from nova ToV fields
+    _tov_by_year = {
+        2024: float(profile.get("nova_tov_2024", 0) or 0),
+        2023: float(profile.get("nova_tov_2023", 0) or 0),
+        2022: float(profile.get("nova_tov_2022", 0) or 0),
+    }
+    _last_eng = next(
+        (yr for yr in [2024, 2023, 2022] if _tov_by_year[yr] > 0),
+        None
+    )
+    _eng_str = f"Last Nova engagement: {_last_eng}" if _last_eng else "No Nova engagement on record"
+
+    st.caption(
+        f"Static data loads instantly · "
+        f"Investigation is LLM-generated on demand · {_eng_str}"
+    )
 
 with hdr_right:
     st.markdown("")
@@ -158,89 +174,212 @@ with hdr_right:
             except APIError as e:
                 st.error(f"Investigation error: {e}")
 
-# ── Row 1: Risk score | SHAP drivers | Peer benchmark ─────────────────────────
+# ── Pre-compute ToV so it's available in Row 1 peer benchmark fallback ────────
+
+spend = extract_tov(profile)
+
+# ── Pre-fetch flag counts for compact banner ──────────────────────────────────
 
 risk_score = float(profile.get("risk_score", 0))
 risk_tier  = str(profile.get("risk_tier", "low"))
 tier_color = RISK_TIER_COLORS.get(risk_tier, "#6B7280")
+rule_score = float(profile.get("rule_score", 0))
+if_score   = float(profile.get("anomaly_score", profile.get("if_score", 0)))
 
-col_gauge, col_shap, col_bench = st.columns(3)
+try:
+    _flags_resp  = fetch_hcp_flags(hcp_id)
+    _n_flags     = _flags_resp.get("total_flags", len(_flags_resp.get("fired_flags", [])))
+    _n_critical  = _flags_resp.get("critical_flags", 0)
+    _n_high      = _flags_resp.get("high_flags", 0)
+except APIError:
+    _n_flags = _n_critical = _n_high = 0
 
-# ── Col 1: Risk score gauge ────────────────────────────────────────────────────
+try:
+    bench      = fetch_hcp_benchmarks(hcp_id)
+    percentile = float(bench.get("percentile_rank", 0))
+    peer_avg   = float(bench.get("peer_avg_spend", bench.get("peer_avg_total_spend", 0)))
+    peer_max   = float(bench.get("peer_max_spend", bench.get("peer_max_total_spend", 0)))
+    hcp_spend  = float(bench.get("hcp_spend", bench.get("hcp_total_spend", 0)))
+    _bench_ok  = True
+except APIError:
+    percentile = peer_avg = peer_max = hcp_spend = 0.0
+    _bench_ok  = False
 
-with col_gauge:
-    st.markdown("#### Risk score")
+# ── Row 1: Scorecard panel ────────────────────────────────────────────────────
+
+_CARD = (
+    "border:1px solid #e5e7eb;border-radius:10px;"
+    "padding:20px 24px;background:#ffffff;min-height:160px;height:100%;"
+)
+_LABEL = "font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;font-weight:600;"
+
+st.markdown("""
+<style>
+.tip {
+    position: relative;
+    cursor: help;
+    display: inline-block;
+}
+.tip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1f2937;
+    color: #f9fafb;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
+    padding: 6px 10px;
+    border-radius: 6px;
+    white-space: normal;
+    width: 220px;
+    text-align: left;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    z-index: 9999;
+}
+.tip:hover::after {
+    opacity: 1;
+}
+</style>
+""", unsafe_allow_html=True)
+
+col_risk, col_shap, col_bench = st.columns([1, 1.2, 1])
+
+with col_risk:
     st.markdown(
-        f"""
-        <div style="text-align:center;padding:20px;">
-          <div style="font-size:48px;font-weight:700;color:{tier_color};">
-            {risk_score:.0f}
-          </div>
-          <div style="font-size:14px;color:{tier_color};
-               text-transform:uppercase;font-weight:500;letter-spacing:0.05em;">
-            {risk_tier}
-          </div>
-          <div style="font-size:12px;color:#9CA3AF;margin-top:4px;">out of 100</div>
-        </div>
-        """,
+        f"<div style='{_CARD}'>"
+        f"<div style='{_LABEL}'>RISK SCORE &nbsp;"
+        f"<span class='tip' data-tooltip='Composite score combining rule-based compliance "
+        f"flags (0-100) and Isolation Forest anomaly detection. Higher = more risk.'>ℹ️</span></div>"
+        f"<div style='font-size:48px;font-weight:800;color:{tier_color};line-height:1.1;margin-top:6px;'>"
+        f"<span class='tip' data-tooltip='Risk score: {risk_score:.1f} out of 100'>"
+        f"{risk_score:.0f}</span></div>"
+        f"<div style='font-size:13px;font-weight:700;color:{tier_color};"
+        f"text-transform:uppercase;margin-top:2px;'>"
+        f"<span class='tip' data-tooltip='Thresholds: Low under 30 · Medium 30-59 · "
+        f"High 60-79 · Critical 80 and above'>{risk_tier}</span></div>"
+        f"<div style='font-size:13px;color:#6b7280;margin-top:8px;'>"
+        f"Rule score: <span class='tip' data-tooltip='Weighted sum of flag severities: "
+        f"Critical=3pts · High=2pts · Medium=1pt'>{rule_score:.0f}</span>"
+        f" &nbsp;·&nbsp; "
+        f"IF score: <span class='tip' data-tooltip='Isolation Forest anomaly score: higher "
+        f"values indicate more anomalous spend vs peer group'>{if_score:.2f}</span></div>"
+        f"<div style='font-size:12px;margin-top:4px;'>"
+        f"<span class='tip' data-tooltip='{_n_flags} total · {_n_critical} critical · "
+        f"{_n_high} high · {_n_flags - _n_critical - _n_high} medium'>"
+        f"<b>{_n_flags}</b> flag(s) &nbsp;·&nbsp; "
+        f"<span style='color:#DC2626;font-weight:700;'>{_n_critical} critical</span> &nbsp;·&nbsp; "
+        f"<span style='color:#EA580C;font-weight:700;'>{_n_high} high</span>"
+        f"</span></div></div>",
         unsafe_allow_html=True,
     )
 
-    rule_score = float(profile.get("rule_score", 0))
-    if_score   = float(profile.get("anomaly_score", profile.get("if_score", 0)))
-    st.caption(f"Rule score: {rule_score:.1f} · IF score: {if_score:.2f}")
-
-# ── Col 2: SHAP / top risk drivers ────────────────────────────────────────────
-
 with col_shap:
-    st.markdown("#### Top risk drivers")
-    st.caption("🔍 SHAP risk drivers available in investigation report below")
-
-# ── Col 3: Peer benchmark ──────────────────────────────────────────────────────
+    st.markdown(
+        f"<div style='{_CARD}'>"
+        f"<div style='{_LABEL}'>TOP RISK DRIVERS &nbsp;"
+        f"<span class='tip' data-tooltip='SHAP feature importance scores show which factors "
+        f"most influenced this HCP risk score'>ℹ️</span></div>"
+        f"<div style='border:1px dashed #d1d5db;border-radius:6px;padding:16px;"
+        f"background:#f9fafb;margin-top:12px;text-align:center;'>"
+        f"<div style='font-size:28px;'>📊</div>"
+        f"<div style='font-size:14px;font-weight:700;color:#374151;margin-top:8px;'>"
+        f"SHAP feature importance</div>"
+        f"<div style='font-size:12px;color:#9ca3af;margin-top:4px;'>"
+        f"Run investigation to generate</div>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
 
 with col_bench:
-    st.markdown("#### Peer benchmark")
-    try:
-        bench      = fetch_hcp_benchmarks(hcp_id)
-        percentile = float(bench.get("percentile_rank", 0))
-        peer_avg   = float(bench.get("peer_avg_spend", bench.get("peer_avg_total_spend", 0)))
-        peer_max   = float(bench.get("peer_max_spend", bench.get("peer_max_total_spend", 0)))
-        hcp_spend  = float(bench.get("hcp_spend", bench.get("hcp_total_spend", 0)))
+    if _bench_ok and percentile > 0:
+        _bench_tip = "Peer group = HCPs with same specialty and state. Spend is Nova Pharma transfer of value only."
+        _bench_body = (
+            f"<div style='display:flex;gap:12px;margin-top:10px;'>"
 
-        if percentile > 0:
-            st.markdown(
-                f"""
-                <div style='text-align:center;padding:10px;'>
-                  <div style='font-size:36px;font-weight:700;
-                       color:{tier_color};'>{percentile:.0f}th</div>
-                  <div style='font-size:13px;color:#6b7280;'>
-                       percentile of peer spend</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            col_a, col_b = st.columns(2)
-            col_a.metric(
-                "Nova spend vs peers", f"${hcp_spend:.2f}",
-                help="Normalized spend score vs peer group",
-            )
-            col_b.metric(
-                "Peer avg spend", f"${peer_avg:.2f}",
-                help="Average normalized spend in peer group",
-            )
-            st.caption("Normalized scores · dollar amounts require Athena re-run")
-        else:
-            st.info("Percentile rank unavailable — Athena not reachable")
-            st.caption("Real dollar peer benchmarks require Athena")
+            f"<div style='flex:1;background:#f0f4ff;border-radius:8px;"
+            f"padding:14px 12px;text-align:center;'>"
+            f"<div style='font-size:11px;font-weight:600;color:#6b7280;"
+            f"text-transform:uppercase;letter-spacing:0.05em;'>Percentile</div>"
+            f"<div style='font-size:36px;font-weight:800;color:#1d4ed8;"
+            f"line-height:1.1;margin-top:4px;'>"
+            f"<span class='tip' data-tooltip='{percentile:.0f}th percentile: "
+            f"this HCP Nova spend exceeds {percentile:.0f}% of peers "
+            f"in same specialty and state'>{percentile:.0f}th</span></div>"
+            f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;'>"
+            f"of peer spend</div></div>"
 
-    except APIError:
-        st.info("Benchmark data unavailable")
+            f"<div style='flex:1;background:#f9fafb;border-radius:8px;"
+            f"padding:14px 12px;text-align:center;'>"
+            f"<div style='font-size:11px;font-weight:600;color:#6b7280;"
+            f"text-transform:uppercase;letter-spacing:0.05em;'>Nova Spend</div>"
+            f"<div style='font-size:36px;font-weight:800;color:#374151;"
+            f"line-height:1.1;margin-top:4px;'>"
+            f"<span class='tip' data-tooltip='Total Nova Pharma transfer of value "
+            f"to this HCP in 2024 (CMS open payments data)'>"
+            f"${hcp_spend:.0f}</span></div>"
+            f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;'>"
+            f"2024 CMS dollars</div></div>"
 
-st.markdown("---")
+            f"<div style='flex:1;background:#f9fafb;border-radius:8px;"
+            f"padding:14px 12px;text-align:center;'>"
+            f"<div style='font-size:11px;font-weight:600;color:#6b7280;"
+            f"text-transform:uppercase;letter-spacing:0.05em;'>Peer Avg</div>"
+            f"<div style='font-size:36px;font-weight:800;color:#374151;"
+            f"line-height:1.1;margin-top:4px;'>"
+            f"<span class='tip' data-tooltip='Average Nova spend across "
+            f"{bench.get('peer_count', '')} peers "
+            f"in same specialty and state. Peer max: ${peer_max:.0f}'>"
+            f"${peer_avg:.0f}</span></div>"
+            f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;'>"
+            f"same specialty/state</div></div>"
+
+            f"</div>"
+        )
+    else:
+        _bench_tip = "Athena unavailable. Showing normalized spend index and real Nova ToV from CMS open payments data."
+        _bench_body = (
+            f"<div style='font-size:12px;color:#6b7280;margin-top:6px;'>Normalized index</div>"
+            f"<div style='font-size:40px;font-weight:800;color:#374151;line-height:1.1;'>"
+            f"<span class='tip' data-tooltip='Normalized spend index vs peer group. "
+            f"Athena re-run needed for percentile rank and dollar benchmarks.'>"
+            f"{peer_avg:.2f}</span></div>"
+            f"<div style='font-size:12px;color:#9ca3af;margin-top:2px;'>vs peer group</div>"
+            f"<div style='display:inline-flex;gap:16px;margin-top:12px;'>"
+            f"<div><div style='font-size:11px;color:#9ca3af;'>2022</div>"
+            f"<div style='font-size:16px;font-weight:700;color:#374151;'>"
+            f"<span class='tip' data-tooltip='Nova Pharma payments to this HCP in 2022 (CMS data)'>"
+            f"${spend['nova_tov_2022']:.0f}</span></div></div>"
+            f"<div><div style='font-size:11px;color:#9ca3af;'>2023</div>"
+            f"<div style='font-size:16px;font-weight:700;color:#374151;'>"
+            f"<span class='tip' data-tooltip='Nova Pharma payments to this HCP in 2023 (CMS data)'>"
+            f"${spend['nova_tov_2023']:.0f}</span></div></div>"
+            f"<div><div style='font-size:11px;color:#9ca3af;'>2024</div>"
+            f"<div style='font-size:16px;font-weight:700;color:#374151;'>"
+            f"<span class='tip' data-tooltip='Nova Pharma payments to this HCP in 2024 (CMS data)'>"
+            f"${spend['nova_tov_2024']:.0f}</span></div></div>"
+            f"</div>"
+            f"<div style='font-size:11px;color:#9ca3af;margin-top:8px;'>Real Nova ToV · CMS data</div>"
+        )
+    st.markdown(
+        f"<div style='{_CARD}'>"
+        f"<div style='{_LABEL}'>PEER BENCHMARK &nbsp;"
+        f"<span class='tip' data-tooltip='{_bench_tip}'>ℹ️</span></div>"
+        f"{_bench_body}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+st.markdown(
+    "<hr style='margin:8px 0 16px 0;border:none;border-top:1px solid #e5e7eb;'>",
+    unsafe_allow_html=True,
+)
 
 # ── Row 2: Flags | ToV chart | SOW ────────────────────────────────────────────
-
-spend = extract_tov(profile)
 
 col_flags, col_tov, col_sow = st.columns([1, 1.5, 1])
 
