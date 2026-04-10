@@ -19,10 +19,6 @@ st.set_page_config(
 
 # ── Session state defaults ─────────────────────────────────────────────────────
 
-if "filter_state" not in st.session_state:
-    st.session_state["filter_state"] = []
-if "filter_tier" not in st.session_state:
-    st.session_state["filter_tier"] = []
 if "explorer_tier" not in st.session_state:
     st.session_state["explorer_tier"] = "all"
 if "explorer_page" not in st.session_state:
@@ -70,46 +66,6 @@ with st.sidebar:
     st.page_link("pages/3_HCP_Explorer.py",             label="🔎 HCP Explorer", icon=None)
     st.page_link("pages/4_HCP_Detail.py",               label="👤 HCP Detail", icon=None)
     st.page_link("pages/5_Policy_QA.py",                label="📋 Policy Q&A", icon=None)
-
-    st.markdown("---")
-
-    # Global filters
-    st.markdown("**GLOBAL FILTERS**")
-
-    active_states: list[str] = st.session_state["filter_state"]
-    active_tiers: list[str]  = st.session_state["filter_tier"]
-
-    if not active_states and not active_tiers:
-        st.markdown("_<span style='color:#888'>No filters active</span>_", unsafe_allow_html=True)
-    else:
-        for s in list(active_states):
-            col_chip, col_x = st.columns([5, 1])
-            col_chip.markdown(
-                f"<span style='background:#DBEAFE;padding:2px 8px;border-radius:12px;"
-                f"font-size:0.85em'>State: {s}</span>",
-                unsafe_allow_html=True,
-            )
-            if col_x.button("✕", key=f"rm_state_{s}", help=f"Remove {s}"):
-                st.session_state["filter_state"] = [x for x in active_states if x != s]
-                st.rerun()
-
-        for t in list(active_tiers):
-            color = RISK_TIER_COLORS.get(t, "#888")
-            col_chip, col_x = st.columns([5, 1])
-            col_chip.markdown(
-                f"<span style='background:{color}22;border:1px solid {color};"
-                f"padding:2px 8px;border-radius:12px;font-size:0.85em;"
-                f"color:{color}'>Tier: {t}</span>",
-                unsafe_allow_html=True,
-            )
-            if col_x.button("✕", key=f"rm_tier_{t}", help=f"Remove {t}"):
-                st.session_state["filter_tier"] = [x for x in active_tiers if x != t]
-                st.rerun()
-
-        if st.button("Clear all filters", type="secondary"):
-            st.session_state["filter_state"] = []
-            st.session_state["filter_tier"] = []
-            st.rerun()
 
     st.markdown("---")
 
@@ -182,11 +138,7 @@ st.markdown("")
 
 # ── Determine active tier ──────────────────────────────────────────────────────
 
-# Global session filter overrides the card filter if set
 active_tier = st.session_state["explorer_tier"]
-if st.session_state["filter_tier"]:
-    # Use first global tier filter if set
-    active_tier = st.session_state["filter_tier"][0]
 
 # Determine total for pagination
 _tier_total_map = {
