@@ -2,7 +2,7 @@
 streamlit_app/pages/2_Rep_HCP_Network.py — Rep→HCP relationship network graph.
 
 Data source: GET /hcps (FastAPI only — no parquet reads).
-Rep-HCP edges unavailable in dev — rep_id not in API response.
+State filter is client-side only (filters in memory after fetch).
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ st.set_page_config(
 
 if "network_tier_filter" not in st.session_state:
     st.session_state["network_tier_filter"] = "Critical only"
+if "network_state_filter" not in st.session_state:
+    st.session_state["network_state_filter"] = "NY"
 if "network_selected_hcp" not in st.session_state:
     st.session_state["network_selected_hcp"] = None
 if "selected_hcp_id" not in st.session_state:
@@ -51,6 +53,12 @@ def fetch_network_hcps(tier_filter_key: str) -> list[dict]:
         batch = data.get("hcps", [])
         all_hcps.extend(batch)
     return all_hcps
+
+
+def filter_by_state(hcps: list[dict], state: str) -> list[dict]:
+    if state == "All states":
+        return hcps
+    return [h for h in hcps if h.get("state") == state]
 
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -91,6 +99,10 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown(
+        "<span style='color:#6366f1;font-size:1.1em'>◆</span> &nbsp;Rep node",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
         "<span style='color:#9CA3AF;font-size:0.85em'>Click a node to inspect it.</span>",
         unsafe_allow_html=True,
     )
@@ -121,16 +133,33 @@ with hdr_right:
         fetch_network_hcps.clear()
         st.rerun()
 
-# ── Main layout ────────────────────────────────────────────────────────────────
+    all_states = sorted(set(
+        h.get("state", "") for h in hcp_list if h.get("state")
+    ))
+    state_options = ["All states"] + all_states
 
-col_net, col_detail = st.columns([2, 1])
+    state_choice = st.selectbox(
+        "State",
+        options=state_options,
+        index=state_options.index(
+            st.session_state["network_state_filter"]
+        ) if st.session_state["network_state_filter"] in state_options else 0,
+        label_visibility="collapsed",
+    )
+    if state_choice != st.session_state["network_state_filter"]:
+        st.session_state["network_state_filter"] = state_choice
+        st.rerun()
+
+# ── Apply state filter ─────────────────────────────────────────────────────────
+
+filtered_hcps = filter_by_state(hcp_list, st.session_state["network_state_filter"])
 
 # ── Build agraph network ───────────────────────────────────────────────────────
 
 def _build_agraph(hcps: list[dict]):
     """Build streamlit-agraph nodes and edges from HCP list."""
     nodes = []
-    edges = []  # no edges in dev — rep_id not available
+    edges = []  # Rep→HCP edges via primary_rep_id
 
     for hcp in hcps:
         hcp_id  = str(hcp.get("hcp_id", ""))
@@ -149,12 +178,36 @@ def _build_agraph(hcps: list[dict]):
             title=tooltip,
         ))
 
-    return nodes, edges
+    rep_ids = set(
+        h["primary_rep_id"] for h in hcps
+        if h.get("primary_rep_id")
+    )
+
+    for rep_id in rep_ids:
+        nodes.append(Node(
+            id=rep_id,
+            label=rep_id,
+            size=20,
+            color="#6366f1",
+            title=f"Rep: {rep_id}",
+            shape="diamond",
+        ))
+
+    for hcp in hcps:
+        if hcp.get("primary_rep_id"):
+            edges.append(Edge(
+                source=hcp["primary_rep_id"],
+                target=hcp["hcp_id"],
+                color="#d1d5db",
+                width=1,
+            ))
+
+    return nodes, edges, len(rep_ids)
 
 
 _AGRAPH_CONFIG = Config(
-    width=900,
-    height=500,
+    width=1200,
+    height=520,
     directed=False,
     physics=True,
     hierarchical=False,
@@ -165,97 +218,193 @@ _AGRAPH_CONFIG = Config(
     link={"labelProperty": "label", "renderLabel": False},
 )
 
-with col_net:
-    if hcp_list:
-        nodes, edges = _build_agraph(hcp_list)
-        clicked_id = agraph(nodes=nodes, edges=edges, config=_AGRAPH_CONFIG)
+# ── Section A: Full-width graph ────────────────────────────────────────────────
 
-        if clicked_id:
-            st.session_state["network_selected_hcp"] = clicked_id
-            st.session_state["selected_hcp_id"] = clicked_id
-    else:
-        st.info("No HCPs match the current filter.")
+if filtered_hcps:
+    nodes, edges, n_reps = _build_agraph(filtered_hcps)
+    clicked_id = agraph(nodes=nodes, edges=edges, config=_AGRAPH_CONFIG)
 
+    if clicked_id:
+        st.session_state["network_selected_hcp"] = clicked_id
+        st.session_state["selected_hcp_id"] = clicked_id
+else:
+    st.info("No HCPs match the current filter.")
+    n_reps = 0
+    edges  = []
+
+st.caption(
+    f"Showing {n_reps} reps · {len(filtered_hcps)} HCPs · "
+    f"{len(edges)} edges · "
+    f"{st.session_state['network_state_filter']}"
+)
+
+# ── Build rep summary (used in both sections B columns) ───────────────────────
+
+rep_summary: dict = defaultdict(lambda: {
+    "hcp_count": 0,
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "total_risk": 0.0,
+})
+for hcp in filtered_hcps:
+    rep = hcp.get("primary_rep_id")
+    if not rep:
+        continue
+    tier = hcp.get("risk_tier", "low")
+    rep_summary[rep]["hcp_count"] += 1
+    rep_summary[rep][tier] += 1
+    rep_summary[rep]["total_risk"] += float(hcp.get("risk_score", 0))
+
+rep_rows = sorted(
+    rep_summary.items(),
+    key=lambda x: (-x[1]["critical"], -x[1]["high"], -x[1]["total_risk"]),
+)
+
+# ── Section B: Two columns below graph ────────────────────────────────────────
+
+col_leaderboard, col_detail = st.columns([1.2, 1])
+
+with col_leaderboard:
+    st.markdown("#### Rep Risk Leaderboard")
     st.caption(
-        f"Showing {len(hcp_list):,} HCPs · Up to 500 per tier for browser performance · "
-        "Click a node to inspect · Rep edges coming after rep_id schema fix"
+        f"{len(rep_rows)} reps · "
+        f"{st.session_state['network_state_filter']} · "
+        f"{st.session_state['network_tier_filter']}"
     )
 
-    # ── Top 10 riskiest HCPs table ─────────────────────────────────────────────
+    st.markdown(
+        "<div style='display:grid;"
+        "grid-template-columns:100px 70px 80px 80px 80px 80px;"
+        "gap:8px;font-size:16px;font-weight:800;color:inherit;opacity:0.6;"
+        "text-transform:uppercase;letter-spacing:0.05em;"
+        "padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.15);"
+        "margin-top:8px;'>"
+        "<div>Rep ID</div>"
+        "<div>HCPs</div>"
+        "<div style='color:#DC2626;opacity:1;'>Critical</div>"
+        "<div style='color:#EA580C;opacity:1;'>High</div>"
+        "<div style='color:#CA8A04;opacity:1;'>Medium</div>"
+        "<div>Avg HCP Risk Score</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
-    network_tier_filter = st.session_state.get("network_tier_filter", "Critical only")
-    st.markdown(f"#### Top 10 Riskiest HCPs — {network_tier_filter}")
-
-    top10 = sorted(hcp_list, key=lambda h: float(h.get("risk_score", 0)), reverse=True)[:10]
-
-    if top10:
-        header_cols = st.columns([1, 3, 2, 2])
-        for col, label in zip(header_cols, ["Rank", "HCP ID", "Score", "Tier"]):
-            col.markdown(f"**{label}**")
-
-        for rank, hcp in enumerate(top10, 1):
-            hcp_id     = str(hcp.get("hcp_id", "—"))
-            score      = float(hcp.get("risk_score", 0))
-            tier       = hcp.get("risk_tier", "low")
-            tier_color = RISK_TIER_COLORS.get(tier, "#888")
-
-            row_cols = st.columns([1, 3, 2, 2])
-            row_cols[0].markdown(str(rank))
-            if row_cols[1].button(hcp_id[-12:], key=f"top10_{hcp_id}_{rank}"):
-                st.session_state["selected_hcp_id"] = hcp_id
-                st.switch_page("pages/4_HCP_Detail.py")
-            row_cols[2].markdown(f"{score:.0f}")
-            row_cols[3].markdown(
-                f"<span style='color:{tier_color};font-weight:600'>{tier.capitalize()}</span>",
-                unsafe_allow_html=True,
-            )
-    else:
-        st.info("No HCPs to display.")
-
-# ── Right column: selected HCP + rep summary ──────────────────────────────────
+    for i, (rep_id, stats) in enumerate(rep_rows[:15]):
+        avg_risk = stats["total_risk"] / max(stats["hcp_count"], 1)
+        row_bg = "rgba(255,255,255,0.05)" if i % 2 == 0 else "transparent"
+        st.markdown(
+            f"<div style='display:grid;"
+            f"grid-template-columns:100px 70px 80px 80px 80px 80px;"
+            f"gap:8px;font-size:16px;padding:10px 12px;"
+            f"background:{row_bg};"
+            f"border-bottom:1px solid rgba(255,255,255,0.08);"
+            f"border-radius:4px;align-items:center;'>"
+            f"<div style='font-weight:700;color:#60a5fa;font-size:15px;'>"
+            f"{rep_id}</div>"
+            f"<div style='font-weight:600;color:inherit;font-size:15px;'>"
+            f"{stats['hcp_count']}</div>"
+            f"<div style='font-weight:800;color:#DC2626;font-size:15px;'>"
+            f"{stats['critical']}</div>"
+            f"<div style='font-weight:800;color:#EA580C;font-size:15px;'>"
+            f"{stats['high']}</div>"
+            f"<div style='font-weight:600;color:#CA8A04;font-size:15px;'>"
+            f"{stats['medium']}</div>"
+            f"<div style='font-weight:700;color:inherit;font-size:15px;'>"
+            f"{avg_risk:.0f}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
 with col_detail:
     selected_id = st.session_state.get("network_selected_hcp")
-    selected_hcp_dict: dict | None = None
-    if selected_id:
-        selected_hcp_dict = next(
-            (h for h in hcp_list if str(h.get("hcp_id", "")) == selected_id),
-            None,
-        )
+    is_rep = selected_id and not selected_id.startswith("HCP_")
 
     st.markdown("---")
 
-    # Selected HCP panel
-    st.markdown("#### Selected HCP")
-    if selected_hcp_dict:
-        hcp_id = str(selected_hcp_dict.get("hcp_id", "—"))
-        score  = float(selected_hcp_dict.get("risk_score", 0))
-        tier   = selected_hcp_dict.get("risk_tier", "low")
-        color  = RISK_TIER_COLORS.get(tier, "#888")
-
-        st.markdown(f"**HCP ID:** `{hcp_id}`")
-        st.markdown(f"**Risk score:** {score:.0f} / 100")
-        st.markdown(
-            f"**Tier:** <span style='color:{color};font-weight:600'>"
-            f"{tier.capitalize()}</span>",
-            unsafe_allow_html=True,
-        )
-
-        if st.button("Go to HCP Detail →", type="primary", use_container_width=True):
-            st.session_state["selected_hcp_id"] = hcp_id
-            st.switch_page("pages/4_HCP_Detail.py")
+    if is_rep:
+        # ── Rep node clicked ───────────────────────────────────────────────────
+        st.markdown("""
+<style>
+[data-testid="stMetricLabel"] p {
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    color: inherit !important;
+    opacity: 0.85;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+[data-testid="stMetricValue"] {
+    font-size: 42px !important;
+    font-weight: 800 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+        rep_stats = rep_summary.get(selected_id, {})
+        st.markdown(f"#### Rep: {selected_id}")
+        st.metric("HCPs managed", rep_stats.get("hcp_count", 0))
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.metric("Critical HCPs", rep_stats.get("critical", 0))
+            st.metric("High HCPs", rep_stats.get("high", 0))
+        with col_b:
+            st.metric("Medium HCPs", rep_stats.get("medium", 0))
+            avg = rep_stats.get("total_risk", 0) / max(rep_stats.get("hcp_count", 1), 1)
+            st.metric("Avg risk score", f"{avg:.0f}")
     else:
-        st.markdown(
-            "<span style='color:#9CA3AF'>Click a node in the graph "
-            "to view details.</span>",
-            unsafe_allow_html=True,
-        )
+        # ── HCP node clicked (or nothing selected) ─────────────────────────────
+        selected_hcp_dict: dict | None = None
+        if selected_id:
+            selected_hcp_dict = next(
+                (h for h in filtered_hcps if str(h.get("hcp_id", "")) == selected_id),
+                None,
+            )
 
-    st.markdown("---")
+        st.markdown("#### Selected HCP")
+        if selected_hcp_dict:
+            hcp_id = str(selected_hcp_dict.get("hcp_id", "—"))
+            score  = float(selected_hcp_dict.get("risk_score", 0))
+            tier   = selected_hcp_dict.get("risk_tier", "low")
+            color  = RISK_TIER_COLORS.get(tier, "#888")
 
-    # Rep summary panel
-    st.markdown("#### Rep portfolio")
-    st.info(
-        "Rep data unavailable — rep_id not in API response. "
-        "This panel will populate after the schema fix."
-    )
+            st.markdown(
+                f"<div style='font-size:16px;font-weight:600;"
+                f"color:inherit;margin-top:8px;'>"
+                f"HCP ID: &nbsp;"
+                f"<span style='color:#60a5fa;font-weight:700;"
+                f"font-size:18px;'>{hcp_id}</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='font-size:18px;font-weight:700;"
+                f"color:inherit;margin-top:8px;'>"
+                f"Risk score: &nbsp;"
+                f"<span style='font-size:22px;font-weight:800;'>"
+                f"{score:.0f} / 100</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='font-size:18px;font-weight:700;"
+                f"color:inherit;margin-top:8px;'>"
+                f"Tier: &nbsp;"
+                f"<span style='color:{color};"
+                f"font-size:20px;font-weight:800;'>"
+                f"{tier.capitalize()}</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                "Go to HCP Detail →",
+                type="primary",
+                use_container_width=True,
+                key="net_goto_detail",
+            ):
+                st.session_state["selected_hcp_id"] = hcp_id
+                st.switch_page("pages/4_HCP_Detail.py")
+        else:
+            st.markdown(
+                "<span style='color:#9CA3AF'>Click a node in the graph "
+                "to view details.</span>",
+                unsafe_allow_html=True,
+            )

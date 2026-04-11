@@ -131,7 +131,7 @@ card_cols = st.columns(5)
 for col, (tier_key, tier_label, tier_count, tier_color) in zip(card_cols, _TIER_CARDS):
     is_active = st.session_state["explorer_tier"] == tier_key
     border_style = f"3px solid {tier_color}" if is_active else "1px solid #E5E7EB"
-    bg_style = f"{tier_color}11" if is_active else "white"
+    bg_style = f"{tier_color}22" if is_active else "transparent"
 
     col.markdown(
         f"<div style='border:{border_style};border-radius:8px;padding:12px 8px;"
@@ -201,6 +201,14 @@ st.caption(
     f"Sorted: risk score desc"
 )
 
+st.markdown("""
+<style>
+div[data-testid="stHorizontalBlock"] button {
+    font-weight: 700 !important;
+    opacity: 1 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 pag_prev, pag_next, pag_spacer = st.columns([1, 1, 8])
 with pag_prev:
     if st.button("← Prev", disabled=(current_page <= 1), use_container_width=True):
@@ -249,7 +257,7 @@ for hcp in hcp_rows:
     bar_color = RISK_TIER_COLORS.get(tier, "#16A34A")
     row[1].markdown(
         f"""
-        <div style="background:#e5e7eb;border-radius:999px;height:8px;width:100%;">
+        <div style="background:rgba(255,255,255,0.12);border-radius:999px;height:8px;width:100%;">
           <div style="background:{bar_color};width:{risk_score:.0f}%;
                height:8px;border-radius:999px;"></div>
         </div>
@@ -276,6 +284,14 @@ st.markdown("---")
 
 # ── Pagination controls (bottom) ──────────────────────────────────────────────
 
+st.markdown("""
+<style>
+div[data-testid="stHorizontalBlock"] button {
+    font-weight: 700 !important;
+    opacity: 1 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 bot_prev, bot_next, bot_spacer = st.columns([1, 1, 8])
 with bot_prev:
     if st.button("← Prev", key="bot_prev", disabled=(current_page <= 1), use_container_width=True):
