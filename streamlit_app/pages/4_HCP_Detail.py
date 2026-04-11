@@ -208,10 +208,11 @@ except APIError:
 # ── Row 1: Scorecard panel ────────────────────────────────────────────────────
 
 _CARD = (
-    "border:1px solid #e5e7eb;border-radius:10px;"
-    "padding:20px 24px;background:#ffffff;min-height:160px;height:100%;"
+    "border:1px solid rgba(255,255,255,0.12);border-radius:10px;"
+    "padding:20px 24px;background:transparent;"
+    "min-height:160px;height:100%;"
 )
-_LABEL = "font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;font-weight:600;"
+_LABEL = "font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:inherit;opacity:0.6;font-weight:600;"
 
 st.markdown("""
 <style>
@@ -284,12 +285,12 @@ with col_shap:
         f"<div style='{_LABEL}'>TOP RISK DRIVERS &nbsp;"
         f"<span class='tip' data-tooltip='SHAP feature importance scores show which factors "
         f"most influenced this HCP risk score'>ℹ️</span></div>"
-        f"<div style='border:1px dashed #d1d5db;border-radius:6px;padding:16px;"
-        f"background:#f9fafb;margin-top:12px;text-align:center;'>"
+        f"<div style='border:1px dashed rgba(255,255,255,0.2);border-radius:6px;padding:16px;"
+        f"background:rgba(255,255,255,0.06);margin-top:12px;text-align:center;'>"
         f"<div style='font-size:28px;'>📊</div>"
-        f"<div style='font-size:14px;font-weight:700;color:#374151;margin-top:8px;'>"
+        f"<div style='font-size:14px;font-weight:700;color:inherit;margin-top:8px;'>"
         f"SHAP feature importance</div>"
-        f"<div style='font-size:12px;color:#9ca3af;margin-top:4px;'>"
+        f"<div style='font-size:12px;color:inherit;opacity:0.6;margin-top:4px;'>"
         f"Run investigation to generate</div>"
         f"</div></div>",
         unsafe_allow_html=True,
@@ -301,41 +302,41 @@ with col_bench:
         _bench_body = (
             f"<div style='display:flex;gap:12px;margin-top:10px;'>"
 
-            f"<div style='flex:1;background:#f0f4ff;border-radius:8px;"
+            f"<div style='flex:1;background:rgba(255,255,255,0.08);border-radius:8px;"
             f"padding:14px 12px;text-align:center;'>"
-            f"<div style='font-size:11px;font-weight:600;color:#6b7280;"
+            f"<div style='font-size:11px;font-weight:600;color:inherit;opacity:0.7;"
             f"text-transform:uppercase;letter-spacing:0.05em;'>Percentile</div>"
             f"<div style='font-size:36px;font-weight:800;color:#1d4ed8;"
             f"line-height:1.1;margin-top:4px;'>"
             f"<span class='tip' data-tooltip='{percentile:.0f}th percentile: "
             f"this HCP Nova spend exceeds {percentile:.0f}% of peers "
             f"in same specialty and state'>{percentile:.0f}th</span></div>"
-            f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;'>"
+            f"<div style='font-size:11px;color:inherit;opacity:0.5;margin-top:2px;'>"
             f"of peer spend</div></div>"
 
-            f"<div style='flex:1;background:#f9fafb;border-radius:8px;"
+            f"<div style='flex:1;background:rgba(255,255,255,0.08);border-radius:8px;"
             f"padding:14px 12px;text-align:center;'>"
-            f"<div style='font-size:11px;font-weight:600;color:#6b7280;"
+            f"<div style='font-size:11px;font-weight:600;color:inherit;opacity:0.7;"
             f"text-transform:uppercase;letter-spacing:0.05em;'>Nova Spend</div>"
-            f"<div style='font-size:36px;font-weight:800;color:#374151;"
+            f"<div style='font-size:36px;font-weight:800;color:inherit;"
             f"line-height:1.1;margin-top:4px;'>"
             f"<span class='tip' data-tooltip='Total Nova Pharma transfer of value "
             f"to this HCP in 2024 (CMS open payments data)'>"
             f"${hcp_spend:.0f}</span></div>"
-            f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;'>"
+            f"<div style='font-size:11px;color:inherit;opacity:0.5;margin-top:2px;'>"
             f"2024 CMS dollars</div></div>"
 
-            f"<div style='flex:1;background:#f9fafb;border-radius:8px;"
+            f"<div style='flex:1;background:rgba(255,255,255,0.08);border-radius:8px;"
             f"padding:14px 12px;text-align:center;'>"
-            f"<div style='font-size:11px;font-weight:600;color:#6b7280;"
+            f"<div style='font-size:11px;font-weight:600;color:inherit;opacity:0.7;"
             f"text-transform:uppercase;letter-spacing:0.05em;'>Peer Avg</div>"
-            f"<div style='font-size:36px;font-weight:800;color:#374151;"
+            f"<div style='font-size:36px;font-weight:800;color:inherit;"
             f"line-height:1.1;margin-top:4px;'>"
             f"<span class='tip' data-tooltip='Average Nova spend across "
             f"{bench.get('peer_count', '')} peers "
             f"in same specialty and state. Peer max: ${peer_max:.0f}'>"
             f"${peer_avg:.0f}</span></div>"
-            f"<div style='font-size:11px;color:#9ca3af;margin-top:2px;'>"
+            f"<div style='font-size:11px;color:inherit;opacity:0.5;margin-top:2px;'>"
             f"same specialty/state</div></div>"
 
             f"</div>"
@@ -343,27 +344,27 @@ with col_bench:
     else:
         _bench_tip = "Athena unavailable. Showing normalized spend index and real Nova ToV from CMS open payments data."
         _bench_body = (
-            f"<div style='font-size:12px;color:#6b7280;margin-top:6px;'>Normalized index</div>"
-            f"<div style='font-size:40px;font-weight:800;color:#374151;line-height:1.1;'>"
+            f"<div style='font-size:12px;color:inherit;opacity:0.6;margin-top:6px;'>Normalized index</div>"
+            f"<div style='font-size:40px;font-weight:800;color:inherit;line-height:1.1;'>"
             f"<span class='tip' data-tooltip='Normalized spend index vs peer group. "
             f"Athena re-run needed for percentile rank and dollar benchmarks.'>"
             f"{peer_avg:.2f}</span></div>"
-            f"<div style='font-size:12px;color:#9ca3af;margin-top:2px;'>vs peer group</div>"
+            f"<div style='font-size:12px;color:inherit;opacity:0.5;margin-top:2px;'>vs peer group</div>"
             f"<div style='display:inline-flex;gap:16px;margin-top:12px;'>"
-            f"<div><div style='font-size:11px;color:#9ca3af;'>2022</div>"
-            f"<div style='font-size:16px;font-weight:700;color:#374151;'>"
+            f"<div><div style='font-size:11px;color:inherit;opacity:0.5;'>2022</div>"
+            f"<div style='font-size:16px;font-weight:700;color:inherit;'>"
             f"<span class='tip' data-tooltip='Nova Pharma payments to this HCP in 2022 (CMS data)'>"
             f"${spend['nova_tov_2022']:.0f}</span></div></div>"
-            f"<div><div style='font-size:11px;color:#9ca3af;'>2023</div>"
-            f"<div style='font-size:16px;font-weight:700;color:#374151;'>"
+            f"<div><div style='font-size:11px;color:inherit;opacity:0.5;'>2023</div>"
+            f"<div style='font-size:16px;font-weight:700;color:inherit;'>"
             f"<span class='tip' data-tooltip='Nova Pharma payments to this HCP in 2023 (CMS data)'>"
             f"${spend['nova_tov_2023']:.0f}</span></div></div>"
-            f"<div><div style='font-size:11px;color:#9ca3af;'>2024</div>"
-            f"<div style='font-size:16px;font-weight:700;color:#374151;'>"
+            f"<div><div style='font-size:11px;color:inherit;opacity:0.5;'>2024</div>"
+            f"<div style='font-size:16px;font-weight:700;color:inherit;'>"
             f"<span class='tip' data-tooltip='Nova Pharma payments to this HCP in 2024 (CMS data)'>"
             f"${spend['nova_tov_2024']:.0f}</span></div></div>"
             f"</div>"
-            f"<div style='font-size:11px;color:#9ca3af;margin-top:8px;'>Real Nova ToV · CMS data</div>"
+            f"<div style='font-size:11px;color:inherit;opacity:0.5;margin-top:8px;'>Real Nova ToV · CMS data</div>"
         )
     st.markdown(
         f"<div style='{_CARD}'>"
@@ -393,20 +394,82 @@ with col_flags:
             critical_flags = flags_resp.get("critical_flags", 0)
             high_flags     = flags_resp.get("high_flags", 0)
             st.caption(f"{total_flags} flag(s) · {critical_flags} critical · {high_flags} high")
+            _FLAG_TOOLTIPS = {
+                "speaker_pay_above_fmv": (
+                    "Speaker fee paid exceeded Nova FMV limit. "
+                    "Nova policy: fees must not exceed specialty-based "
+                    "FMV rate card. PhRMA cap: $1,500/event. "
+                    "Check investigation report for exact amounts."
+                ),
+                "chronic_speaker_fmv_violations": (
+                    "Pattern of FMV violations across 3+ speaking events. "
+                    "Nova policy: 2+ FMV breaches in a program year "
+                    "triggers chronic violation flag. Requires review."
+                ),
+                "repeat_speaker_pattern": (
+                    "HCP engaged as speaker beyond frequency threshold. "
+                    "Nova policy: max 6 speaking engagements per HCP "
+                    "per program year. PhRMA guidance: avoid patterns "
+                    "that suggest improper intent."
+                ),
+                "rapid_repeat_engagements": (
+                    "Multiple interactions within 30 days. "
+                    "Nova policy: interactions must be spaced to reflect "
+                    "legitimate educational need. Dense clustering "
+                    "may indicate coordination risk."
+                ),
+                "missing_interaction_attestation": (
+                    "One or more interactions missing required attestation. "
+                    "Nova policy: all HCP interactions must be attested "
+                    "within 5 business days. Missing attestation is a "
+                    "documentation compliance violation."
+                ),
+                "chronic_missing_attestations": (
+                    "Pattern of missing attestations across 3+ interactions. "
+                    "Nova policy: repeated failures indicate systematic "
+                    "documentation gap requiring manager review."
+                ),
+                "vague_interaction_rationale": (
+                    "Interaction rationale lacks required specificity. "
+                    "Nova policy: rationale must state therapeutic area, "
+                    "educational objective, and HCP relevance. "
+                    "Generic entries like 'discussed products' do not qualify."
+                ),
+                "pattern_of_vague_rationales": (
+                    "Repeated vague rationales across 3+ interactions. "
+                    "Nova policy: systematic documentation gaps require "
+                    "rep coaching and compliance review."
+                ),
+                "fmv_non_compliance": (
+                    "Total transfer of value exceeds FMV limits. "
+                    "PhRMA guidelines: aggregate spend must reflect "
+                    "fair market value for services rendered. "
+                    "Nova internal threshold is stricter than PhRMA baseline."
+                ),
+                "escalating_spend_pattern": (
+                    "Year-over-year Nova spend increasing abnormally. "
+                    "Nova policy: spend escalation without corresponding "
+                    "increase in documented educational activity "
+                    "triggers compliance review."
+                ),
+            }
             for i, flag_name in enumerate(flags_list):
                 if i < critical_flags:
-                    bg_color = "#fef2f2"; border_color = "#DC2626"
-                    text_color = "#991b1b"; severity_badge = "CRITICAL"; badge_bg = "#DC2626"
+                    bg_color = "rgba(220,38,38,0.12)"; border_color = "#DC2626"
+                    text_color = "#f87171"; severity_badge = "CRITICAL"; badge_bg = "#DC2626"
                 elif i < critical_flags + high_flags:
-                    bg_color = "#fff7ed"; border_color = "#EA580C"
-                    text_color = "#9a3412"; severity_badge = "HIGH"; badge_bg = "#EA580C"
+                    bg_color = "rgba(234,88,12,0.12)"; border_color = "#EA580C"
+                    text_color = "#fb923c"; severity_badge = "HIGH"; badge_bg = "#EA580C"
                 else:
-                    bg_color = "#fffbeb"; border_color = "#CA8A04"
-                    text_color = "#854d0e"; severity_badge = "MEDIUM"; badge_bg = "#CA8A04"
+                    bg_color = "rgba(202,138,4,0.12)"; border_color = "#CA8A04"
+                    text_color = "#fbbf24"; severity_badge = "MEDIUM"; badge_bg = "#CA8A04"
                 display = FLAG_LABELS.get(flag_name, flag_name.replace("_", " ").title())
+                _tip = _FLAG_TOOLTIPS.get(flag_name, f"Compliance flag: {display}")
                 st.markdown(
-                    f"""<div style='padding:6px 10px;margin-bottom:4px;border-radius:4px;
-                    background:{bg_color};border-left:3px solid {border_color};'>
+                    f"""<div class='tip' data-tooltip='{_tip}'
+                    style='padding:6px 10px;margin-bottom:4px;border-radius:4px;
+                    background:{bg_color};border-left:3px solid {border_color};
+                    cursor:help;'>
                     <span style='font-size:10px;font-weight:700;color:#ffffff;
                     background:{badge_bg};padding:1px 5px;border-radius:3px;
                     margin-right:6px;'>{severity_badge}</span>
@@ -468,38 +531,43 @@ with col_tov:
                 text=[f"${v:,.0f}" if v > 0 else "" for v in other],
                 textposition="inside", textfont=dict(size=11, color="#374151", family="Arial Bold"),
             ))
-            for yr, tot in zip(active_years, totals):
-                if tot > 0:
-                    fig_spend.add_annotation(
-                        x=yr, y=tot,
-                        text=f"<b>Total: ${tot:,.0f}</b>",
-                        showarrow=False, yshift=10,
-                        font=dict(size=11, color="#1e3a5f", family="Arial Black"),
-                    )
             fig_spend.update_layout(
                 barmode="stack",
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                title=dict(text="", font=dict(size=1)),
-                height=280,
-                margin=dict(l=10, r=10, t=10, b=60),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=0, r=0, t=40, b=0),
+                showlegend=True,
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=-0.25,
+                    xanchor="center",
+                    x=0.5,
+                    bgcolor="rgba(0,0,0,0)",
+                    font=dict(size=12, color="white"),
+                ),
                 xaxis=dict(
-                    tickmode="array", tickvals=active_years, ticktext=active_years,
-                    tickfont=dict(size=12, color="#1e3a5f", family="Arial Black"),
+                    tickfont=dict(size=14, color="white", family="Arial Bold"),
                     showgrid=False,
                 ),
                 yaxis=dict(
-                    tickprefix="$", tickfont=dict(size=10, color="#1e3a5f", family="Arial Bold"),
-                    showgrid=False, zeroline=False,
+                    tickfont=dict(size=13, color="white"),
+                    tickprefix="$",
+                    gridcolor="rgba(255,255,255,0.08)",
+                    showgrid=True,
                 ),
-                legend=dict(
-                    font=dict(size=10, color="#1e3a5f", family="Arial Bold"),
-                    bgcolor="rgba(255,255,255,0.8)", bordercolor="#1e3a5f", borderwidth=1,
-                    orientation="h", x=0, y=-0.3,
-                ),
-                hoverlabel=dict(
-                    bgcolor="#ffffff", bordercolor="#1e3a5f",
-                    font=dict(size=12, color="#1e3a5f", family="Arial Bold"),
-                ),
+                font=dict(color="white"),
+                annotations=[
+                    dict(
+                        x=year, y=total,
+                        text=f"<b>Total: ${total:,.0f}</b>",
+                        showarrow=False,
+                        yanchor="bottom",
+                        yshift=6,
+                        font=dict(size=13, color="white", family="Arial Bold"),
+                    )
+                    for year, total in zip(active_years, totals)
+                ],
             )
             st.plotly_chart(fig_spend, use_container_width=True)
 
