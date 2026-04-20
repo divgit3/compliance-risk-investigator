@@ -33,7 +33,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - MLFLOW_TRACKING_URI=http://mlflow:5001
-      - MLFLOW_ENABLED=false
+      - MLFLOW_ENABLED=true
     env_file:
       - .env
     volumes:
@@ -71,14 +71,14 @@ services:
 
   # ── MLflow experiment tracking ─────────────────────────────────────────────
   mlflow:
-    image: python:3.12-slim
+    image: ghcr.io/mlflow/mlflow:v3.10.1
     command: >
-      bash -c "pip install mlflow==3.10.1 --quiet &&
-               mlflow server
-               --backend-store-uri sqlite:////mlflow/mlflow.db
-               --default-artifact-root /mlflow/artifacts
-               --host 0.0.0.0
-               --port 5001"
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5001
+      --allowed-hosts mlflow,mlflow:5001,localhost,localhost:5002,127.0.0.1,127.0.0.1:5002
     ports:
       - "5002:5001"
     volumes:
