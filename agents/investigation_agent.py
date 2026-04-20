@@ -42,8 +42,9 @@ from agents.tools.policy_tools import search_policy_docs
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # ── MLflow config ──────────────────────────────────────────────────────────────
 
-_MLFLOW_URI        = "http://localhost:5001"
+_MLFLOW_URI        = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5001")
 _MLFLOW_EXPERIMENT = "investigation_agent"
+_MLFLOW_ENABLED    = os.environ.get("MLFLOW_ENABLED", "true").lower() == "true"
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 
@@ -154,16 +155,17 @@ class InvestigationAgent:
         self._executor = None  # created lazily on first use
 
         # MLflow setup (best-effort — failures never crash the agent)
-        try:
-            import threading
-            def _init_mlflow():
-                mlflow.set_tracking_uri(_MLFLOW_URI)
-                mlflow.set_experiment(_MLFLOW_EXPERIMENT)
-            t = threading.Thread(target=_init_mlflow, daemon=True)
-            t.start()
-            t.join(timeout=3)  # max 3 seconds, then give up silently
-        except Exception:
-            pass
+        if _MLFLOW_ENABLED:
+            try:
+                import threading
+                def _init_mlflow():
+                    mlflow.set_tracking_uri(_MLFLOW_URI)
+                    mlflow.set_experiment(_MLFLOW_EXPERIMENT)
+                t = threading.Thread(target=_init_mlflow, daemon=True)
+                t.start()
+                t.join(timeout=3)  # max 3 seconds, then give up silently
+            except Exception:
+                pass
 
     @property
     def executor(self):
@@ -316,6 +318,8 @@ class InvestigationAgent:
         report: InvestigationReport,
         latency_ms: float,
     ) -> None:
+        if not _MLFLOW_ENABLED:
+            return
         try:
             with mlflow.start_run(run_name=f"investigate_{hcp_id}"):
                 mlflow.log_params({
