@@ -263,6 +263,7 @@ If the container shows old code but your local file has new code → needs rebui
 - Temporal train/test splits
 - Policy citation quality improvements
 - LangGraph supervisor agent
+- **Feature correlation cleanup in SHAP display.** Observed April 20: correlated features crowd the top-N SHAP list (e.g., `spend_2024` and `annual_cap_pct_used_2024` both appear in top 10 but convey similar signal — spend dollars vs. percentage of compliance cap consumed). Options: (a) hierarchical feature grouping, (b) de-duplication via correlation threshold, (c) SHAP interaction values. Good interview story: correlated features make single-feature SHAP misleading; production fix would involve feature engineering before explanation.
 
 ---
 
