@@ -41,6 +41,8 @@ async def lifespan(app: FastAPI):
     print("STARTUP: rule_flags loaded", flush=True)
     set_parquet("event_features", pd.read_parquet(_FEATURES_DIR / "event_feature_matrix.parquet"))
     print("STARTUP: event_features loaded", flush=True)
+    set_parquet("shap_values", pd.read_parquet(_MODELS_DIR / "shap_values.parquet"))
+    print("STARTUP: shap_values loaded", flush=True)
 
     for _bm_name, _bm_path in [
         ("competitor_benchmarks", _FEATURES_DIR / "competitor_benchmarks.parquet"),

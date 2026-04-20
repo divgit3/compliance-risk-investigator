@@ -57,6 +57,11 @@ def fetch_hcp_investigation(hcp_id: str) -> dict:
     return get_client().get_agent(f"/hcps/{hcp_id}/investigate")
 
 
+@st.cache_data(ttl=300)
+def fetch_hcp_shap(hcp_id: str, top_n: int = 10) -> dict:
+    return get_client().get(f"/hcps/{hcp_id}/shap", params={"top_n": top_n})
+
+
 def extract_tov(profile: dict) -> dict:
     """Extract ToV fields from HCP profile API response."""
     return {
@@ -210,7 +215,7 @@ except APIError:
 _CARD = (
     "border:1px solid rgba(255,255,255,0.12);border-radius:10px;"
     "padding:20px 24px;background:transparent;"
-    "min-height:160px;height:100%;"
+    "height:100%;"
 )
 _LABEL = "font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:inherit;opacity:0.6;font-weight:600;"
 
@@ -281,20 +286,44 @@ with col_risk:
 
 with col_shap:
     st.markdown(
-        f"<div style='{_CARD}'>"
         f"<div style='{_LABEL}'>TOP RISK DRIVERS &nbsp;"
         f"<span class='tip' data-tooltip='SHAP feature importance scores show which factors "
-        f"most influenced this HCP risk score'>ℹ️</span></div>"
-        f"<div style='border:1px dashed rgba(255,255,255,0.2);border-radius:6px;padding:16px;"
-        f"background:rgba(255,255,255,0.06);margin-top:12px;text-align:center;'>"
-        f"<div style='font-size:28px;'>📊</div>"
-        f"<div style='font-size:14px;font-weight:700;color:inherit;margin-top:8px;'>"
-        f"SHAP feature importance</div>"
-        f"<div style='font-size:12px;color:inherit;opacity:0.6;margin-top:4px;'>"
-        f"Run investigation to generate</div>"
-        f"</div></div>",
+        f"most influenced this HCP risk score'>ℹ️</span></div>",
         unsafe_allow_html=True,
     )
+    try:
+        _shap_data = fetch_hcp_shap(hcp_id, top_n=7)
+        _top_features = _shap_data.get("top_features", [])
+        if _top_features:
+            _feat_names = [f["feature"].replace("_", " ").title() for f in reversed(_top_features)]
+            _shap_vals  = [f["shap_value"] for f in reversed(_top_features)]
+            _bar_colors = ["#DC2626" if v < 0 else "#16A34A" for v in _shap_vals]
+            fig_shap = go.Figure(go.Bar(
+                x=_shap_vals,
+                y=_feat_names,
+                orientation="h",
+                marker_color=_bar_colors,
+            ))
+            fig_shap.update_layout(
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                height=280,
+                margin=dict(l=0, r=0, t=4, b=0),
+                xaxis=dict(
+                    gridcolor="rgba(0,0,0,0.08)",
+                    tickfont=dict(color="#374151"),
+                ),
+                yaxis=dict(
+                    tickfont=dict(color="#374151", size=10),
+                    showgrid=False,
+                ),
+                font=dict(color="#374151"),
+            )
+            st.plotly_chart(fig_shap, use_container_width=True)
+        else:
+            st.caption("No SHAP data available for this HCP.")
+    except APIError:
+        st.caption("SHAP values unavailable for this HCP.")
 
 with col_bench:
     if _bench_ok and percentile > 0:
@@ -553,10 +582,10 @@ with col_tov:
                 yaxis=dict(
                     tickfont=dict(size=13, color="white"),
                     tickprefix="$",
-                    gridcolor="rgba(255,255,255,0.08)",
+                    gridcolor="rgba(0,0,0,0.08)",
                     showgrid=True,
                 ),
-                font=dict(color="white"),
+                font=dict(color="#374151"),
                 annotations=[
                     dict(
                         x=year, y=total,

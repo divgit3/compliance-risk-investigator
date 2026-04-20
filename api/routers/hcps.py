@@ -18,6 +18,7 @@ from api.dependencies import (
     get_investigation_agent,
     get_risk_scores,
     get_rule_flags,
+    get_shap_values,
 )
 
 router = APIRouter(prefix="/hcps", tags=["hcps"])
@@ -130,3 +131,28 @@ def get_hcp_flags(
         "high_flags":    int(rs_row.get("high_flags", 0)),
         "most_severe_flag": rs_row.get("most_severe_flag"),
     }
+
+
+@router.get("/{hcp_id}/shap")
+def get_hcp_shap(
+    hcp_id: str,
+    top_n: int = Query(10, ge=1, le=99, description="Return top N features by absolute SHAP value"),
+    shap_values: pd.DataFrame = Depends(get_shap_values),
+):
+    """Return top SHAP feature contributions for a single HCP."""
+    row = shap_values[shap_values["hcp_id"] == hcp_id]
+    if row.empty:
+        raise HTTPException(status_code=404, detail=f"HCP '{hcp_id}' has no SHAP values")
+
+    feature_shap = row.drop(columns=["hcp_id"]).iloc[0]
+    sorted_abs = feature_shap.abs().sort_values(ascending=False)
+    top_features = [
+        {
+            "feature": feat_name,
+            "shap_value": float(feature_shap[feat_name]),
+            "abs_shap_value": abs(float(feature_shap[feat_name])),
+        }
+        for feat_name in sorted_abs.index[:top_n]
+    ]
+
+    return {"hcp_id": hcp_id, "top_features": top_features, "total_features": len(feature_shap)}
