@@ -108,7 +108,104 @@ curl -s "http://localhost:8000/hcps?tier=critical&limit=1" | python -m json.tool
 ```
 
 ---
+---
 
+## Daily Startup — Quick Reference
+
+### Scenario 1: Everything worked recently, just need to restart
+
+```bash
+cd /Volumes/Career/Projects/compliance-risk-investigator
+source venv/bin/activate
+
+# Start Docker stack (all 4 services)
+cd docker && docker compose up -d && cd ..
+
+# Wait ~30 seconds, then smoke-test
+sleep 30
+curl -s http://localhost:8000/health
+curl -s "http://localhost:8000/hcps?tier=critical&limit=1" | python -m json.tool | grep rep_id
+
+# Open dashboard
+open http://localhost:8502
+```
+
+If smoke tests pass → ready to work. If not → go to Scenario 2.
+
+### Scenario 2: After time away (1+ week) or data looks stale
+
+```bash
+cd /Volumes/Career/Projects/compliance-risk-investigator
+source venv/bin/activate
+
+# 1. Load env vars for local scripts
+export $(grep -v '^#' docker/.env | xargs)
+aws sts get-caller-identity   # verify AWS creds valid
+
+# 2. Regenerate DuckDB if empty
+cd pipelines/dbt_project
+dbt run
+cd ../..
+
+# 3. Rerun data pipelines (order matters)
+python features/feature_store.py
+python models/isolation_forest.py
+python features/industry_benchmarks.py
+
+# 4. Bring up Docker stack
+cd docker
+docker compose down
+docker compose up -d
+cd ..
+
+# 5. Smoke test (wait for API healthcheck)
+sleep 30
+curl -s http://localhost:8000/health
+curl -s "http://localhost:8000/hcps?tier=critical&limit=1" | python -m json.tool | grep rep_id
+
+# 6. Open dashboard
+open http://localhost:8502
+```
+
+### Scenario 3: After code changes to API or Streamlit
+
+Code changes require Docker image rebuild (see "CRITICAL GOTCHA" section below):
+
+```bash
+cd docker
+docker compose build api          # or 'streamlit'
+docker compose up -d --force-recreate api
+cd ..
+```
+
+### Shutdown (end of work session)
+
+```bash
+cd docker
+docker compose down
+cd ..
+```
+
+Stops all containers cleanly. Data persists in volumes. Next `docker compose up -d` resumes.
+
+---
+
+## Checkpoints — "Is the app actually working?"
+
+Quick visual verification after startup:
+
+- [ ] `curl http://localhost:8000/health` returns `{"status":"ok"}`
+- [ ] `curl "http://localhost:8000/hcps?tier=critical&limit=1"` returns `primary_rep_id` in response
+- [ ] http://localhost:8502 loads without errors
+- [ ] **Compliance Risk Overview** page shows ~291 critical HCPs
+- [ ] **Rep-HCP Network** page shows red squares (reps), lines (edges), and leaderboard populated
+- [ ] **HCP Explorer** page lists HCPs sortable by risk score
+- [ ] **HCP Detail** page (pick any HCP) shows risk score, flags, features
+- [ ] **Policy QA** page returns answers with citations for a simple question
+
+If any of these fail, check which Scenario above applies.
+
+---
 ## CRITICAL GOTCHA: Docker image caching
 
 **After any code change to API or Streamlit, rebuild the image:**
