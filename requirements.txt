@@ -68,3 +68,4 @@ boto3
 # pytest for unit + integration tests; httpx provides async client for API tests
 pytest
 pytest-asyncio>=0.23.0
+awswrangler>=3.14.0

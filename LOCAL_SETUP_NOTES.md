@@ -12,7 +12,7 @@ Complements the main README — this is operational knowledge, not the polished 
 - **Project root:** `/Volumes/Career/Projects/compliance-risk-investigator/` (external drive — see caveats below)
 - **Python venv:** `./venv/` (currently Python 3.9 — note: project memory lists 3.12, venv is actually 3.9)
 - **Docker compose (canonical):** `./docker/docker-compose.yml`
-- **Docker compose (stale/abandoned):** `./docker-compose.yml` — delete or reconcile when doing Phase 4 cleanup
+- **Docker compose (deprecated): `./docker-compose.yml.deprecated` — renamed April 20, 2026, safe to fully delete in next cleanup pass
 - **`.env` file for secrets** (AWS, OpenAI): `./docker/.env`
 - **DuckDB:** `./pipelines/dbt_project/compliance_risk.duckdb` (symlinked from `./data/processed/compliance.duckdb`)
 
@@ -139,15 +139,16 @@ If the container shows old code but your local file has new code → needs rebui
 - [x] **API `/hcps` endpoint missing `primary_rep_id`** → was stale Docker image; fixed by `docker compose build api && up -d --force-recreate api`
 - [x] **`streamlit_agraph` missing from Docker image** → added to `streamlit_app/requirements.txt`, rebuilt container
 - [x] **Rep-HCP Network page showed 0 reps/edges** → multiple causes: (a) pipelines not run, (b) stale Docker image. Both resolved.
+- [x] **`awswrangler` missing from requirements.txt** → added `awswrangler>=3.14.0`
+- [x] **Stale root-level `docker-compose.yml`** → renamed to `docker-compose.yml.deprecated`, safe to fully delete in next cleanup pass
 
 ### Open — high priority
 - [ ] **Rep-HCP Network page shows 0 reps/edges** if data pipelines haven't been re-run after time away. Fix: run `feature_store.py` → `isolation_forest.py` → `industry_benchmarks.py` in order.
 
 ### Open — medium priority (cleanup / hygiene)
-- [ ] **Two `docker-compose.yml` files.** Canonical: `./docker/docker-compose.yml`. Stale: `./docker-compose.yml`. Delete the stale one or document why both exist.
 - [ ] **Python version mismatch.** Venv uses Python 3.9, project memory/docs reference 3.12. Recreate venv with 3.12 before end-of-project cleanup.
 - [ ] **`.env` file discoverability.** Lives under `docker/` for Docker Compose, but local scripts need it in shell env. Options: (a) symlink `docker/.env` to repo root, (b) script wrapper that exports before running, (c) document the export pattern (this doc).
-- [ ] **`awswrangler` not in base requirements.** Needed for Athena benchmark loading. Install manually: `pip install awswrangler`. Should be added to `requirements.txt` or similar.
+- [ ] **Fully delete `docker-compose.yml.deprecated`** in a future cleanup pass once confident nothing references it.
 
 ### Open — low priority (infrastructure work — Phase 5)
 - [ ] **Athena integration — bucket naming.** Default `s3://compliance-athena-results/` is taken globally by another AWS user. Fix: create unique bucket in `us-east-2` (e.g., `compliance-athena-results-divya`), update `ATHENA_S3_BUCKET` env var in `docker/.env`.
