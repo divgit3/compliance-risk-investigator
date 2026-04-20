@@ -255,6 +255,8 @@ If the container shows old code but your local file has new code → needs rebui
 - [ ] **Docker dev workflow lacks auto-rebuild on code change.** Currently requires manual `docker compose build` after code edits. Add docker-compose watch configuration for hot reload in dev mode.
 
 ### Phase 5 feature backlog (separate from infrastructure)
+
+#### Open Phase 5 Items
 - Recency-weighted risk score
 - SHAP feature importance chart (UI)
 - Interaction-based rep network (multi-rep per HCP)
@@ -264,6 +266,13 @@ If the container shows old code but your local file has new code → needs rebui
 - Policy citation quality improvements
 - LangGraph supervisor agent
 - **Feature correlation cleanup in SHAP display.** Observed April 20: correlated features crowd the top-N SHAP list (e.g., `spend_2024` and `annual_cap_pct_used_2024` both appear in top 10 but convey similar signal — spend dollars vs. percentage of compliance cap consumed). Options: (a) hierarchical feature grouping, (b) de-duplication via correlation threshold, (c) SHAP interaction values. Good interview story: correlated features make single-feature SHAP misleading; production fix would involve feature engineering before explanation.
+
+#### Resolved by Design
+- **Streamlit container workflow trade-off (resolved by design — no action needed)**
+  - Historical: Original architecture mounted `../streamlit_app:/app:ro` as a volume, giving hot-reload for code changes
+  - Today's change (Option C): Removed streamlit_app volume mount entirely. Code now lives in the image via `COPY streamlit_app/ .` during Docker build. Only `features/outputs` is volume-mounted for data access.
+  - Consequence: Streamlit code changes require `docker compose build streamlit && docker compose up -d --force-recreate streamlit` (~30 seconds) instead of save-and-refresh hot-reload
+  - Status: Accepted trade-off. No restoration work needed — there is no :ro mount to restore on streamlit_app because that mount no longer exists. Architecture is cleaner (immutable-image pattern matching production deployment).
 
 ---
 
@@ -325,7 +334,7 @@ Group C, plus any Group A/B items not completed in Phase 4.
 - Medium article: focuses on RAGAS methodology, dataset construction lessons, and metric interpretation. Does NOT cover full 11-attribute framework.
 
 **Phase 5 scope (expanded):**
-- All previous Phase 5 items (SHAP correlation cleanup, MLflow container fix, Athena re-run, temporal splits, policy citation quality, LangGraph supervisor, :ro restoration)
+- All previous Phase 5 items (SHAP correlation cleanup, MLflow container fix, Athena re-run, temporal splits, policy citation quality, LangGraph supervisor)
 - NEW: Model comparison — Isolation Forest vs. Local Outlier Factor vs. One-Class SVM, same features and test set, metrics: precision/recall/F1 at critical-risk cohort (~6-8 hrs)
 - Remaining 10 attribute evaluations at publication-grade rigor: Consistency, Reproducibility, Scope Adherence, Auditability, Groundedness, Graceful Failure, Robustness, Calibrated Confidence. Latency done at article-grade today; will re-run at paper-grade during Phase 5
 - Publication-grade means: confidence intervals, literature citations for metric definitions, statistical significance testing, reproducibility package
