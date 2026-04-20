@@ -315,6 +315,35 @@ Groups A and B. Group C deferred to Phase 5.
 ### Phase 5 Scope
 Group C, plus any Group A/B items not completed in Phase 4.
 
+### Revised Scope Decision — April 20, 2026
+
+**Decision:** Decouple Phase 4 from publication-grade evaluation. Introduce two comparative evaluation layers for the paper.
+
+**Phase 4 scope (reduced):**
+- RAGAS evaluation only: Faithfulness, Retrieval Relevance, Answer Relevancy
+- Golden dataset: 10-15 questions grounded in actual 5 policy docs (rebuild required — prior LLM-generated dataset had fabricated numbers like $5,000 cap, $150 meals that don't match actual Nova Pharma rules of $75,000 and $25/$50/$100)
+- Medium article: focuses on RAGAS methodology, dataset construction lessons, and metric interpretation. Does NOT cover full 11-attribute framework.
+
+**Phase 5 scope (expanded):**
+- All previous Phase 5 items (SHAP correlation cleanup, MLflow container fix, Athena re-run, temporal splits, policy citation quality, LangGraph supervisor, :ro restoration)
+- NEW: Model comparison — Isolation Forest vs. Local Outlier Factor vs. One-Class SVM, same features and test set, metrics: precision/recall/F1 at critical-risk cohort (~6-8 hrs)
+- Remaining 10 attribute evaluations at publication-grade rigor: Consistency, Reproducibility, Scope Adherence, Auditability, Groundedness, Graceful Failure, Robustness, Calibrated Confidence. Latency done at article-grade today; will re-run at paper-grade during Phase 5
+- Publication-grade means: confidence intervals, literature citations for metric definitions, statistical significance testing, reproducibility package
+
+**Paper scope (after Phase 5):**
+- Full 11-attribute framework writeup
+- Grounded in rigorous evaluations from Phase 5
+- NEW: Framework comparison — 11-attribute Trustworthy AI framework vs. RAGAS-only evaluation, showing where each framework catches/misses failure modes for compliance AI (~4-6 hrs analytical work)
+- Optional: alignment discussion with NIST AI RMF as governance-layer framing
+- Venue, framing, and timeline to be scoped in a dedicated planning session
+
+**Why this split:**
+- Phase 4 ships as a complete artifact (RAGAS + Medium) without blocking on paper quality
+- Paper work happens after Phase 5 when cognitive load is lower (post-medical treatment, during less-intense job search periods)
+- Model comparison strengthens anomaly detection methodology defense in the paper
+- Framework comparison strengthens the novelty claim for the 11-attribute framework
+- Total additional work for both comparisons: ~10-14 hrs beyond previously scoped Phase 5 work
+
 ---
 
 ## Fresh model insights (April 20, 2026)
