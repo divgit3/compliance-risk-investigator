@@ -41,6 +41,9 @@ dbt_packages/
 logs/
 
 
+# Trustworthy AI evaluation reports (generated — commit reference reports manually)
+tests/trustworthy_ai/reports/*.json
+
 tests/test[0-9]*.py
 tests/recon*.py
 tests/sample.py

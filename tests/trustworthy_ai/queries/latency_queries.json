@@ -1,0 +1,22 @@
+{
+  "policy_agent": [
+    {"id": "policy_q1", "question": "What are the fair market value limits for speaker programs?"},
+    {"id": "policy_q2", "question": "What is the annual HCP spend cap at Nova Pharma?"},
+    {"id": "policy_q3", "question": "What are the meal limits for breakfast, lunch, and dinner?"},
+    {"id": "policy_q4", "question": "How does Nova Pharma's policy compare to PhRMA code requirements?"},
+    {"id": "policy_q5", "question": "What triggers a compliance investigation under our rules?"}
+  ],
+  "monitoring_agent": [
+    {"id": "mon_q1", "params": {"risk_tier": "critical"}},
+    {"id": "mon_q2", "params": {"risk_tier": "high"}},
+    {"id": "mon_q3", "params": {"specialty": "Cardiology"}},
+    {"id": "mon_q4", "params": {"state": "CA"}}
+  ],
+  "investigation_agent": [
+    {"id": "inv_q1", "hcp_id": "HCP_357811"},
+    {"id": "inv_q2", "hcp_id": "HCP_277776"},
+    {"id": "inv_q3", "hcp_id": "HCP_107352"},
+    {"id": "inv_q4", "hcp_id": "HCP_696676"},
+    {"id": "inv_q5", "hcp_id": "HCP_10423991"}
+  ]
+}
