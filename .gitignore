@@ -60,3 +60,4 @@ docker/.env
 .env
 docker/.env
 .venv_py39_snapshot.txt
+mlflow.db
