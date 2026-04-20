@@ -53,3 +53,6 @@ pipelines/dbt_project/*.duckdb
 pipelines/dbt_project/*.duckdb-shm
 pipelines/dbt_project/*.duckdb-wal
 lib/
+docker/.env
+.env
+docker/.env
