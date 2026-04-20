@@ -267,6 +267,56 @@ If the container shows old code but your local file has new code → needs rebui
 
 ---
 
+## Phase 4/5 — Trustworthy AI Evaluation Plan
+
+The Compliance Risk Investigator uses an 11-attribute Trustworthy AI framework as its evaluation rubric. These attributes split into three groups based on what's required to measure them:
+
+### The 11 Attributes
+
+1. **Faithfulness** — response claims are grounded in retrieved context (no hallucination)
+2. **Retrieval Relevance** — the right chunks are being fetched from Qdrant for a given query
+3. **Groundedness of Decisions** — anomaly flags and risk scores trace back to observable data features (SHAP)
+4. **Graceful Failure** — the system degrades predictably when inputs are out-of-scope or retrieval fails
+5. **Auditability** — every agent action, score, and decision is logged to MLflow with a reproducible trail
+6. **Consistency** — the same query produces stable outputs across runs (low variance)
+7. **Latency** — response times are within acceptable bounds for a compliance analyst workflow
+8. **Robustness** — the system handles noisy, incomplete, or adversarial inputs without catastrophic failure
+9. **Calibrated Confidence** — the model's stated confidence (risk tiers, anomaly scores) reflects actual error rates
+10. **Scope Adherence** — agents stay within their designated domain (Investigation, Monitoring, Policy) and don't bleed into each other's responsibilities
+11. **Reproducibility** — given the same data and model artifacts, the pipeline produces the same outputs
+
+### Group A — Needs Golden Dataset (RAGAS-style)
+- Faithfulness (attr #1)
+- Retrieval Relevance (attr #2)
+- Calibrated Confidence for Policy Agent answers (attr #9, partial)
+
+### Group B — Direct Measurements (no golden dataset needed)
+- Auditability (attr #5)
+- Consistency (attr #6)
+- Latency (attr #7)
+- Scope Adherence (attr #10)
+- Reproducibility (attr #11)
+
+### Group C — Adversarial & SHAP Analysis
+- Groundedness of Decisions (attr #3)
+- Graceful Failure (attr #4)
+- Robustness (attr #8)
+
+### Execution Order
+
+Group B → Group A → Group C, on the following rationale:
+- Group B yields 5 attributes' worth of concrete numeric results with relatively fast implementation (no golden dataset required, mostly measurement-of-running-system).
+- Group A requires a correctly-scoped golden dataset. A prior golden dataset attempt (generated outside the repo by an LLM without grounding in actual policy docs) contained fabricated Nova Pharma rules — $5,000 cap vs actual $75,000, $150 meals vs actual $25/$50/$100. Do not reuse. Rebuild from actual policy doc contents.
+- Group C requires Groups A and B in place to be meaningful — adversarial testing means testing robustness of a known baseline.
+
+### Phase 4 Scope
+Groups A and B. Group C deferred to Phase 5.
+
+### Phase 5 Scope
+Group C, plus any Group A/B items not completed in Phase 4.
+
+---
+
 ## Fresh model insights (April 20, 2026)
 
 After rerunning isolation forest on current data:
