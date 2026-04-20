@@ -21,8 +21,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # ── Application code ───────────────────────────────────────────────────────────
 COPY streamlit_app/ .
+RUN mkdir -p /app/features/outputs
 
 # ── Port ───────────────────────────────────────────────────────────────────────
+RUN mkdir -p /app/features/outputs
+
 EXPOSE 8502
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
