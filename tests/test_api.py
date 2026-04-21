@@ -232,12 +232,16 @@ class TestBenchmarks:
         ):
             assert field in data, f"Missing benchmark field: {field}"
 
-    async def test_benchmarks_peer_count_is_97011(
+    async def test_benchmarks_peer_count_is_specialty_scoped(
         self, async_client: AsyncClient, critical_hcp_id: str
     ):
-        """All HCPs have null specialty/state in dev, so peer group = full population."""
+        """With Athena available, peer_count is scoped to specialty + state cohort,
+        not the full population. Specific value depends on synthetic data, but it
+        should be a subset of TOTAL_HCPS and athena_available should be true."""
         data = (await async_client.get(f"/benchmarks/{critical_hcp_id}")).json()
-        assert data["peer_count"] == TOTAL_HCPS
+        assert data["athena_available"] is True
+        assert data["peer_count"] > 0
+        assert data["peer_count"] < TOTAL_HCPS
 
     async def test_benchmarks_data_limitations_is_list(
         self, async_client: AsyncClient, critical_hcp_id: str

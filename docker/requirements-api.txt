@@ -15,3 +15,9 @@ shap>=0.45.0
 mlflow>=2.0.0
 httpx
 python-dotenv
+
+# ── Test dependencies ────────────────────────────────────────────────────────
+# Required to run /app/tests/* inside the API container. Tests live in the
+# image (immutable build artifact pattern), so the test runner must too.
+pytest>=8.0.0,<10.0.0
+pytest-asyncio>=0.23.0,<2.0.0
