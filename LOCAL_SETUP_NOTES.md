@@ -274,6 +274,32 @@ If the container shows old code but your local file has new code → needs rebui
   - Consequence: Streamlit code changes require `docker compose build streamlit && docker compose up -d --force-recreate streamlit` (~30 seconds) instead of save-and-refresh hot-reload
   - Status: Accepted trade-off. No restoration work needed — there is no :ro mount to restore on streamlit_app because that mount no longer exists. Architecture is cleaner (immutable-image pattern matching production deployment).
 
+#### Completed (April 20, 2026)
+
+**MLflow container fix — commits `da0fc61` + `540e70b`**
+
+Two-phase fix for broken MLflow container (HTTP server accepted TCP connections but reset HTTP requests, caused by `python:3.12-slim` + `pip install mlflow==3.10.1` runtime pattern).
+
+- **Phase 1 — morning workaround (`da0fc61`):** Made MLflow tracking optional via `MLFLOW_ENABLED` env var. Unblocked Investigation/Monitoring/Policy agents which were timing out at 120s due to broken MLflow HTTP server.
+- **Phase 2 — evening proper fix (`540e70b`):** Replaced `image: python:3.12-slim` + runtime pip install with the official pre-built image `ghcr.io/mlflow/mlflow:v3.10.1`. Added `--allowed-hosts mlflow,mlflow:5001,localhost,localhost:5002,127.0.0.1,127.0.0.1:5002` flag to satisfy DNS rebinding protection middleware introduced in MLflow 3.5.0+ (GitHub issue #22095 — ports don't strip in matching, so hostname and hostname:port variants both needed). Re-enabled `MLFLOW_ENABLED=true` in API service.
+- **Verified end-to-end:** policy_agent, monitoring_agent, investigation_agent experiments auto-created in MLflow on first agent call. All three agents respond correctly via browser UI (Policy returns `$75,000` cap with rule `COMP_001`, Investigation completes in ~3s, Monitoring normal). MLflow API returns 200 with experiment count = 4.
+- **Unblocks:** Attribute #5 Auditability evaluation in Phase 5 Trustworthy AI plan.
+
+**Python 3.9 → 3.12 venv upgrade — commit `1106a79`**
+
+Upgraded local development venv from Python 3.9.6 to 3.12.13.
+
+- First attempt earlier in day failed at `urllib3==1.26.20` dependency conflict (botocore/requests/docker wanted `<3,>=1.26.0` but types-requests wanted `>=2`). Rolled back cleanly.
+- Second attempt succeeded by dropping the urllib3 pin from the install manifest and letting pip resolve — it settled on `urllib3-2.6.3` which satisfies all dependencies.
+- 160 packages installed cleanly on Python 3.12. Verified critical imports: `pandas 2.3.3`, `streamlit 1.50.0`, `mlflow 3.1.4`, `httpx 0.28.1`.
+- `.venv_py312_install.txt` kept as reproducibility artifact (gitignored, not committed).
+- `.venv_py39_snapshot.txt` retained as historical reference.
+- Old Python 3.9 `venv_py39_backup` directory removed after verification.
+
+**Docker Compose cleanup — commit `c3eb75e`**
+
+Removed obsolete top-level `version: "3.9"` attribute from `docker/docker-compose.yml`. Docker Compose v2+ infers schema from service structure; the `version` field was printing a WARN on every compose invocation. Compose config validates silently now.
+
 ---
 
 ## Phase 4/5 — Trustworthy AI Evaluation Plan
@@ -334,7 +360,7 @@ Group C, plus any Group A/B items not completed in Phase 4.
 - Medium article: focuses on RAGAS methodology, dataset construction lessons, and metric interpretation. Does NOT cover full 11-attribute framework.
 
 **Phase 5 scope (expanded):**
-- All previous Phase 5 items (SHAP correlation cleanup, MLflow container fix, Athena re-run, temporal splits, policy citation quality, LangGraph supervisor)
+- All previous Phase 5 items (SHAP correlation cleanup, Athena re-run, temporal splits, policy citation quality, LangGraph supervisor)
 - NEW: Model comparison — Isolation Forest vs. Local Outlier Factor vs. One-Class SVM, same features and test set, metrics: precision/recall/F1 at critical-risk cohort (~6-8 hrs)
 - Remaining 10 attribute evaluations at publication-grade rigor: Consistency, Reproducibility, Scope Adherence, Auditability, Groundedness, Graceful Failure, Robustness, Calibrated Confidence. Latency done at article-grade today; will re-run at paper-grade during Phase 5
 - Publication-grade means: confidence intervals, literature citations for metric definitions, statistical significance testing, reproducibility package
