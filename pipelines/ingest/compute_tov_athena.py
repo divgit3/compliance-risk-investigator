@@ -8,9 +8,9 @@ import time
 import pandas as pd
 import os
 
-REGION = "us-east-1"
-DATABASE = "compliance_risk_raw"
-OUTPUT_BUCKET = "s3://compliance-risk-investigator/athena-results/"
+REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+DATABASE = os.environ.get("ATHENA_DATABASE", "compliance_risk_raw")
+OUTPUT_BUCKET = os.environ.get("ATHENA_S3_BUCKET", "s3://compliance-risk-investigator/athena-query-output/")
 OUTPUT_FILE = "data/processed/hcp_tov_summary.parquet"
 
 QUERY = """

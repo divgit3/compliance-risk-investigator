@@ -26,7 +26,7 @@ clean-targets: ["target", "dbt_packages"]
 on-run-start:
   - "{% if target.type == 'duckdb' %}INSTALL httpfs{% else %}SELECT 1{% endif %}"
   - "{% if target.type == 'duckdb' %}LOAD httpfs{% else %}SELECT 1{% endif %}"
-  - "{% if target.type == 'duckdb' %}SET s3_region='us-east-1'{% else %}SELECT 1{% endif %}"
+  - "{% if target.type == 'duckdb' %}SET s3_region='{{ env_var(\"AWS_DEFAULT_REGION\", \"us-east-1\") }}'{% else %}SELECT 1{% endif %}"
   - "{% if target.type == 'duckdb' %}SET s3_access_key_id='{{ env_var(\"AWS_ACCESS_KEY_ID\") }}'{% else %}SELECT 1{% endif %}"
   - "{% if target.type == 'duckdb' %}SET s3_secret_access_key='{{ env_var(\"AWS_SECRET_ACCESS_KEY\") }}'{% else %}SELECT 1{% endif %}"
   - "{% if target.type == 'duckdb' %}CREATE OR REPLACE VIEW main.synthetic_interactions AS SELECT * FROM read_parquet('s3://compliance-risk-investigator/synthetic/hcp_interactions/hcp_interactions.parquet'){% else %}SELECT 1{% endif %}"

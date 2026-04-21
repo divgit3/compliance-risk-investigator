@@ -37,7 +37,7 @@ ATHENA_SCHEMA   = "compliance_risk_raw"
 ATHENA_TABLE    = "mart_hcp_spend_features"
 S3_STAGING_DIR  = os.getenv(
     "ATHENA_S3_STAGING_DIR",
-    "s3://compliance-risk-investigator/athena-results/",
+    "s3://compliance-risk-investigator/athena-query-output/",
 )
 
 DUCKDB_PATH = "data/processed/compliance.duckdb"
