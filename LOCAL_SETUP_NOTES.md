@@ -334,6 +334,61 @@ OpenAI key only lives in **ONE place**: `docker/.env` — used by Docker contain
   - Decision after investigation:
     - If documented design choices: add a clear "synthetic data limitations" note to README and Medium article, no code changes needed.
     - If unintended: scope a synthetic data v2 redesign as a separate Phase 5 item (NOT a today fix — would cascade through every downstream artifact).
+- [ ] **Fix: aggregate synthetic speaker fees into spend totals** (Option A chosen, ~1-2 hrs, investigation completed April 21 2026)
+
+   **Background — the finding:**
+
+   Traced HCP_357811 end-to-end through the synthetic data pipeline and found a real inconsistency:
+
+   - HCP_357811 has `fmv_tier = 'regional'` → qualifies as `is_priority_speaker = True` per synthetic_generator.py line 689
+   - Real Takeda CMS totals: 2022=$0, 2023=$17.60, 2024=$0 (total $17.60 across 3 years)
+   - Because they're priority, the generator bypasses the `< 500` CMS guard and generates 7 speaker events totaling ~$16,785 in speaker fees
+   - These synthetic speaker fees are NOT aggregated into `cms_total_*` columns in `hcp_master.parquet`
+   - These synthetic speaker fees are NOT aggregated into `hcp_spend_raw_dollars.parquet` used by downstream features
+   - Result: feature_store shows $17.60 spend when synthetic data actually has ~$14K in 2023 speaker events
+
+   **Chosen fix: Option A — include synthetic speaker fees in spend aggregation.**
+
+   Rationale: compliance investigators treat all transfers of value to an HCP (CMS-reported + internal speaker programs) as unified "spend." Keeping them separate makes the project story more confusing and obscures the real signal.
+
+   **Implementation plan for tomorrow:**
+
+   Step 1. Locate the downstream spend aggregation code
+   - `pipelines/ingest/compute_tov_athena.py` — produces hcp_tov_summary.parquet
+   - `features/hcp_spend_features.py` — transforms into hcp_spend_feature_matrix + hcp_spend_raw_dollars.parquet
+   - Determine which file aggregates spend by year
+
+   Step 2. Add speaker_fee aggregation
+   - Join `speaker_program_events.parquet` on `speaker_hcp_id`
+   - Sum `speaker_fee` by `hcp_id` × `program_year`
+   - Add to existing CMS total per HCP per year
+
+   Step 3. Regenerate the cascade
+   - `hcp_spend_raw_dollars.parquet` (run hcp_spend_features.py)
+   - `competitor_benchmarks.parquet` + `population_benchmarks.parquet` (run industry_benchmarks.py)
+   - `feature_store.parquet` + `feature_store_raw.parquet` + `ground_truth_labels.parquet` (run feature_store.py)
+
+   Step 4. Verify
+   - HCP_357811's `spend_2023` should now show ~$14K (was $17.60)
+   - Population EPS/spend distributions may shift
+   - Re-run test suite: fixtures may need updating
+
+   Step 5. MLflow
+   - Wipe mlflow.db, restart container, re-run all 3 agents to populate fresh runs
+
+   Step 6. Commit + push
+
+   **Expected side effects (acceptable):**
+   - Risk score distributions shift; some HCPs move between tiers
+   - Test fixture KNOWN_CRITICAL_ID may or may not still be HCP_357811
+   - Population benchmarks will have different means/percentiles
+   - Medium article narrative shifts from "low-spend process violator" to "high-activity speaker with documentation violations" (still a valid compliance narrative)
+
+   **Key code locations (from today's investigation):**
+   - Priority speaker logic: `synthetic_generator.py` line 689
+   - Fee cap branching: lines 704-712
+   - Speaker fee assignment: line 745
+   - Speaker events file: `s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_events.parquet`
 
 #### Resolved by Design
 - **Streamlit container workflow trade-off (resolved by design — no action needed)**
