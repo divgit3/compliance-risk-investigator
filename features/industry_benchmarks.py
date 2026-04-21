@@ -44,8 +44,8 @@ POPULATION_OUT  = _OUTPUT_DIR / "population_benchmarks.parquet"
 
 # ── Athena config ──────────────────────────────────────────────────────────────
 
-_ATHENA_DB      = os.environ.get("ATHENA_DATABASE",    "compliance_db")
-_ATHENA_BUCKET  = os.environ.get("ATHENA_S3_BUCKET",   "s3://compliance-athena-results/")
+_ATHENA_DB      = os.environ.get("ATHENA_DATABASE",    "compliance_risk_raw")
+_ATHENA_BUCKET  = os.environ.get("ATHENA_S3_BUCKET",   "s3://compliance-risk-investigator/athena-query-output/")
 _ATHENA_REGION  = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
 # ── Score weights ──────────────────────────────────────────────────────────────
@@ -74,12 +74,12 @@ def _athena_load_competitor() -> pd.DataFrame | None:
             sql="""
                 SELECT
                     hcp_id,
-                    SUM(payment_amount) FILTER (WHERE payment_year = 2024)
+                    SUM(payment_amount) FILTER (WHERE program_year = 2024)
                         AS competitor_spend_2024,
-                    AVG(payment_amount) FILTER (WHERE payment_year = 2024)
+                    AVG(payment_amount) FILTER (WHERE program_year = 2024)
                         AS competitor_avg_spend
                 FROM mart_competitor_payments
-                WHERE payment_year = 2024
+                WHERE program_year = 2024
                 GROUP BY hcp_id
             """,
             database=_ATHENA_DB,
@@ -113,12 +113,19 @@ def _athena_load_population() -> pd.DataFrame | None:
         df = wr.athena.read_sql_query(
             sql="""
                 SELECT
-                    specialty,
-                    AVG(total_spend_2024) AS population_avg_spend_2024,
-                    APPROX_PERCENTILE(total_spend_2024, 0.90) AS population_p90_spend_2024
-                FROM mart_population_payments
-                WHERE payment_year = 2024
-                GROUP BY specialty
+                    physician_specialty AS specialty,
+                    AVG(yearly_spend) AS population_avg_spend_2024,
+                    APPROX_PERCENTILE(yearly_spend, 0.90) AS population_p90_spend_2024
+                FROM (
+                    SELECT
+                        hcp_id,
+                        physician_specialty,
+                        SUM(payment_amount) AS yearly_spend
+                    FROM mart_population_payments
+                    WHERE program_year = 2024
+                    GROUP BY hcp_id, physician_specialty
+                )
+                GROUP BY physician_specialty
             """,
             database=_ATHENA_DB,
             s3_output=_ATHENA_BUCKET,
