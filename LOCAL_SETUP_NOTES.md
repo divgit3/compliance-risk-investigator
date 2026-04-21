@@ -322,6 +322,18 @@ OpenAI key only lives in **ONE place**: `docker/.env` — used by Docker contain
 - Policy citation quality improvements
 - LangGraph supervisor agent
 - **Feature correlation cleanup in SHAP display.** Observed April 20: correlated features crowd the top-N SHAP list (e.g., `spend_2024` and `annual_cap_pct_used_2024` both appear in top 10 but convey similar signal — spend dollars vs. percentage of compliance cap consumed). Options: (a) hierarchical feature grouping, (b) de-duplication via correlation threshold, (c) SHAP interaction values. Good interview story: correlated features make single-feature SHAP misleading; production fix would involve feature engineering before explanation.
+- [ ] **Investigate synthetic generator: spend-interaction correlation** (estimated 1-2 hours)
+  - Pre-read (~30-45 min before any code work):
+    - `docs/implementation/phase1_implementation.md` (full read) — explains synthetic data structure
+    - `docs/implementation/phase2_implementation.md` lines 79-80 — already-documented limitations
+    - `pipelines/ingest/synthetic_generator.py` functions: `generate_hcp_master()` and related interaction/payment generation logic
+  - Investigation questions (smaller scope now that we know some characteristics are documented):
+    - Why is the spend-interaction correlation so low (0.068)? Is this an intentional design choice tied to the violation generation model, or an unintended side effect of independent random distributions?
+    - What's the rationale documented for "CMS spend values not scaled to realistic cap thresholds" (Phase 2 doc line 79)?
+    - Would a more realistic synthetic data design (with correlated spend + interactions like real CMS data) materially change risk model behavior, or would the composite score still surface the same risk patterns?
+  - Decision after investigation:
+    - If documented design choices: add a clear "synthetic data limitations" note to README and Medium article, no code changes needed.
+    - If unintended: scope a synthetic data v2 redesign as a separate Phase 5 item (NOT a today fix — would cascade through every downstream artifact).
 
 #### Resolved by Design
 - **Streamlit container workflow trade-off (resolved by design — no action needed)**
@@ -402,6 +414,62 @@ Summary: Restored the Athena query path in `features/industry_benchmarks.py` tha
 **Side note on stale artifacts**
 
 Any model artifacts (pickled models, MLflow runs) trained against the OLD `competitor_benchmarks.parquet` and `population_benchmarks.parquet` files (pre-fix degraded values) are now technically stale. See backlog item "Stale artifact audit (post-Athena fix)" for follow-up.
+
+#### Investigation findings (April 21, 2026)
+
+##### Finding: Risk score is decoupled from spend volume — HCP_357811 case study
+
+Investigation question: Why does HCP_357811 (test fixture's KNOWN_CRITICAL_ID, the top critical-risk HCP) show $0 spend in 2024?
+
+Answer: Risk score is correctly decoupled from payment volume. HCP_357811's profile:
+
+- Total spend: only $17.60 (single payment in 2023, $0 in 2022/2024)
+- Total interactions: 7 over 3 years
+- Risk score: 94.12 (top critical tier)
+
+The high risk score is driven by persistent documentation and process violations, NOT by dollar volume:
+- 71% of events missing attestations (`pct_events_missing_attestation`: 0.71)
+- 5 missing-attestation flags fired
+- 5 repeat-speaker flags (suspicious pattern of same speaker appearing repeatedly)
+- 2 rapid-repeat flags (events scheduled too close together)
+- 2 high-venue-cost flags
+- Cost-per-head exceeded limits 7 times across 4 meals (avg $64/meal)
+- 3 interactions with vague compliance rationales
+- `attendees_signed_pct_min` = -3.0 (severe under-attendance vs claimed — potential ghost speaker programs)
+- 13 ground truth violations, max severity = "high"
+
+This is a meaningful finding for two reasons:
+
+1. **Model validation:** The composite risk score correctly identifies process-violation patterns over spend-volume patterns. A naive "biggest spenders are biggest risks" model would miss HCP_357811 entirely. The model surfaces them because it weights documentation gaps and attendance anomalies, not just dollar amounts.
+
+2. **Interview/article narrative:** This directly contradicts the obvious assumption that high-risk HCPs are the high-spend HCPs. In real pharma compliance work, the riskiest HCPs are often process violators — speakers with ghost programs, attestation gaps, vague rationales — not the top-paid consultants. The dataset reflects this.
+
+Implication for downstream work:
+- When writing the Medium article, this is a paragraph or sidebar worth including
+- When validating model behavior in Phase 5, this finding gives a concrete test case for "risk score should not correlate strongly with `spend_2024` alone"
+
+##### Caveat (added after follow-up analysis)
+
+Follow-up exploration revealed the synthetic dataset has properties that affect how this finding should be interpreted:
+
+- Correlation between `total_interactions` and `spend_2024` across the population: 0.068 (essentially uncorrelated)
+- 79.6% of HCPs (77,242 of 97,011) have under $100 in spend across all 3 years combined
+- HCPs with 5-10 interactions have median spend of -0.35 (z-scored — feature_store stores standardized values, not raw dollars)
+
+Phase 2 implementation doc explicitly documents this characteristic at lines 79-80:
+
+> "Synthetic data bias: Annual cap breach flags fire for ~37% of HCPs in synthetic data (CMS spend values not scaled to realistic cap thresholds), creating inflated critical/high flag counts vs production."
+> "GT recall ceiling: 41% high+critical recall reflects the synthetic violation label generator's limited correlation with rule flags — production recall is expected to be higher with real violation ground truth."
+
+This means the "decoupling of risk score from spend volume" pattern reflects synthetic data generator design, not necessarily a discovered insight about real-world pharma compliance behavior. Real CMS Open Payments data typically shows substantial correlation between interaction frequency and spend volume.
+
+Honest framing for any future article or paper:
+
+- **TRUE:** This synthetic dataset contains an HCP profile (HCP_357811) where high-risk score correlates with documentation/process violations rather than payment volume.
+- **TRUE:** The composite risk score model correctly weights process-violation features given the input data.
+- **NOT YET ESTABLISHED:** Whether the model would identify the same "process violator over high spender" pattern in real CMS data, because the synthetic data does not preserve realistic spend-violation correlations.
+
+See backlog item below for the planned investigation to understand the synthetic generator's design decisions.
 
 ---
 
