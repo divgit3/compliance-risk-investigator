@@ -248,11 +248,67 @@ If the container shows old code but your local file has new code → needs rebui
 - [ ] **Fully delete `docker-compose.yml.deprecated`** in a future cleanup pass once confident nothing references it.
 
 ### Open — low priority (infrastructure work — Phase 5)
-- [ ] **Athena integration — bucket naming.** Default `s3://compliance-athena-results/` is taken globally by another AWS user. Fix: create unique bucket in `us-east-2` (e.g., `compliance-athena-results-divya`), update `ATHENA_S3_BUCKET` env var in `docker/.env`.
-- [ ] **Athena integration — region mismatch.** Existing `compliance-risk-investigator` bucket is in `us-east-1` (`LocationConstraint: null`), but Athena workgroup is in `us-east-2`. Athena requires same-region S3 for query results.
+- [x] **Athena integration — bucket naming.** Default `s3://compliance-athena-results/` is taken globally by another AWS user. COMPLETED April 21, 2026 (commits `160feb9` + `fa2e924`). Real bucket is `s3://compliance-risk-investigator/` in `us-east-1` (NOT `us-east-2` — that was a CLI region drift issue, not an actual region mismatch). Code now uses `s3://compliance-risk-investigator/athena-query-output/` for query result CSVs, kept separate from `athena-results/tables/` which holds dbt-materialized table parquet (548 MB, load-bearing for Glue Catalog Locations).
+- [x] **Athena integration — region mismatch.** Existing `compliance-risk-investigator` bucket is in `us-east-1` (`LocationConstraint: null`), but Athena workgroup is in `us-east-2`. COMPLETED April 21, 2026 (commit `160feb9`). The original framing was incorrect — investigation confirmed the Athena workgroup ARN is `arn:aws:athena:us-east-1:858000384282:workgroup/primary` (us-east-1, same as bucket). The actual issue was local AWS CLI region drift (`aws configure get region` returned `us-east-2`), fixed permanently with `aws configure set region us-east-1`.
 - [ ] **Athena/Glue federation.** 4 dbt models (`stg_cms_general_payments` and downstream) fail because DuckDB isn't federated to AWS Glue. Options: install `duckdb-athena` extension, refactor models to read CMS data from S3 directly, or drop CMS-dependent models. This is the "Athena schema fix (permanent)" item from Phase 5 backlog.
 - [ ] **External drive considerations.** Project lives on `/Volumes/Career/` external drive. Symlinks, Docker volume mounts, and absolute paths can behave unpredictably if drive is remounted with a different name. Consider moving to `~/Projects/` or similar at some point.
 - [ ] **Docker dev workflow lacks auto-rebuild on code change.** Currently requires manual `docker compose build` after code edits. Add docker-compose watch configuration for hot reload in dev mode.
+
+---
+
+## Credential Rotation Procedure
+
+When AWS or OpenAI keys need rotating (compromise, periodic rotation, employee turnover), follow this checklist. The two-file structure for AWS is intentional — Docker containers and the host CLI run in separate environments and read keys from different files.
+
+### AWS Key Rotation
+
+AWS access keys must be updated in **TWO files**:
+
+- `~/.aws/credentials` — used by host CLI (`aws ...` commands), host Python scripts, and dbt commands
+- `docker/.env` — used by Docker containers (API agents, Streamlit, anything running inside docker compose)
+
+**Procedure:**
+
+1. AWS Console → IAM → Users → divyaiam → Security credentials → "Create access key"
+2. Note the new Access Key ID and Secret Access Key in a secure location (1Password, etc.)
+3. Open `~/.aws/credentials` in a text editor (e.g., `nano ~/.aws/credentials` or `cursor ~/.aws/credentials`). Update `aws_access_key_id` and `aws_secret_access_key` lines.
+4. Open `docker/.env` in a text editor. Update `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` lines.
+5. Verify both files have matching keys using last-4-char comparison (safe — does not expose keys):
+   ```bash
+   grep "AKIA" ~/.aws/credentials | grep -oE "[A-Z0-9]{4}$"
+   grep "AWS_ACCESS_KEY_ID" docker/.env | grep -oE "[A-Z0-9]{4}$"
+   ```
+   Both commands should print the same 4-char suffix
+6. Verify CLI auth works with new key: `aws sts get-caller-identity`
+7. Restart Docker containers to load the new env: `cd docker && docker compose down && docker compose up -d && cd ..`
+8. Verify container picks up new key (safe output — only suffix): `docker exec docker-api-1 sh -c 'echo "$AWS_ACCESS_KEY_ID" | grep -oE "[A-Z0-9]{4}$"'`
+9. Wipe dbt build artifacts that may contain the old key (they regenerate on next dbt run): `rm -rf pipelines/dbt_project/target/ pipelines/dbt_project/logs/`
+10. AWS Console → IAM → deactivate the old key (don't delete for 24hr in case rollback needed)
+11. After 24hr with no issues, delete the old key entirely
+
+### OpenAI API Key Rotation
+
+OpenAI key only lives in **ONE place**: `docker/.env` — used by Docker containers via `os.environ.get("OPENAI_API_KEY")` patterns in agent code.
+
+**Procedure:**
+
+1. platform.openai.com/api-keys → Revoke the old key
+2. Create a new key, save it securely
+3. Open `docker/.env` in a text editor. Update the `OPENAI_API_KEY` line.
+4. Restart containers: `cd docker && docker compose down && docker compose up -d && cd ..`
+5. Verify (counts the var, doesn't print value): `docker exec docker-api-1 env | grep -c "^OPENAI_API_KEY"` — should print `1`
+
+### Critical Safety Rules
+
+- **Never** paste full `.env` or `~/.aws/credentials` contents into chat tools, logs, screenshots, or commits
+- **Never** commit `.env` files (already gitignored, but worth re-confirming with `git status` after edits)
+- **Never** export keys at the shell prompt — the command enters `~/.zsh_history` and persists across sessions
+- **Use the inline-env pattern** when you need an env var for a single command. Example: `OPENAI_API_KEY=$(grep "^OPENAI_API_KEY=" docker/.env | cut -d= -f2-) python3.12 -m pytest tests/`. This sets the env var only for that one command and never enters shell history.
+- **Use the redacted display pattern** when you need to inspect env files: `cat docker/.env | sed -E 's/(KEY|SECRET|TOKEN|PASSWORD)=.+/\1=***REDACTED***/g'`
+- dbt's `on-run-start` hook in `dbt_project.yml` resolves env vars and writes them to `target/` artifacts. Always wipe `target/` after key rotation.
+- Key suffix comparison (`grep -oE "[A-Z0-9]{4}$"`) is the safe way to verify two files have matching keys without exposing the key itself.
+
+---
 
 ### Phase 5 feature backlog (separate from infrastructure)
 
@@ -299,6 +355,53 @@ Upgraded local development venv from Python 3.9.6 to 3.12.13.
 **Docker Compose cleanup — commit `c3eb75e`**
 
 Removed obsolete top-level `version: "3.9"` attribute from `docker/docker-compose.yml`. Docker Compose v2+ infers schema from service structure; the `version` field was printing a WARN on every compose invocation. Compose config validates silently now.
+
+#### Completed (April 21, 2026)
+
+**Athena cleanup — commits `160feb9`, `fa2e924`, `21b34eb`**
+
+Summary: Restored the Athena query path in `features/industry_benchmarks.py` that had been silently failing since Phase 3 was first written, plus broader cleanup of Athena-related env vars, S3 paths, and CLI configuration. Side effect: 88/88 tests now pass (was 79/88 with 8 OpenAI agent test failures gated by host env config).
+
+**Key findings (for future debugging or Medium article)**
+
+- The Athena code path had never worked correctly. Phase 3's `industry_benchmarks.py` was authored against an imagined table shape (pre-aggregated columns named `total_spend_2024`, `specialty`, `payment_year`) that did not match the actual dbt model output (raw payment rows with columns `program_year`, `physician_specialty`, `payment_amount`). Because the script wrapped Athena calls in a `try/except` block that fell back to local parquet on ANY exception, the failure was invisible — logs always showed "Athena not reachable — using local fallback" regardless of whether Athena was actually reachable.
+- The "us-east-2 region mismatch" framing in old backlog items was wrong. The original notes said Athena was in `us-east-2` but the bucket was in `us-east-1`. Investigation today confirmed via AWS console that the Athena workgroup ARN is `arn:aws:athena:us-east-1:858000384282:workgroup/primary` — same region as the bucket. The actual issue: local AWS CLI was configured for `us-east-2` (`aws configure get region` returned `us-east-2`), so any host-side `aws glue ...` or `aws athena ...` commands looked in the wrong region and got "Entity Not Found." Fixed permanently with `aws configure set region us-east-1`.
+- Glue Catalog is decoupled from CLI region. S3 commands (`aws s3 ls`) worked fine despite the CLI region drift because S3 is a global service. But Glue is region-scoped, so `aws glue get-databases` returned empty until region was fixed. This was the original signal that "something was wrong with Athena."
+- Three layers of bugs in `industry_benchmarks.py`:
+  1. **Broken bucket reference:** `_ATHENA_BUCKET` fallback pointed at `s3://compliance-athena-results/`, a globally-taken bucket name not owned by this AWS account (returns 403 Forbidden, not 404).
+  2. **Wrong fallback database name:** `_ATHENA_DB` fallback was `compliance_db`, but actual Glue database is `compliance_risk_raw`.
+  3. **SQL schema mismatches:** queries referenced `payment_year` (correct: `program_year`), `specialty` (correct: `physician_specialty`), and `total_spend_2024` (does not exist — must aggregate from raw `payment_amount`).
+- Population query needed full rewrite, not just column rename. The original assumed pre-aggregated yearly totals as a column. Reality: `mart_population_payments` is `SELECT * FROM stg_cms_general_payments WHERE hcp_id IN (target_hcps)` — raw payment rows. Rewrite uses inner subquery to compute per-HCP yearly totals, then aggregates across HCPs by `physician_specialty`.
+- Restoration revealed real industry data. Pre-fix outputs were Nova-only (fallback path):
+  - EPS full mean: 12.40 → 28.61
+  - HCPs with SOW: 0 → 73,409
+  - Population avg spend: $195.06 → $4,386.33
+  - `engagement_priority_score` was capped at ~70pts in fallback, now reaches up to 92pts (full 100pt range)
+
+**S3 architecture (current state)**
+
+`s3://compliance-risk-investigator/` — single bucket, `us-east-1`
+- `raw/cms_open_payments/` — source CMS data, referenced by Glue table `cms_open_payments` (CSV)
+- `synthetic/` — generated synthetic interactions, speaker programs, attendees
+- `athena-results/tables/compliance_risk_raw/mart_*/\<UUID\>/` — dbt-materialized parquet tables (548 MB across 4 mart tables). Glue Catalog Location URIs point at these. **DO NOT rename or move** — would break all Glue tables.
+- `athena-query-output/` — Athena query result CSVs (transient, configured as primary workgroup default location)
+
+**Code architecture (current state)**
+
+- AWS region: env var `AWS_DEFAULT_REGION` (Python boto3) and `AWS_REGION` (some other SDKs), default `us-east-1`
+- Athena database: env var `ATHENA_DATABASE`, default `compliance_risk_raw`
+- Athena S3 query output: env var `ATHENA_S3_BUCKET`, default `s3://compliance-risk-investigator/athena-query-output/`
+- Athena S3 staging dir (for pyathena): env var `ATHENA_S3_STAGING_DIR`, same default
+- Two file locations for AWS keys: `docker/.env` (containers) + `~/.aws/credentials` (host CLI). See "Credential Rotation Procedure" section.
+
+**Test infrastructure changes**
+
+- `tests/test_api.py::test_benchmarks_peer_count_is_97011` renamed to `test_benchmarks_peer_count_is_specialty_scoped`. Old test asserted full population peer count (97,011); new test asserts specialty-scoped subset (correct post-Athena-fix behavior).
+- Added `pytest>=8.0.0,<10.0.0` and `pytest-asyncio>=0.23.0,<2.0.0` to `docker/requirements-api.txt` so tests can run inside the API container with the OpenAI key already in env (no host shell key juggling).
+
+**Side note on stale artifacts**
+
+Any model artifacts (pickled models, MLflow runs) trained against the OLD `competitor_benchmarks.parquet` and `population_benchmarks.parquet` files (pre-fix degraded values) are now technically stale. See backlog item "Stale artifact audit (post-Athena fix)" for follow-up.
 
 ---
 
@@ -424,8 +527,8 @@ What went wrong and what was learned:
 
 8. **`industry_benchmarks.py` Athena connection issues (cascading):**
    - First: `awswrangler` not installed → `pip install awswrangler`
-   - Second: bucket `compliance-athena-results` doesn't exist AND name is taken globally
-   - Third: existing `compliance-risk-investigator` bucket is in us-east-1, Athena in us-east-2
+   - Second: bucket `compliance-athena-results` doesn't exist AND name is taken globally. NOTE (April 21, 2026): Resolved — the compliance-athena-results bucket is owned by another AWS account globally and was never needed. See commits `160feb9` + `fa2e924` for the fix. Real architecture uses `s3://compliance-risk-investigator/athena-query-output/` for query results.
+   - Third: existing `compliance-risk-investigator` bucket is in us-east-1, Athena in us-east-2 — NOTE (April 21, 2026): the us-east-2 claim was wrong. Athena workgroup is in us-east-1. The misleading observation came from local AWS CLI being configured for us-east-2. Fixed in commit `160feb9` with `aws configure set region us-east-1`.
    - Resolution: accepted local fallback (SOW=NaN, EPS capped ~45-70pts), deferred permanent fix to Phase 5
 
 9. **API `/hcps` endpoint missing `primary_rep_id` in response.** Ultimate root cause: **Docker image was stale.** Local code had `primary_rep_id` in the `cols` list (line 57 of `api/routers/hcps.py`), but the Docker image was built before that change. `docker compose restart` and `--force-recreate` alone don't pick up code changes — they reuse the existing image. **Fix:** `docker compose build api && docker compose up -d --force-recreate api`.
