@@ -334,61 +334,74 @@ OpenAI key only lives in **ONE place**: `docker/.env` — used by Docker contain
   - Decision after investigation:
     - If documented design choices: add a clear "synthetic data limitations" note to README and Medium article, no code changes needed.
     - If unintended: scope a synthetic data v2 redesign as a separate Phase 5 item (NOT a today fix — would cascade through every downstream artifact).
-- [ ] **Fix: aggregate synthetic speaker fees into spend totals** (Option A chosen, ~1-2 hrs, investigation completed April 21 2026)
+- [ ] **Fix: synthetic speaker generator bypasses CMS reconciliation invariant for priority speakers** (decision needed tomorrow, investigation completed April 21 2026)
 
-   **Background — the finding:**
+   **The design intent (confirmed):**
 
-   Traced HCP_357811 end-to-end through the synthetic data pipeline and found a real inconsistency:
+   CMS Open Payments data provides the per-HCP-per-year total dollar amount as ground truth (regulatory source of truth). The synthetic generator's role is to split that CMS total across multiple internal event types (interactions, speaker events, meals, consulting) — so the SUM of synthetic event dollars should equal the CMS total for each HCP per year (reconciliation invariant). Internal events don't invent new money; they show WHERE the CMS dollars went.
 
-   - HCP_357811 has `fmv_tier = 'regional'` → qualifies as `is_priority_speaker = True` per synthetic_generator.py line 689
-   - Real Takeda CMS totals: 2022=$0, 2023=$17.60, 2024=$0 (total $17.60 across 3 years)
-   - Because they're priority, the generator bypasses the `< 500` CMS guard and generates 7 speaker events totaling ~$16,785 in speaker fees
-   - These synthetic speaker fees are NOT aggregated into `cms_total_*` columns in `hcp_master.parquet`
-   - These synthetic speaker fees are NOT aggregated into `hcp_spend_raw_dollars.parquet` used by downstream features
-   - Result: feature_store shows $17.60 spend when synthetic data actually has ~$14K in 2023 speaker events
+   **The bug:**
 
-   **Chosen fix: Option A — include synthetic speaker fees in spend aggregation.**
+   `generate_speaker_events()` at `pipelines/ingest/synthetic_generator.py` line 689 creates a `is_priority_speaker = True` branch for HCPs with `fmv_tier in ('regional', 'national')` OR `is_kol=True`. For these HCPs, the speaker fee generation bypasses the CMS-share cap (lines 710-712):
 
-   Rationale: compliance investigators treat all transfers of value to an HCP (CMS-reported + internal speaker programs) as unified "spend." Keeping them separate makes the project story more confusing and obscures the real signal.
+   ```python
+   if cms_total_yr >= 500:
+       max_fee_per_event = max(50.0, cms_total_yr * 0.40 / n_events)
+   else:
+       max_fee_per_event = float("inf")  # FMV rate card is only ceiling
+   ```
 
-   **Implementation plan for tomorrow:**
+   So priority speakers with low CMS totals generate speaker events at full FMV rate card values ($2,000-$10,000 per event) that can't plausibly reconcile with the HCP's real CMS total.
 
-   Step 1. Locate the downstream spend aggregation code
-   - `pipelines/ingest/compute_tov_athena.py` — produces hcp_tov_summary.parquet
-   - `features/hcp_spend_features.py` — transforms into hcp_spend_feature_matrix + hcp_spend_raw_dollars.parquet
-   - Determine which file aggregates spend by year
+   **Scale of the problem (investigated April 21, 2026):**
 
-   Step 2. Add speaker_fee aggregation
-   - Join `speaker_program_events.parquet` on `speaker_hcp_id`
-   - Sum `speaker_fee` by `hcp_id` × `program_year`
-   - Add to existing CMS total per HCP per year
+   - Total speaker events in dataset: 5,241
+   - Events where `speaker_fee > 40%` of CMS total (violates reconciliation): 5,182 (98.9%)
+   - Events for HCPs with $0 CMS total in that year: 2,418 (46%)
+   - Events where CMS total < $500: 5,179 (98.8%)
+   - Events where CMS total $500–$3,000: 19 (0.4%)
+   - Events where CMS total >= $3,000: 43 (0.8%)
 
-   Step 3. Regenerate the cascade
-   - `hcp_spend_raw_dollars.parquet` (run hcp_spend_features.py)
-   - `competitor_benchmarks.parquet` + `population_benchmarks.parquet` (run industry_benchmarks.py)
-   - `feature_store.parquet` + `feature_store_raw.parquet` + `ground_truth_labels.parquet` (run feature_store.py)
+   This is not a minor edge case — the priority speaker branch is where the vast majority of speaker events come from.
 
-   Step 4. Verify
-   - HCP_357811's `spend_2023` should now show ~$14K (was $17.60)
-   - Population EPS/spend distributions may shift
-   - Re-run test suite: fixtures may need updating
+   **Key real-world context:**
 
-   Step 5. MLflow
-   - Wipe mlflow.db, restart container, re-run all 3 agents to populate fresh runs
+   In real pharma compliance, a $15K speaker fee MUST be reported to CMS by federal law. An HCP with $17.60 in CMS but $15K in internal speaker fees would be a serious under-reporting violation triggering OIG investigation. The synthetic data cannot contain this scenario without breaking its own design premise.
 
-   Step 6. Commit + push
+   **Three design options to decide tomorrow:**
 
-   **Expected side effects (acceptable):**
-   - Risk score distributions shift; some HCPs move between tiers
-   - Test fixture KNOWN_CRITICAL_ID may or may not still be HCP_357811
-   - Population benchmarks will have different means/percentiles
-   - Medium article narrative shifts from "low-spend process violator" to "high-activity speaker with documentation violations" (still a valid compliance narrative)
+   Option Y (pure) — Apply CMS-share cap to everyone, remove priority branch
+   - Result: 62 speaker events remain (from 5,241)
+   - Pros: Strictly respects reconciliation invariant; realistic
+   - Cons: 62 events is too few for a meaningful compliance risk model across 97,011 HCPs; destroys the speaker-program compliance angle of the project
+   - Honest assessment: Too destructive to use as-is
 
-   **Key code locations (from today's investigation):**
-   - Priority speaker logic: `synthetic_generator.py` line 689
-   - Fee cap branching: lines 704-712
+   Option Y (modified) — Expand CMS source filter to include more Takeda payments
+   - Result: Depends on filter expansion; could restore reasonable event volume
+   - How: Review `TARGET_FILTER = "takeda"` in `synthetic_generator.py` and the CMS filter logic (`load_cms_hcp_totals`). Currently may filter too narrowly. Widening criteria (include subsidiaries, drug name matches, etc.) could increase per-HCP CMS totals and make priority speaker scenarios realistic.
+   - Pros: Preserves both realism AND event volume; aligns with how real pharma subsidiaries get aggregated in CMS analysis
+   - Cons: Requires re-running expensive CMS ingestion pipeline; behavior change affects all downstream data
+
+   Option Z (hybrid) — Keep the priority speaker branch but synthetically augment CMS totals to match
+   - Result: 5,241 events preserved; CMS totals artificially inflated for priority speakers
+   - Pros: Minimal data loss; preserves current dataset shape
+   - Cons: Explicitly breaks the "CMS data is real Takeda data" property; must be clearly documented as synthetic augmentation everywhere
+   - Honest assessment: Feels like papering over the real issue
+
+   **What the decision depends on (to think about tomorrow):**
+
+   - Is the project's compliance risk story stronger with "realistic synthetic data that's tiny" or "data-volume that's acknowledged-synthetic"? Depends on how the Medium article frames the work.
+   - Would expanding CMS filter (Option Y modified) produce enough plausible priority-speaker HCPs?
+   - What does the test suite assume about event counts? Some fixtures may break.
+
+   **Key code locations:**
+   - Priority speaker branching: `pipelines/ingest/synthetic_generator.py` line 689
+   - Fee cap logic: lines 704-712
    - Speaker fee assignment: line 745
-   - Speaker events file: `s3://compliance-risk-investigator/synthetic/speaker_programs/speaker_program_events.parquet`
+   - CMS source filter: line 50 (`TARGET_FILTER = "takeda"`)
+   - `load_cms_hcp_totals()` function: line 193
+
+   Not decided today; picking tomorrow with fresh judgment.
 
 #### Resolved by Design
 - **Streamlit container workflow trade-off (resolved by design — no action needed)**
