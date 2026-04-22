@@ -77,6 +77,9 @@ def extract_tov(profile: dict) -> dict:
         "nova_consulting_2022":    profile.get("nova_consulting_2022", 0) or 0,
         "nova_consulting_2023":    profile.get("nova_consulting_2023", 0) or 0,
         "nova_consulting_2024":    profile.get("nova_consulting_2024", 0) or 0,
+        "nova_travel_2022":        profile.get("nova_travel_2022", 0) or 0,
+        "nova_travel_2023":        profile.get("nova_travel_2023", 0) or 0,
+        "nova_travel_2024":        profile.get("nova_travel_2024", 0) or 0,
         "total_tov_2022":          profile.get("total_tov_all_companies_2022", 0) or 0,
         "total_tov_2023":          profile.get("total_tov_all_companies_2023", 0) or 0,
         "total_tov_2024":          profile.get("total_tov_all_companies_2024", 0) or 0,
@@ -527,11 +530,13 @@ with col_tov:
             food_all      = [spend["nova_food_beverage_2022"], spend["nova_food_beverage_2023"], spend["nova_food_beverage_2024"]]
             speaking_all  = [spend["nova_speaking_fee_2022"],  spend["nova_speaking_fee_2023"],  spend["nova_speaking_fee_2024"]]
             consulting_all= [spend["nova_consulting_2022"],    spend["nova_consulting_2023"],    spend["nova_consulting_2024"]]
+            travel_all    = [spend["nova_travel_2022"],        spend["nova_travel_2023"],        spend["nova_travel_2024"]]
             other_all     = [max(0, spend[f"total_tov_{y}"] - spend[f"nova_tov_{y}"]) for y in ["2022","2023","2024"]]
 
             food       = [v for v, m in zip(food_all,       active_mask) if m]
             speaking   = [v for v, m in zip(speaking_all,   active_mask) if m]
             consulting = [v for v, m in zip(consulting_all, active_mask) if m]
+            travel     = [v for v, m in zip(travel_all,     active_mask) if m]
             other      = [v for v, m in zip(other_all,      active_mask) if m]
             totals     = [v for v, m in zip(all_totals,     active_mask) if m]
 
@@ -555,6 +560,12 @@ with col_tov:
                 textposition="inside", textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
             ))
             fig_spend.add_trace(go.Bar(
+                x=active_years, y=travel,
+                name="Nova Travel", marker_color="#059669",
+                text=[f"${v:,.0f}" if v > 0 else "" for v in travel],
+                textposition="inside", textfont=dict(size=11, color="#ffffff", family="Arial Bold"),
+            ))
+            fig_spend.add_trace(go.Bar(
                 x=active_years, y=other,
                 name="Other Companies", marker_color="rgba(148,163,184,0.6)",
                 text=[f"${v:,.0f}" if v > 0 else "" for v in other],
@@ -573,14 +584,14 @@ with col_tov:
                     xanchor="center",
                     x=0.5,
                     bgcolor="rgba(0,0,0,0)",
-                    font=dict(size=12, color="white"),
+                    font=dict(size=12, color="#374151"),
                 ),
                 xaxis=dict(
-                    tickfont=dict(size=14, color="white", family="Arial Bold"),
+                    tickfont=dict(size=14, color="#374151", family="Arial Bold"),
                     showgrid=False,
                 ),
                 yaxis=dict(
-                    tickfont=dict(size=13, color="white"),
+                    tickfont=dict(size=13, color="#374151"),
                     tickprefix="$",
                     gridcolor="rgba(0,0,0,0.08)",
                     showgrid=True,
@@ -593,7 +604,7 @@ with col_tov:
                         showarrow=False,
                         yanchor="bottom",
                         yshift=6,
-                        font=dict(size=13, color="white", family="Arial Bold"),
+                        font=dict(size=13, color="#374151", family="Arial Bold"),
                     )
                     for year, total in zip(active_years, totals)
                 ],
