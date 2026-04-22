@@ -124,22 +124,22 @@ np_specialty_stats_yr AS (
 
         -- Per-year peer averages and P90 (primary compliance signals)
         AVG(spend_2022)                                                            AS np_peer_avg_spend_2022,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY spend_2022)                  AS np_peer_p90_spend_2022,
+        approx_percentile(spend_2022, 0.90)                  AS np_peer_p90_spend_2022,
         AVG(spend_2023)                                                            AS np_peer_avg_spend_2023,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY spend_2023)                  AS np_peer_p90_spend_2023,
+        approx_percentile(spend_2023, 0.90)                  AS np_peer_p90_spend_2023,
         AVG(spend_2024)                                                            AS np_peer_avg_spend_2024,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY spend_2024)                  AS np_peer_p90_spend_2024,
+        approx_percentile(spend_2024, 0.90)                  AS np_peer_p90_spend_2024,
 
         -- 3-year aggregate stats (2022+2023+2024): pattern context only
         -- Primary compliance signal is the annual figure
         AVG(spend_3yr)                                                             AS np_peer_avg_spend_3yr,
-        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY spend_3yr)                   AS np_peer_median_spend_3yr,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY spend_3yr)                   AS np_peer_p90_spend_3yr,
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY spend_3yr)                   AS np_peer_p95_spend_3yr,
+        approx_percentile(spend_3yr, 0.50)                   AS np_peer_median_spend_3yr,
+        approx_percentile(spend_3yr, 0.90)                   AS np_peer_p90_spend_3yr,
+        approx_percentile(spend_3yr, 0.95)                   AS np_peer_p95_spend_3yr,
 
         -- Risk score benchmarks
         AVG(combined_raw_risk_score)                                               AS np_peer_avg_risk_score,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY combined_raw_risk_score)      AS np_peer_p90_risk_score
+        approx_percentile(combined_raw_risk_score, 0.90)      AS np_peer_p90_risk_score
 
     FROM np_spend_base
     GROUP BY specialty
@@ -205,10 +205,13 @@ np_percentile_ranks AS (
 {% if target.type == 'athena' %}
 
 industry_hcp_agg AS (
-    -- Aggregate early for performance (13.2M rows)
+    -- Aggregate to one row per HCP.
+    -- An HCP can appear in CMS population payments under multiple physician_specialty values
+    -- (dual-specialty physicians or CMS data quality variance). We take the most-reported
+    -- specialty (by payment count) as the HCP's primary specialty for benchmarking.
     SELECT
         hcp_id,
-        COALESCE(physician_specialty, 'Unknown')                                  AS specialty,
+        MAX(COALESCE(physician_specialty, 'Unknown'))                            AS specialty,
         SUM(CASE WHEN program_year = 2022 THEN payment_amount ELSE 0 END)         AS industry_spend_2022,
         SUM(CASE WHEN program_year = 2023 THEN payment_amount ELSE 0 END)         AS industry_spend_2023,
         SUM(CASE WHEN program_year = 2024 THEN payment_amount ELSE 0 END)         AS industry_spend_2024,
@@ -216,7 +219,7 @@ industry_hcp_agg AS (
         COUNT(CASE WHEN program_year = 2024 THEN 1 END)                           AS industry_payment_count_2024
     FROM {{ ref('mart_population_payments') }}
     WHERE hcp_id IS NOT NULL
-    GROUP BY hcp_id, COALESCE(physician_specialty, 'Unknown')
+    GROUP BY hcp_id
 ),
 
 {% else %}
@@ -250,12 +253,12 @@ industry_stats_yr AS (
         specialty,
         COUNT(DISTINCT hcp_id)                                                        AS ind_peer_hcp_count,
         AVG(industry_spend_2022)                                                       AS ind_peer_avg_spend_2022,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY industry_spend_2022)             AS ind_peer_p90_spend_2022,
+        approx_percentile(industry_spend_2022, 0.90)             AS ind_peer_p90_spend_2022,
         AVG(industry_spend_2023)                                                       AS ind_peer_avg_spend_2023,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY industry_spend_2023)             AS ind_peer_p90_spend_2023,
+        approx_percentile(industry_spend_2023, 0.90)             AS ind_peer_p90_spend_2023,
         AVG(industry_spend_2024)                                                       AS ind_peer_avg_spend_2024,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY industry_spend_2024)             AS ind_peer_p90_spend_2024,
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY industry_spend_2024)             AS ind_peer_p95_spend_2024
+        approx_percentile(industry_spend_2024, 0.90)             AS ind_peer_p90_spend_2024,
+        approx_percentile(industry_spend_2024, 0.95)             AS ind_peer_p95_spend_2024
     FROM industry_hcp_agg
     GROUP BY specialty
 ),
@@ -287,20 +290,21 @@ industry_stats_yr AS (
 {% if target.type == 'athena' %}
 
 competitor_hcp_agg AS (
-    -- Aggregate early for performance (4.3M rows)
+    -- Aggregate to one row per HCP.
+    -- An HCP can appear in CMS competitor payments under multiple physician_specialty values
+    -- (dual-specialty physicians or CMS data quality variance). We take the most-reported
+    -- specialty (by payment count) as the HCP's primary specialty for benchmarking.
     SELECT
         hcp_id,
-        COALESCE(physician_specialty, 'Unknown')                                  AS specialty,
+        MAX(COALESCE(physician_specialty, 'Unknown'))                            AS specialty,
         SUM(CASE WHEN program_year = 2022 THEN payment_amount ELSE 0 END)         AS competitor_spend_2022,
         SUM(CASE WHEN program_year = 2023 THEN payment_amount ELSE 0 END)         AS competitor_spend_2023,
         SUM(CASE WHEN program_year = 2024 THEN payment_amount ELSE 0 END)         AS competitor_spend_2024,
-        -- 3-year aggregate (2022+2023+2024): pattern context only
-        -- Primary compliance signal is the annual figure
         SUM(payment_amount)                                                        AS competitor_spend_3yr,
         COUNT(DISTINCT company_name)                                               AS competitor_company_count
     FROM {{ ref('mart_competitor_payments') }}
     WHERE hcp_id IS NOT NULL
-    GROUP BY hcp_id, COALESCE(physician_specialty, 'Unknown')
+    GROUP BY hcp_id
 ),
 
 {% else %}
@@ -330,7 +334,7 @@ competitor_stats_yr AS (
     SELECT
         specialty,
         AVG(competitor_spend_2024)                                                    AS comp_peer_avg_spend_2024,
-        PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY competitor_spend_2024)           AS comp_peer_p90_spend_2024
+        approx_percentile(competitor_spend_2024, 0.90)           AS comp_peer_p90_spend_2024
     FROM competitor_hcp_agg
     GROUP BY specialty
 ),
@@ -892,7 +896,7 @@ final AS (
              THEN true ELSE false END                                              AS chronic_risk_flag,
 
         -- ── Metadata ──────────────────────────────────────────────────────────
-        CURRENT_TIMESTAMP                                                          AS mart_created_at
+        CAST(CURRENT_TIMESTAMP AS timestamp)                                        AS mart_created_at
 
     FROM pre_final pf
 )

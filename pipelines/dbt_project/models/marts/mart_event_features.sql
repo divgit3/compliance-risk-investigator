@@ -86,11 +86,13 @@ speaker_window AS (
 
         -- Days since this speaker's previous event (NULL for first event per year)
         -- SPEAKER_005: rapid repeat if < 30 days
-        CAST(event_date AS DATE)
-            - LAG(CAST(event_date AS DATE)) OVER (
+        date_diff('day',
+            LAG(CAST(event_date AS DATE)) OVER (
                 PARTITION BY speaker_hcp_id, event_year
                 ORDER BY event_date ASC
-            )                                                       AS days_since_last_event_same_speaker
+            ),
+            CAST(event_date AS DATE)
+        )                                                           AS days_since_last_event_same_speaker
 
     FROM events_base
 ),
@@ -228,7 +230,7 @@ final AS (
         )                                                           AS raw_event_risk_score,
 
         -- ── Metadata ──────────────────────────────────────────────────────────
-        CURRENT_TIMESTAMP                                           AS mart_created_at
+        CAST(CURRENT_TIMESTAMP AS timestamp)                         AS mart_created_at
 
     FROM events_base e
     LEFT JOIN cost_features  cf ON e.event_id = cf.event_id

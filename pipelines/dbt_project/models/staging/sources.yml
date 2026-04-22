@@ -42,3 +42,14 @@ sources:
           Partitioned Parquet table in Glue — crawled from
           s3://compliance-risk-investigator/raw/cms_open_payments/.
           Partition columns: year subfolders (2022, 2023, 2024).
+
+  - name: athena_synthetic
+    description: Synthetic NovaPharma data in Glue catalog for Athena target.
+    database: awsdatacatalog
+    schema: compliance_risk_raw
+    tables:
+      - name: hcp_interactions
+      - name: speaker_program_events
+      - name: speaker_program_attendees
+      - name: hcp_master
+        description: Synthetic HCP master with specialty, state, fmv_tier, profile.

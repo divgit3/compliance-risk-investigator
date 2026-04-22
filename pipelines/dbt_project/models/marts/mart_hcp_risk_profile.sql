@@ -36,47 +36,22 @@
 
 -- ── Step 1: HCP spine (target-conditional) ───────────────────────────────────
 
-{% if target.type == 'athena' %}
 
 WITH hcp_spine AS (
-    -- Athena: spine from mart_hcp_spend_features (97,011 CMS-known HCPs)
+    -- Full 97K HCP spine sourced from hcp_master.
+    -- Fields: specialty, state, practice_city, is_kol from master.
     SELECT
-        hcp_id,
-        CAST(NULL AS VARCHAR) AS practice_city,
-        CAST(NULL AS VARCHAR) AS state,
-        CAST(NULL AS VARCHAR) AS specialty,
-        false                 AS is_kol
-    FROM {{ ref('mart_hcp_spend_features') }}
+        m.hcp_id,
+        m.practice_city                     AS practice_city,
+        COALESCE(m.state, 'Unknown')        AS state,
+        COALESCE(m.specialty, 'Unknown')    AS specialty,
+        COALESCE(m.is_kol, false)           AS is_kol
+    FROM {{ ref('stg_synthetic_hcp_master') }} m
 ),
 
-{% else %}
-
-WITH hcp_spine AS (
-    -- DuckDB: full 97K HCP spine from synthetic interaction records
-    -- Aggregates to one row per HCP, taking the most frequent city/state/specialty
-    SELECT
-        hcp_id,
-        -- Use MODE (most frequent value) approximated via ARG_MAX on count
-        -- practice_city: taken from the most common practice_id seen for this HCP
-        MAX(practice_city)     AS practice_city,
-        MAX(interaction_state) AS state,
-        CAST(NULL AS VARCHAR)  AS specialty,    -- not in interaction records
-        false                  AS is_kol        -- not in interaction records
-    FROM {{ ref('mart_hcp_interactions_features') }}
-    GROUP BY hcp_id
-),
-
-{% endif %}
 
 -- ── Step 2: CMS spend signals (target-conditional) ───────────────────────────
 
-{% if target.type == 'athena' %}
-
-spend_features AS (
-    SELECT * FROM {{ ref('mart_hcp_spend_features') }}
-),
-
-{% else %}
 
 spend_features AS (
     -- DuckDB: CMS spend features unavailable — 0-filled
@@ -114,30 +89,9 @@ spend_features AS (
     FROM hcp_spine
 ),
 
-{% endif %}
 
 -- ── Step 3: Event signals aggregated to HCP level (DuckDB only) ──────────────
 
-{% if target.type == 'athena' %}
-
-event_agg AS (
-    -- Athena: speaker event features unavailable — 0-filled
-    -- Populated on DuckDB target only (synthetic data not in Glue)
-    SELECT
-        hcp_id,
-        CAST(0    AS BIGINT) AS total_events_as_speaker,
-        CAST(0.0  AS DOUBLE) AS avg_event_risk_score,
-        CAST(0.0  AS DOUBLE) AS max_event_risk_score,
-        CAST(0    AS BIGINT) AS events_with_low_attendance,
-        CAST(0    AS BIGINT) AS events_over_fmv,
-        CAST(0    AS BIGINT) AS events_missing_attestation,
-        CAST(0    AS BIGINT) AS events_rapid_repeat,
-        CAST(0.0  AS DOUBLE) AS total_speaker_fees_events,
-        CAST(0.0  AS DOUBLE) AS pct_events_over_fmv
-    FROM hcp_spine
-),
-
-{% else %}
 
 event_agg AS (
     -- Aggregate mart_event_features (event level) to HCP level as speaker
@@ -167,28 +121,9 @@ event_agg AS (
     GROUP BY speaker_hcp_id
 ),
 
-{% endif %}
 
 -- ── Step 4: Interaction signals aggregated to HCP level (DuckDB only) ─────────
 
-{% if target.type == 'athena' %}
-
-interaction_features AS (
-    -- Athena: interaction features unavailable — 0-filled
-    -- Populated on DuckDB target only (synthetic data not in Glue)
-    SELECT
-        hcp_id,
-        CAST(0   AS BIGINT) AS total_interactions,
-        CAST(0   AS BIGINT) AS total_meals,
-        CAST(0.0 AS DOUBLE) AS avg_meal_cost,
-        CAST(0   AS BIGINT) AS interactions_with_vague_rationale,
-        CAST(0.0 AS DOUBLE) AS fmv_compliance_rate,
-        CAST(0   AS BIGINT) AS unique_reps_interacted,
-        CAST(0.0 AS DOUBLE) AS interaction_frequency_score
-    FROM hcp_spine
-),
-
-{% else %}
 
 interaction_features AS (
     -- Aggregate mart_hcp_interactions_features (interaction level) to HCP level
@@ -237,22 +172,9 @@ interaction_features AS (
     GROUP BY hcp_id
 ),
 
-{% endif %}
 
 -- ── Step 5: Ground truth aggregated to HCP level (DuckDB only) ────────────────
 
-{% if target.type == 'athena' %}
-
-ground_truth_agg AS (
-    -- Athena: ground truth unavailable — 0-filled
-    SELECT
-        hcp_id,
-        CAST(0         AS BIGINT)  AS ground_truth_violation_count,
-        CAST('none'    AS VARCHAR) AS ground_truth_max_severity
-    FROM hcp_spine
-),
-
-{% else %}
 
 ground_truth_agg AS (
     -- Aggregate violation ground truth to HCP level
@@ -281,7 +203,6 @@ ground_truth_agg AS (
     GROUP BY hcp_id
 ),
 
-{% endif %}
 
 -- ── Step 6: Final — join all CTEs, compute combined scores ───────────────────
 
@@ -417,7 +338,7 @@ final AS (
         COALESCE(g.ground_truth_max_severity, 'none')       AS ground_truth_max_severity,
 
         -- ── Metadata ──────────────────────────────────────────────────────────
-        CURRENT_TIMESTAMP                                   AS mart_created_at
+        CAST(CURRENT_TIMESTAMP AS timestamp)                 AS mart_created_at
 
     FROM hcp_spine sp
     LEFT JOIN spend_features       s  ON sp.hcp_id = s.hcp_id
