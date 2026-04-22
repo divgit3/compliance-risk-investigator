@@ -36,6 +36,15 @@ from dotenv import load_dotenv
 from faker import Faker
 from loguru import logger
 
+from pipelines.business_rules_registry import get_rule
+
+try:
+    import awswrangler as wr
+    _WR_AVAILABLE = True
+except ImportError:
+    wr = None  # type: ignore[assignment]
+    _WR_AVAILABLE = False
+
 load_dotenv()
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
@@ -95,6 +104,10 @@ CMS_S3_KEYS = {
 # Delete this file to force a full refresh from S3.
 CMS_TOTALS_CACHE = "data/processed/cms_hcp_totals_cache.parquet"
 
+# Local cache for Athena-queried CMS speaker fee totals (v2 generator).
+# Populated by load_cms_speaker_totals() on first v2 run.
+CMS_SPEAKER_TOTALS_CACHE = "data/processed/cms_speaker_totals_cache.parquet"
+
 ANNUAL_COMPENSATION_CAP = 75_000
 RECONCILIATION_TOLERANCE = 0.05
 
@@ -126,7 +139,11 @@ SPECIALTY_DISTRIBUTION = {
 
 MEAL_TYPES = ["breakfast", "lunch", "dinner"]
 MEAL_TYPE_DISTRIBUTION = {"breakfast": 0.10, "lunch": 0.70, "dinner": 0.20}
-MEAL_LIMITS = {"breakfast": 30, "lunch": 75, "dinner": 125}
+MEAL_LIMITS = {
+    "breakfast": int(get_rule("MEAL_001")["effective_threshold"]),
+    "lunch":     int(get_rule("MEAL_002")["effective_threshold"]),
+    "dinner":    int(get_rule("MEAL_003")["effective_threshold"]),
+}
 
 INTERACTION_TYPE_WEIGHTS = {
     "meal":           0.40,
@@ -182,6 +199,87 @@ VENUE_DISTRIBUTIONS = {
     "serious":  {"restaurant": 0.50, "entertainment_venue": 0.30, "luxury_resort": 0.20},
 }
 
+# ── V2 Interactions Algorithm Constants ──────────────────────────────────────
+# Category totals below this threshold are too small to generate a meaningful
+# interaction record without inventing implausible micro-payments.
+MIN_PLAUSIBLE_CATEGORY_CMS = 10
+
+# Target dollars per event by interaction type (used to derive n_events).
+PER_EVENT_TARGETS_BY_CATEGORY = {
+    "meal":       50,
+    "consulting": 500,
+    "education":  200,
+    "travel":     300,
+}
+
+# Dirichlet concentration by compliance profile (shared with speaker v2 intent).
+INTERACTION_ALPHA_BY_PROFILE = {
+    "clean":    2.0,
+    "minor":    1.5,
+    "moderate": 1.0,
+    "serious":  0.6,
+}
+
+# Hard cap on events per category per HCP per year.
+MAX_EVENTS_BY_CATEGORY = {
+    "meal":       30,
+    "consulting": 20,
+    "education":  20,
+    "travel":     20,
+}
+
+# CMS nature_of_payment values → internal interaction_type (full mapping, used by v1)
+CMS_TO_INTERACTION_TYPE = {
+    "Food and Beverage":  "meal",
+    "Consulting Fee":     "consulting",
+    "Education":          "education",
+    "Travel and Lodging": "travel",
+}
+
+# V2 interactions: meals and travel are handled by allocate_meals_and_travel, not here
+CMS_TO_INTERACTION_TYPE_V2 = {
+    "Consulting Fee": "consulting",
+    "Education":      "education",
+}
+
+# US state abbreviations used to assign remote venue_state for travel events
+_US_STATE_ABBRS = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+]
+
+# Local cache for Athena-queried CMS per-category totals (v2 interactions generator).
+CMS_CATEGORY_TOTALS_CACHE = "data/processed/cms_category_totals_cache.parquet"
+
+# ── V2 Speaker Algorithm Constants ────────────────────────────────────────────
+# CMS speaker totals below this threshold are too small to plausibly represent
+# a real speaker engagement (the HCP would have been grossly under-reported).
+MIN_PLAUSIBLE_SPEAKER_CMS  = 1_000
+
+# Target dollars per speaker event when deriving n_events from the CMS total.
+REALISTIC_PER_EVENT_TARGET = 2_000
+
+# Hard cap on events per HCP per year (prevents extreme fragmentation for very
+# high-CMS HCPs and keeps total_program_cost per event realistic).
+MAX_PLAUSIBLE_EVENTS       = 24
+
+# Dirichlet concentration parameter by compliance profile.
+# Higher alpha → more uniform fee splits (clean speakers get consistent fees).
+# Lower alpha → more concentrated splits (serious speakers have one dominant event).
+SPEAKER_ALPHA_BY_PROFILE = {
+    "clean":    2.0,
+    "minor":    1.5,
+    "moderate": 1.0,
+    "serious":  0.6,
+}
+
+# Repeat-speaker threshold from business rules registry (SPEAKER_002 = 6 events/year).
+# Used to set the repeat_speaker flag on generated events.
+REPEAT_SPEAKER_THRESHOLD = int(get_rule("SPEAKER_002")["effective_threshold"])
+
 # ── AWS client ────────────────────────────────────────────────────────────────
 s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
 
@@ -227,6 +325,7 @@ def _severity_from_types(violation_types: list[str]) -> str:
     MEDIUM = {
         "MEAL_COST_EXCESSIVE", "REPEAT_PROGRAM_ATTENDANCE", "LOW_ATTENDEE_COUNT",
         "ALCOHOL_PROVIDED", "RAPID_INTERACTION_PATTERN", "REPEAT_SAME_TOPIC_PROGRAMS",
+        "SPEAKER_RAPID_REPEAT",
     }
     if not violation_types:
         return "none"
@@ -375,6 +474,77 @@ def load_cms_hcp_totals() -> pd.DataFrame:
     logger.info(f"Cache saved to {CMS_TOTALS_CACHE}")
     logger.info(f"HCP universe: {len(totals):,} unique HCPs")
     return totals
+
+
+# ── Step 1b: Load CMS speaker fee totals (v2) ─────────────────────────────────
+
+def load_cms_speaker_totals() -> "pd.DataFrame | None":
+    """
+    Query Athena for CMS-reported speaker fee totals per HCP per year.
+
+    Filters to Takeda payments where nature_of_payment contains 'faculty'/'speaker',
+    grouping by covered_recipient_profile_id and program_year.
+
+    Returns a DataFrame with columns:
+        covered_recipient_profile_id (str), program_year (int), speaker_total (float)
+
+    Returns None if awswrangler is unavailable or Athena is unreachable.
+    Caches result to CMS_SPEAKER_TOTALS_CACHE on success; reads cache on subsequent calls.
+    """
+    if os.path.exists(CMS_SPEAKER_TOTALS_CACHE):
+        logger.info(f"Loading CMS speaker totals from cache: {CMS_SPEAKER_TOTALS_CACHE}")
+        df = pd.read_parquet(CMS_SPEAKER_TOTALS_CACHE)
+        logger.info(f"CMS speaker totals: {len(df):,} rows (cached)")
+        return df
+
+    if not _WR_AVAILABLE:
+        logger.warning(
+            "awswrangler not installed — cannot load CMS speaker totals from Athena. "
+            "Install with: pip install awswrangler"
+        )
+        return None
+
+    athena_db     = os.environ.get("ATHENA_DATABASE",    "compliance_risk_raw")
+    athena_bucket = os.environ.get("ATHENA_S3_BUCKET",   "s3://compliance-risk-investigator/athena-query-output/")
+
+    try:
+        logger.info("Querying Athena: CMS speaker fee totals (nature_of_payment LIKE '%faculty%speaker%')")
+        df = wr.athena.read_sql_query(
+            sql="""
+                SELECT
+                    covered_recipient_profile_id,
+                    program_year,
+                    SUM(total_amount_of_payment_usdollars) AS speaker_total
+                FROM compliance_risk_raw.cms_open_payments
+                WHERE LOWER(applicable_manufacturer_or_applicable_gpo_making_payment_name)
+                          LIKE '%takeda%'
+                  AND covered_recipient_type IN (
+                          'Covered Recipient Physician',
+                          'Covered Recipient Non-Physician Practitioner'
+                      )
+                  AND covered_recipient_profile_id IS NOT NULL
+                  AND nature_of_payment_or_transfer_of_value LIKE '%faculty%speaker%'
+                GROUP BY covered_recipient_profile_id, program_year
+            """,
+            database=athena_db,
+            s3_output=athena_bucket,
+            boto3_session=None,
+        )
+        df["covered_recipient_profile_id"] = df["covered_recipient_profile_id"].astype(str)
+        df["program_year"]  = pd.to_numeric(df["program_year"],  errors="coerce").astype("Int64")
+        df["speaker_total"] = pd.to_numeric(df["speaker_total"], errors="coerce").fillna(0.0)
+
+        os.makedirs(os.path.dirname(CMS_SPEAKER_TOTALS_CACHE), exist_ok=True)
+        df.to_parquet(CMS_SPEAKER_TOTALS_CACHE, index=False)
+        logger.info(f"CMS speaker totals: {len(df):,} rows — cached to {CMS_SPEAKER_TOTALS_CACHE}")
+        return df
+
+    except Exception as exc:
+        logger.warning(
+            f"Athena speaker totals query failed: {exc} — "
+            "v2 speaker generation will return an empty DataFrame"
+        )
+        return None
 
 
 # ── Step 2: Generate HCP Master ───────────────────────────────────────────────
@@ -634,6 +804,325 @@ def generate_hcp_interactions(
     return df
 
 
+# ── Step 3b: Load CMS per-category totals + Generate Interactions v2 ──────────
+
+def load_cms_category_totals() -> "pd.DataFrame | None":
+    """
+    Query Athena for CMS payment totals broken down by nature_of_payment category
+    per HCP per year.
+
+    Filters to Takeda payments in the four categories that map to internal
+    interaction types: Food and Beverage, Consulting Fee, Education, Travel and
+    Lodging.
+
+    Returns a DataFrame with columns:
+        covered_recipient_profile_id (str), program_year (int),
+        cms_category (str), category_total (float)
+
+    Returns None if awswrangler is unavailable or Athena is unreachable.
+    Caches result to CMS_CATEGORY_TOTALS_CACHE on success.
+    """
+    if os.path.exists(CMS_CATEGORY_TOTALS_CACHE):
+        logger.info(f"Loading CMS category totals from cache: {CMS_CATEGORY_TOTALS_CACHE}")
+        df = pd.read_parquet(CMS_CATEGORY_TOTALS_CACHE)
+        logger.info(f"CMS category totals: {len(df):,} rows (cached)")
+        return df
+
+    if not _WR_AVAILABLE:
+        logger.warning(
+            "awswrangler not installed — cannot load CMS category totals from Athena. "
+            "Install with: pip install awswrangler"
+        )
+        return None
+
+    athena_db     = os.environ.get("ATHENA_DATABASE",    "compliance_risk_raw")
+    athena_bucket = os.environ.get("ATHENA_S3_BUCKET",   "s3://compliance-risk-investigator/athena-query-output/")
+
+    try:
+        logger.info("Querying Athena: CMS per-category totals (Food/Consulting/Education/Travel)")
+        df = wr.athena.read_sql_query(
+            sql="""
+                SELECT
+                    CAST(covered_recipient_profile_id AS VARCHAR) AS covered_recipient_profile_id,
+                    program_year,
+                    nature_of_payment_or_transfer_of_value AS cms_category,
+                    SUM(total_amount_of_payment_usdollars) AS category_total
+                FROM compliance_risk_raw.cms_open_payments
+                WHERE LOWER(applicable_manufacturer_or_applicable_gpo_making_payment_name)
+                          LIKE '%takeda%'
+                  AND covered_recipient_type IN (
+                          'Covered Recipient Physician',
+                          'Covered Recipient Non-Physician Practitioner'
+                      )
+                  AND covered_recipient_profile_id IS NOT NULL
+                  AND nature_of_payment_or_transfer_of_value IN (
+                          'Food and Beverage',
+                          'Consulting Fee',
+                          'Education',
+                          'Travel and Lodging'
+                      )
+                GROUP BY covered_recipient_profile_id, program_year,
+                         nature_of_payment_or_transfer_of_value
+            """,
+            database=athena_db,
+            s3_output=athena_bucket,
+            boto3_session=None,
+        )
+        df["covered_recipient_profile_id"] = df["covered_recipient_profile_id"].astype(str)
+        df["program_year"]    = pd.to_numeric(df["program_year"],    errors="coerce").astype("Int64")
+        df["category_total"]  = pd.to_numeric(df["category_total"],  errors="coerce").fillna(0.0)
+
+        os.makedirs(os.path.dirname(CMS_CATEGORY_TOTALS_CACHE), exist_ok=True)
+        df.to_parquet(CMS_CATEGORY_TOTALS_CACHE, index=False)
+        logger.info(f"CMS category totals: {len(df):,} rows — cached to {CMS_CATEGORY_TOTALS_CACHE}")
+        return df
+
+    except Exception as exc:
+        logger.warning(
+            f"Athena category totals query failed: {exc} — "
+            "v2 interactions generation will return an empty DataFrame"
+        )
+        return None
+
+
+def generate_hcp_interactions_v2(hcp_master: pd.DataFrame) -> pd.DataFrame:
+    """
+    V2 CMS per-category interaction generator — consulting + education only.
+
+    Meals and travel are intentionally excluded here; they are distributed across
+    all v2 events (speaker + consulting + education) by allocate_meals_and_travel().
+
+    Algorithm per (hcp_id, program_year, cms_category ∈ {Consulting Fee, Education}):
+      1. Skip if category_total < MIN_PLAUSIBLE_CATEGORY_CMS.
+      2. Map cms_category → interaction_type via CMS_TO_INTERACTION_TYPE_V2.
+      3. n_events = clamp(round(total / PER_EVENT_TARGETS_BY_CATEGORY[type]),
+                          1, MAX_EVENTS_BY_CATEGORY[type])
+      4. fees = Dirichlet([alpha]*n_events) * category_total
+      5. venue_state: events are local (practice_state) unless CMS travel total > 0,
+         in which case round(travel_total / 500) events are assigned a remote state.
+      6. travel_reimbursement=0.0 and meal_cost=None — filled by allocate_meals_and_travel.
+
+    Schema extends generate_hcp_interactions() with two new columns:
+        venue_state (str, nullable) — state where interaction took place
+        travel_reimbursement (float) — filled post-generation by allocate_meals_and_travel
+    """
+    logger.info("Generating HCP interactions (v2 — consulting + education only)...")
+    rng = np.random.default_rng(RANDOM_SEED + 5)
+
+    _EMPTY_COLS = [
+        "interaction_id", "hcp_id", "interaction_date", "interaction_type",
+        "rep_id", "rep_territory", "product_discussed",
+        "interaction_city", "interaction_state", "venue_state",
+        "practice_id", "practice_city",
+        "meal_type", "meal_cost", "attendee_count",
+        "fmv_rate_used", "fmv_tier", "fmv_benchmark", "fmv_approved",
+        "alcohol_provided", "payment_amount", "travel_reimbursement",
+        "annual_total_ytd", "compliance_reviewed", "compliance_flag",
+        "business_rationale", "cms_total_this_year", "is_reconciliation_anomaly",
+        "program_year", "synthetic_data_flag",
+        "violation_types", "violation_severity", "is_violation",
+    ]
+
+    # ── Load CMS category totals (all 4 categories) ───────────────────────────
+    cms_cat = load_cms_category_totals()
+    if cms_cat is None or cms_cat.empty:
+        logger.warning(
+            "CMS category totals unavailable — returning empty DataFrame. "
+            "Set USE_V2_INTERACTIONS_GENERATOR=false to fall back to v1."
+        )
+        return pd.DataFrame(columns=_EMPTY_COLS)
+
+    # ── Build travel lookup by profile_id for venue_state assignment ──────────
+    # Key: (covered_recipient_profile_id str, program_year int) → travel_total float
+    travel_cat = cms_cat[cms_cat["cms_category"] == "Travel and Lodging"]
+    travel_lookup_pid: dict = {}
+    for _, r in travel_cat.iterrows():
+        k = (str(r["covered_recipient_profile_id"]), int(r["program_year"]))
+        travel_lookup_pid[k] = float(r["category_total"])
+
+    # ── Filter to consulting + education and join to hcp_master ───────────────
+    consult_edu_cat = cms_cat[cms_cat["cms_category"].isin(CMS_TO_INTERACTION_TYPE_V2)]
+    hcp_keyed = hcp_master.copy()
+    hcp_keyed["_pid"] = hcp_keyed["physician_profile_id"].astype(str)
+
+    joined = hcp_keyed.merge(
+        consult_edu_cat.rename(columns={"covered_recipient_profile_id": "_pid"}),
+        on="_pid",
+        how="inner",
+    ).drop(columns=["_pid"])
+
+    logger.info(f"  CMS category join (consulting+education): {len(joined):,} rows")
+
+    # ── Rep pool (same pattern as v1) ─────────────────────────────────────────
+    rep_ids       = [f"REP_{i:04d}" for i in range(1, 201)]
+    rep_territory = {r: rng.choice(TERRITORIES) for r in rep_ids}
+
+    # ── CMS total per (hcp_id, year) for cms_total_this_year field ────────────
+    cms_hcp_yr_total = (
+        joined.groupby(["hcp_id", "program_year"])["category_total"]
+        .sum()
+        .to_dict()
+    )
+
+    records = []
+    seq = 0
+
+    for _, row in joined.iterrows():
+        hcp_id         = str(row["hcp_id"])
+        year           = int(row["program_year"])
+        cms_category   = str(row["cms_category"])
+        category_total = float(row["category_total"])
+        profile        = str(row["hcp_violation_profile"])
+        specialty      = str(row["specialty"])
+        fmv_tier       = str(row["fmv_tier"])
+        practice_state = str(row["state"])
+        pid            = str(row["physician_profile_id"])
+
+        if category_total < MIN_PLAUSIBLE_CATEGORY_CMS:
+            continue
+
+        interaction_type = CMS_TO_INTERACTION_TYPE_V2.get(cms_category)
+        if interaction_type is None:
+            continue
+
+        target   = PER_EVENT_TARGETS_BY_CATEGORY[interaction_type]
+        cap      = MAX_EVENTS_BY_CATEGORY[interaction_type]
+        n_events = max(1, round(category_total / target))
+        n_events = min(n_events, cap)
+
+        alpha  = INTERACTION_ALPHA_BY_PROFILE[profile]
+        splits = rng.dirichlet([alpha] * n_events)
+        fees   = (splits * category_total).round(2)
+
+        # ── Pre-compute remote event slots from CMS travel ────────────────────
+        travel_total = travel_lookup_pid.get((pid, year), 0.0)
+        n_remote = 0
+        if travel_total > 0:
+            n_remote = min(n_events, max(0, round(travel_total / 500.0)))
+        remote_idx_set: set = (
+            set(map(int, rng.choice(n_events, size=n_remote, replace=False)))
+            if n_remote > 0 else set()
+        )
+
+        cms_total_this_year = cms_hcp_yr_total.get((hcp_id, year), category_total)
+        fmv_bench = _get_fmv_benchmark(specialty, fmv_tier)
+        vague_prob = {
+            "clean": 0.0, "minor": 0.05, "moderate": 0.30, "serious": 0.60
+        }[profile]
+
+        for event_i, fee in enumerate(fees):
+            seq += 1
+            idate   = _random_business_date(year, rng)
+            rep     = str(rng.choice(rep_ids))
+            product = str(rng.choice(NOVA_PHARMA_PRODUCTS))
+
+            # ── Venue state: local or remote ──────────────────────────────────
+            if event_i in remote_idx_set:
+                other_states = [s for s in _US_STATE_ABBRS if s != practice_state]
+                venue_state  = str(rng.choice(other_states))
+            else:
+                venue_state = practice_state
+
+            # ── FMV (consulting only, same multiplier logic as v1) ─────────────
+            if interaction_type == "consulting":
+                fee_mult = {
+                    "clean":    rng.uniform(0.80, 1.00),
+                    "minor":    rng.uniform(0.90, 1.10),
+                    "moderate": rng.uniform(1.10, 1.30),
+                    "serious":  rng.uniform(1.50, 2.00),
+                }[profile]
+                fmv_rate_used = round(fmv_bench * float(fee_mult), 2)
+                fmv_approved  = fmv_rate_used <= fmv_bench
+            else:
+                fmv_rate_used = None
+                fmv_approved  = True
+
+            # ── Alcohol (same as v1) ──────────────────────────────────────────
+            alcohol = {
+                "clean":    False,
+                "minor":    False,
+                "moderate": bool(rng.random() < 0.05),
+                "serious":  bool(rng.random() < 0.20),
+            }[profile]
+
+            # ── Business rationale (same vague_prob logic as v1) ──────────────
+            condition = str(rng.choice(CONDITIONS.get(specialty, CONDITIONS["Other"])))
+            if rng.random() < vague_prob:
+                rationale = str(rng.choice(VAGUE_RATIONALE_VALUES))
+            else:
+                tmpl      = str(rng.choice(NORMAL_RATIONALE_TEMPLATES))
+                rationale = tmpl.format(
+                    specialty=specialty, product=product, condition=condition
+                )
+
+            records.append({
+                "interaction_id":            f"INT-{year}-{seq:07d}",
+                "hcp_id":                    hcp_id,
+                "interaction_date":          str(idate),
+                "interaction_type":          interaction_type,
+                "rep_id":                    rep,
+                "rep_territory":             str(rep_territory[rep]),
+                "product_discussed":         product,
+                "interaction_city":          str(row["practice_city"]),
+                "interaction_state":         practice_state,
+                "venue_state":               venue_state,
+                "practice_id":               str(row["practice_id"]),
+                "practice_city":             str(row["practice_city"]),
+                "meal_type":                 None,   # allocated by allocate_meals_and_travel
+                "meal_cost":                 None,   # allocated by allocate_meals_and_travel
+                "attendee_count":            int(rng.integers(1, 16)),
+                "fmv_rate_used":             fmv_rate_used,
+                "fmv_tier":                  fmv_tier,
+                "fmv_benchmark":             fmv_bench,
+                "fmv_approved":              fmv_approved,
+                "alcohol_provided":          alcohol,
+                "payment_amount":            round(float(fee), 2),
+                "travel_reimbursement":      0.0,    # allocated by allocate_meals_and_travel
+                "annual_total_ytd":          0.0,    # recalculated below
+                "compliance_reviewed":       bool(rng.random() > 0.10),
+                "compliance_flag":           "none",
+                "business_rationale":        rationale,
+                "cms_total_this_year":       cms_total_this_year,
+                "is_reconciliation_anomaly": False,  # recalculated below
+                "program_year":              year,
+                "synthetic_data_flag":       True,
+                "violation_types":           "",
+                "violation_severity":        "none",
+                "is_violation":              False,
+            })
+
+    if not records:
+        logger.warning("generate_hcp_interactions_v2: no records generated")
+        return pd.DataFrame(columns=_EMPTY_COLS)
+
+    df = pd.DataFrame(records)
+
+    # ── annual_total_ytd — cumulative sum per HCP per year (same as v1) ───────
+    df = df.sort_values(["hcp_id", "program_year", "interaction_date"]).reset_index(drop=True)
+    df["annual_total_ytd"] = (
+        df.groupby(["hcp_id", "program_year"])["payment_amount"].cumsum().round(2)
+    )
+
+    # ── is_reconciliation_anomaly — payment sum vs CMS total (>10% gap) ───────
+    hcp_year_sums = (
+        df.groupby(["hcp_id", "program_year"])["payment_amount"]
+        .sum()
+        .reset_index(name="_sum")
+    )
+    df = df.merge(hcp_year_sums, on=["hcp_id", "program_year"], how="left")
+    df["is_reconciliation_anomaly"] = df.apply(
+        lambda r: (
+            abs(r["_sum"] - r["cms_total_this_year"]) / r["cms_total_this_year"] > 0.10
+            if r["cms_total_this_year"] > 0 else False
+        ),
+        axis=1,
+    )
+    df = df.drop(columns=["_sum"])
+
+    logger.info(f"HCP interactions (v2): {len(df):,} records")
+    return df
+
+
 # ── Step 4: Generate Speaker Events ──────────────────────────────────────────
 
 def generate_speaker_events(hcp_master: pd.DataFrame) -> pd.DataFrame:
@@ -793,6 +1282,546 @@ def generate_speaker_events(hcp_master: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ── Step 4b: Generate Speaker Events (v2 — CMS-reconciled) ───────────────────
+
+def generate_speaker_events_v2(hcp_master: pd.DataFrame) -> pd.DataFrame:
+    """
+    V2 CMS-reconciled speaker event generator.
+
+    Fixes the v1 reconciliation invariant violation: Dirichlet-splits each HCP's
+    ACTUAL CMS speaker-fee total into per-event fees so sum(fees) == cms_speaker_total.
+
+    Changes from initial v2:
+      - venue_state: events near the HCP's practice state by default; if CMS travel
+        total > 0, round(travel_total / 500) events are assigned a remote state.
+      - travel_reimbursement: initialised to 0.0; allocate_meals_and_travel() fills
+        this from the CMS Travel and Lodging total for remote events.
+      - total_program_cost: venue_cost + speaker_fee only at generation time;
+        allocate_meals_and_travel() adds travel after allocation.
+
+    Schema: identical to generate_speaker_events() plus venue_state remote logic.
+    """
+    logger.info("Generating speaker program events (v2 — CMS-reconciled)...")
+    rng = np.random.default_rng(RANDOM_SEED + 4)
+
+    _EMPTY_COLS = [
+        "event_id", "event_date", "speaker_hcp_id", "speaker_practice_id",
+        "speaker_practice_city", "speaker_specialty", "speaker_tier",
+        "program_topic", "venue_name", "venue_type", "venue_city", "venue_state",
+        "venue_cost", "attendee_count", "speaker_fee", "fmv_benchmark",
+        "fmv_exceeded", "travel_reimbursement", "total_program_cost",
+        "product_featured", "alcohol_provided", "compliance_approved",
+        "repeat_speaker", "times_spoke_this_year", "times_spoke_same_topic",
+        "program_topic_repeat_count", "annual_speaker_compensation",
+        "program_year", "synthetic_data_flag", "violation_types",
+        "violation_severity", "is_violation",
+    ]
+
+    # ── Load CMS speaker totals ───────────────────────────────────────────────
+    cms_spk = load_cms_speaker_totals()
+    if cms_spk is None or cms_spk.empty:
+        logger.warning(
+            "CMS speaker totals unavailable — returning empty DataFrame. "
+            "Set USE_V2_SPEAKER_GENERATOR=false to fall back to v1."
+        )
+        return pd.DataFrame(columns=_EMPTY_COLS)
+
+    # ── Load CMS travel totals for remote venue_state assignment ─────────────
+    # Key: (hcp_id str, program_year int) → travel_total float
+    travel_lookup_spk: dict = {}
+    cms_cat_travel = load_cms_category_totals()
+    if cms_cat_travel is not None and not cms_cat_travel.empty:
+        trav = cms_cat_travel[cms_cat_travel["cms_category"] == "Travel and Lodging"]
+        pid_to_hcp = {
+            str(k): str(v)
+            for k, v in hcp_master.set_index("physician_profile_id")["hcp_id"].items()
+        }
+        for _, r in trav.iterrows():
+            hid = pid_to_hcp.get(str(r["covered_recipient_profile_id"]))
+            if hid:
+                key = (hid, int(r["program_year"]))
+                travel_lookup_spk[key] = float(r["category_total"])
+
+    # ── Inner-join hcp_master ↔ CMS speaker totals ────────────────────────────
+    hcp_keyed = hcp_master.copy()
+    hcp_keyed["_pid"] = hcp_keyed["physician_profile_id"].astype(str)
+
+    joined = hcp_keyed.merge(
+        cms_spk.rename(columns={"covered_recipient_profile_id": "_pid"}),
+        on="_pid",
+        how="inner",
+    ).drop(columns=["_pid"])
+
+    logger.info(f"  CMS speaker join: {len(joined):,} (hcp_id, year) pairs")
+
+    # ── Per-HCP-year running state ────────────────────────────────────────────
+    times_yr:         dict = {}   # (hcp_id, year)        → event count
+    annual_comp:      dict = {}   # (hcp_id, year)        → running fee sum
+    topic_yr_counts:  dict = {}   # (hcp_id, year, topic) → count
+    topic_all_counts: dict = {}   # (hcp_id, topic)       → count across years
+    preferred_topic:  dict = {}   # hcp_id → locked topic for serious profiles
+
+    records = []
+    seq = 0
+
+    for _, row in joined.iterrows():
+        hcp_id        = str(row["hcp_id"])
+        year          = int(row["program_year"])
+        cms_total     = float(row["speaker_total"])
+        profile       = str(row["hcp_violation_profile"])
+        specialty     = str(row["specialty"])
+        fmv_tier      = str(row["fmv_tier"])
+        practice_state = str(row["state"])
+
+        if cms_total < MIN_PLAUSIBLE_SPEAKER_CMS:
+            continue
+
+        n_events = max(1, round(cms_total / REALISTIC_PER_EVENT_TARGET))
+        n_events = min(n_events, MAX_PLAUSIBLE_EVENTS)
+
+        alpha  = SPEAKER_ALPHA_BY_PROFILE[profile]
+        splits = rng.dirichlet([alpha] * n_events)
+        fees   = (splits * cms_total).round(2)
+
+        # ── Pre-compute remote event slots from CMS travel ────────────────────
+        travel_total = travel_lookup_spk.get((hcp_id, year), 0.0)
+        n_remote = 0
+        if travel_total > 0:
+            n_remote = min(n_events, max(0, round(travel_total / 500.0)))
+        remote_idx_set: set = (
+            set(map(int, rng.choice(n_events, size=n_remote, replace=False)))
+            if n_remote > 0 else set()
+        )
+
+        key_yr = (hcp_id, year)
+        if key_yr not in times_yr:
+            times_yr[key_yr]    = 0
+            annual_comp[key_yr] = 0.0
+
+        for event_i, fee in enumerate(fees):
+            seq += 1
+            times_yr[key_yr] += 1
+            t_spoke = times_yr[key_yr]
+
+            # Topic: serious profiles repeat same topic (REPEAT_SAME_TOPIC_PROGRAMS)
+            if profile == "serious":
+                if hcp_id not in preferred_topic:
+                    preferred_topic[hcp_id] = str(rng.choice(PROGRAM_TOPICS))
+                topic = preferred_topic[hcp_id]
+            else:
+                topic = str(rng.choice(PROGRAM_TOPICS))
+
+            tk_yr  = (hcp_id, year, topic)
+            tk_all = (hcp_id, topic)
+            topic_yr_counts[tk_yr]   = topic_yr_counts.get(tk_yr, 0) + 1
+            topic_all_counts[tk_all] = topic_all_counts.get(tk_all, 0) + 1
+
+            # Venue state: remote or practice state
+            if event_i in remote_idx_set:
+                other_states = [s for s in _US_STATE_ABBRS if s != practice_state]
+                venue_state  = str(rng.choice(other_states))
+            else:
+                venue_state = practice_state
+
+            # Venue (same profile-controlled distributions as v1)
+            vdist      = VENUE_DISTRIBUTIONS[profile]
+            venue_type = str(rng.choice(list(vdist.keys()), p=list(vdist.values())))
+            venue_cost = {
+                "clean":    round(float(rng.uniform(500,  1500)), 2),
+                "minor":    round(float(rng.uniform(500,  2500)), 2),
+                "moderate": round(float(rng.uniform(1000, 4000)), 2),
+                "serious":  round(float(rng.uniform(3000, 8000)), 2),
+            }[profile]
+
+            # Attendee count (same profile-controlled distributions as v1)
+            attendee_count = {
+                "clean":    int(rng.integers(8, 26)),
+                "minor":    int(rng.integers(5, 21)),
+                "moderate": int(rng.integers(3, 16)),
+                "serious":  int(rng.integers(1,  6)),
+            }[profile]
+
+            speaker_fee = float(fee)
+            fmv_bench   = _get_fmv_benchmark(specialty, fmv_tier)
+            annual_comp[key_yr] = round(annual_comp[key_yr] + speaker_fee, 2)
+
+            # Alcohol (same as v1)
+            alcohol = {
+                "clean":    False,
+                "minor":    bool(rng.random() < 0.02),
+                "moderate": bool(rng.random() < 0.10),
+                "serious":  bool(rng.random() < 0.30),
+            }[profile]
+
+            # Compliance approval (profile-controlled)
+            compliance_approved = {
+                "clean":    True,
+                "minor":    bool(rng.random() > 0.02),
+                "moderate": bool(rng.random() > 0.15),
+                "serious":  bool(rng.random() > 0.40),
+            }[profile]
+
+            records.append({
+                "event_id":                    f"EVT-{year}-{seq:06d}",
+                "event_date":                  str(_random_business_date(year, rng)),
+                "speaker_hcp_id":              hcp_id,
+                "speaker_practice_id":         str(row["practice_id"]),
+                "speaker_practice_city":       str(row["practice_city"]),
+                "speaker_specialty":           specialty,
+                "speaker_tier":                fmv_tier,
+                "program_topic":               topic,
+                "venue_name":                  fake.company() + " " + str(rng.choice(["Hall", "Center", "Suite", "Room"])),
+                "venue_type":                  venue_type,
+                "venue_city":                  fake.city(),
+                "venue_state":                 venue_state,
+                "venue_cost":                  venue_cost,
+                "attendee_count":              attendee_count,
+                "speaker_fee":                 speaker_fee,
+                "fmv_benchmark":               fmv_bench,
+                "fmv_exceeded":                speaker_fee > fmv_bench,
+                "travel_reimbursement":        0.0,   # allocated by allocate_meals_and_travel
+                "total_program_cost":          round(venue_cost + speaker_fee, 2),  # travel added later
+                "product_featured":            str(rng.choice(NOVA_PHARMA_PRODUCTS)),
+                "alcohol_provided":            alcohol,
+                "compliance_approved":         compliance_approved,
+                "repeat_speaker":              t_spoke > REPEAT_SPEAKER_THRESHOLD,
+                "times_spoke_this_year":       t_spoke,
+                "times_spoke_same_topic":      topic_yr_counts[tk_yr],
+                "program_topic_repeat_count":  topic_all_counts[tk_all],
+                "annual_speaker_compensation": annual_comp[key_yr],
+                "program_year":                year,
+                "synthetic_data_flag":         True,
+                "violation_types":             "",
+                "violation_severity":          "none",
+                "is_violation":                False,
+            })
+
+    df = pd.DataFrame(records) if records else pd.DataFrame(columns=_EMPTY_COLS)
+    logger.info(f"Speaker events (v2): {len(df):,} records")
+    return df
+
+
+# ── Step 4b: Allocate meals and travel (v2 post-generation pass) ──────────────
+
+def allocate_meals_and_travel(
+    hcp_master: pd.DataFrame,
+    interactions_df: pd.DataFrame,
+    speaker_events_df: pd.DataFrame,
+) -> tuple:
+    """
+    Distribute CMS Food-and-Beverage and Travel-and-Lodging totals across
+    the events produced by generate_hcp_interactions_v2 and
+    generate_speaker_events_v2.
+
+    Called once after both v2 generators finish.  Both generators leave
+    meal_cost=None, meal_type=None, and travel_reimbursement=0.0 as
+    placeholders — this function fills those fields.
+
+    Meal allocation (per HCP × year):
+        n_anchor_events = len(interaction events) + len(speaker events) for this HCP-year
+        If n_anchor_events > 0:
+            event_pool = min(cms_meal_total, n_int * $50)   # only interactions get meal_cost
+            Dirichlet-split event_pool across interaction events → meal_cost + meal_type
+            standalone_pool = cms_meal_total − event_pool
+            standalone_pool → new standalone "meal" interaction records
+        If n_anchor_events == 0 and cms_meal > 0:
+            All CMS meal → standalone "meal" records (n = max(1, round(cms_meal / 50)))
+
+    Travel allocation (per HCP × year):
+        remote events = events where venue_state != practice_state (interactions + speaker)
+        If remote_events > 0:
+            Dirichlet-split cms_travel across remote events → travel_reimbursement
+            speaker_events.total_program_cost updated to include travel amount
+        If remote_events == 0 AND cms_travel > 0 (orphaned travel):
+            Generate one synthetic "meeting" interaction with
+            payment_amount=0.0, travel_reimbursement=cms_travel_total.
+            This covers HCPs whose CMS record shows travel but all generated
+            events happened to be local.
+
+    Returns (interactions_df, speaker_events_df) where interactions_df includes
+    any appended standalone meal records and orphaned-travel meeting records.
+    """
+    logger.info("Allocating meals and travel (v2 post-generation pass)...")
+    rng = np.random.default_rng(RANDOM_SEED + 6)
+
+    # ── Rep pool for orphaned-travel meeting defaults ─────────────────────────
+    _rep_ids = [f"REP_{i:04d}" for i in range(1, 201)]
+    _rep_territory = {r: str(rng.choice(TERRITORIES)) for r in _rep_ids}
+
+    # ── Load CMS category totals ──────────────────────────────────────────────
+    cms_cat = load_cms_category_totals()
+    if cms_cat is None or cms_cat.empty:
+        logger.warning(
+            "CMS category totals unavailable — skipping allocate_meals_and_travel. "
+            "Meal and travel fields remain at default values."
+        )
+        return interactions_df, speaker_events_df
+
+    # ── Build per-HCP lookups: (pid_str, year_int) → float ───────────────────
+    meal_lookup: dict = {}
+    travel_lookup: dict = {}
+    for _, r in cms_cat.iterrows():
+        k = (str(r["covered_recipient_profile_id"]), int(r["program_year"]))
+        if r["cms_category"] == "Food and Beverage":
+            meal_lookup[k] = float(r["category_total"])
+        elif r["cms_category"] == "Travel and Lodging":
+            travel_lookup[k] = float(r["category_total"])
+
+    # ── HCP master lookup: hcp_id → (pid, practice_state, practice_city, profile) ──
+    hcp_info_by_id: dict = {}
+    for _, h in hcp_master.iterrows():
+        hcp_info_by_id[str(h["hcp_id"])] = {
+            "pid":            str(h["physician_profile_id"]),
+            "practice_state": str(h["state"]),
+            "practice_city":  str(h["practice_city"]),
+            "profile":        str(h["hcp_violation_profile"]),
+        }
+
+    # ── Work on copies to avoid SettingWithCopyWarning ────────────────────────
+    interactions_df   = interactions_df.copy()
+    speaker_events_df = speaker_events_df.copy()
+
+    # Ensure meal columns accept mixed types (None and float)
+    interactions_df["meal_cost"] = interactions_df["meal_cost"].astype(object)
+    interactions_df["meal_type"] = interactions_df["meal_type"].astype(object)
+
+    new_records: list = []    # accumulates both standalone meals and orphaned-travel meetings
+    meeting_seq: int  = 0     # global counter for INT-MEETING-* IDs
+
+    # ── Collect all (hcp_id, year) pairs that appear in either df ────────────
+    int_pairs: set = set(
+        zip(interactions_df["hcp_id"].astype(str),
+            interactions_df["program_year"].astype(int))
+    )
+    spk_pairs: set = set(
+        zip(speaker_events_df["speaker_hcp_id"].astype(str),
+            speaker_events_df["program_year"].astype(int))
+    )
+    # Also include HCPs that have CMS meal or travel but zero generated events
+    cms_hcp_pairs: set = set()
+    for (p, y) in list(meal_lookup.keys()) + list(travel_lookup.keys()):
+        # map pid → hcp_id using hcp_info_by_id inverse
+        pass  # built below after hcp_info_by_id is populated
+    pid_to_hcp: dict = {v["pid"]: k for k, v in hcp_info_by_id.items()}
+    for (pid, yr) in list(meal_lookup.keys()) + list(travel_lookup.keys()):
+        hid = pid_to_hcp.get(pid)
+        if hid:
+            cms_hcp_pairs.add((hid, yr))
+
+    all_pairs = sorted(int_pairs | spk_pairs | cms_hcp_pairs)
+
+    for hcp_id, year in all_pairs:
+        info = hcp_info_by_id.get(hcp_id)
+        if info is None:
+            continue
+
+        pid            = info["pid"]
+        practice_state = info["practice_state"]
+        practice_city  = info["practice_city"]
+        profile        = info["profile"]
+        k              = (pid, year)
+
+        # ── Count anchor events (interactions + speaker events) ───────────────
+        int_mask = (
+            (interactions_df["hcp_id"] == hcp_id) &
+            (interactions_df["program_year"] == year)
+        )
+        int_idx       = interactions_df.index[int_mask].tolist()
+        n_int         = len(int_idx)
+
+        spk_mask = (
+            (speaker_events_df["speaker_hcp_id"] == hcp_id) &
+            (speaker_events_df["program_year"] == year)
+        )
+        n_spk         = int(spk_mask.sum())
+        n_anchor      = n_int + n_spk
+
+        # ── Meal allocation ───────────────────────────────────────────────────
+        cms_meal_total = meal_lookup.get(k, 0.0)
+        if cms_meal_total > 0:
+            alpha = INTERACTION_ALPHA_BY_PROFILE.get(profile, 1.0)
+
+            if n_anchor > 0:
+                # Attach meals to existing interaction events; residual → standalone
+                event_pool      = min(cms_meal_total, n_int * 50.0) if n_int > 0 else 0.0
+                standalone_pool = cms_meal_total - event_pool
+
+                if event_pool > 0:
+                    splits    = rng.dirichlet([alpha] * n_int)
+                    m_amounts = (splits * event_pool).round(2)
+                    for idx, amount in zip(int_idx, m_amounts):
+                        meal_type = str(rng.choice(
+                            MEAL_TYPES,
+                            p=[MEAL_TYPE_DISTRIBUTION[m] for m in MEAL_TYPES],
+                        ))
+                        interactions_df.at[idx, "meal_type"] = meal_type
+                        interactions_df.at[idx, "meal_cost"] = float(amount)
+
+                if standalone_pool > 0.01:
+                    n_standalone = max(1, min(10, round(standalone_pool / 50.0)))
+                    s_splits     = rng.dirichlet([alpha] * n_standalone)
+                    s_amounts    = (s_splits * standalone_pool).round(2)
+                    for j, s_amount in enumerate(s_amounts):
+                        meal_type = str(rng.choice(
+                            MEAL_TYPES,
+                            p=[MEAL_TYPE_DISTRIBUTION[m] for m in MEAL_TYPES],
+                        ))
+                        new_records.append(_standalone_meal_record(
+                            hcp_id, year, j, practice_city, practice_state,
+                            meal_type, float(s_amount), rng,
+                        ))
+
+            else:
+                # No events at all — generate all meals as pure standalone records
+                n_standalone = max(1, min(10, round(cms_meal_total / 50.0)))
+                s_splits     = rng.dirichlet([alpha] * n_standalone)
+                s_amounts    = (s_splits * cms_meal_total).round(2)
+                for j, s_amount in enumerate(s_amounts):
+                    meal_type = str(rng.choice(
+                        MEAL_TYPES,
+                        p=[MEAL_TYPE_DISTRIBUTION[m] for m in MEAL_TYPES],
+                    ))
+                    new_records.append(_standalone_meal_record(
+                        hcp_id, year, j, practice_city, practice_state,
+                        meal_type, float(s_amount), rng,
+                    ))
+
+        # ── Travel allocation ─────────────────────────────────────────────────
+        cms_travel_total = travel_lookup.get(k, 0.0)
+        if cms_travel_total > 0:
+            # Remote interaction events: venue_state differs from practice_state
+            remote_int_mask = int_mask & (interactions_df["venue_state"] != practice_state)
+            remote_int_idx  = interactions_df.index[remote_int_mask].tolist()
+
+            # Remote speaker events: venue_state differs from practice_state
+            remote_spk_mask = spk_mask & (speaker_events_df["venue_state"] != practice_state)
+            remote_spk_idx  = speaker_events_df.index[remote_spk_mask].tolist()
+
+            total_remote = len(remote_int_idx) + len(remote_spk_idx)
+
+            if total_remote > 0:
+                # Distribute CMS travel across existing remote events
+                alpha          = INTERACTION_ALPHA_BY_PROFILE.get(profile, 1.0)
+                splits         = rng.dirichlet([alpha] * total_remote)
+                travel_amounts = (splits * cms_travel_total).round(2)
+
+                for i, idx in enumerate(remote_int_idx):
+                    interactions_df.at[idx, "travel_reimbursement"] = float(travel_amounts[i])
+
+                offset = len(remote_int_idx)
+                for j, idx in enumerate(remote_spk_idx):
+                    t_amount  = float(travel_amounts[offset + j])
+                    old_cost  = float(speaker_events_df.at[idx, "total_program_cost"])
+                    speaker_events_df.at[idx, "travel_reimbursement"] = t_amount
+                    speaker_events_df.at[idx, "total_program_cost"]   = round(old_cost + t_amount, 2)
+
+            else:
+                # Orphaned travel: no remote events — generate a synthetic meeting record
+                rep = str(rng.choice(_rep_ids))
+                new_records.append({
+                    "interaction_id":            f"INT-MEETING-{year}-{meeting_seq:07d}",
+                    "hcp_id":                    hcp_id,
+                    "interaction_date":          str(_random_business_date(year, rng)),
+                    "interaction_type":          "meeting",
+                    "rep_id":                    rep,
+                    "rep_territory":             _rep_territory[rep],
+                    "product_discussed":         str(rng.choice(NOVA_PHARMA_PRODUCTS)),
+                    "interaction_city":          practice_city,
+                    "interaction_state":         practice_state,
+                    "venue_state":               practice_state,
+                    "practice_id":               None,
+                    "practice_city":             practice_city,
+                    "meal_type":                 None,
+                    "meal_cost":                 None,
+                    "attendee_count":            1,
+                    "fmv_rate_used":             None,
+                    "fmv_tier":                  None,
+                    "fmv_benchmark":             None,
+                    "fmv_approved":              True,
+                    "alcohol_provided":          False,
+                    "payment_amount":            0.0,
+                    "travel_reimbursement":      round(float(cms_travel_total), 2),
+                    "annual_total_ytd":          0.0,
+                    "compliance_reviewed":       True,
+                    "compliance_flag":           "none",
+                    "business_rationale":        "Orphaned travel — CMS Travel and Lodging allocation",
+                    "cms_total_this_year":       0.0,
+                    "is_reconciliation_anomaly": False,
+                    "program_year":              year,
+                    "synthetic_data_flag":       True,
+                    "violation_types":           "",
+                    "violation_severity":        "none",
+                    "is_violation":              False,
+                })
+                meeting_seq += 1
+
+    # ── Append new records (standalone meals + orphaned-travel meetings) ───────
+    if new_records:
+        new_df = pd.DataFrame(new_records)
+        n_meals    = (new_df["interaction_type"] == "meal").sum()
+        n_meetings = (new_df["interaction_type"] == "meeting").sum()
+        interactions_df = pd.concat([interactions_df, new_df], ignore_index=True)
+        logger.info(
+            f"  New records appended: {n_meals:,} standalone meals, "
+            f"{n_meetings:,} orphaned-travel meetings"
+        )
+
+    logger.info(
+        f"  allocate_meals_and_travel complete — "
+        f"{len(interactions_df):,} interactions (incl. standalone meals + meetings), "
+        f"{len(speaker_events_df):,} speaker events"
+    )
+    return interactions_df, speaker_events_df
+
+
+def _standalone_meal_record(
+    hcp_id: str,
+    year: int,
+    seq: int,
+    practice_city: str,
+    practice_state: str,
+    meal_type: str,
+    amount: float,
+    rng: np.random.Generator,
+) -> dict:
+    """Build a single standalone meal interaction record dict."""
+    return {
+        "interaction_id":            f"MEAL-{year}-{hcp_id}-{seq:04d}",
+        "hcp_id":                    hcp_id,
+        "interaction_date":          str(_random_business_date(year, rng)),
+        "interaction_type":          "meal",
+        "rep_id":                    None,
+        "rep_territory":             None,
+        "product_discussed":         None,
+        "interaction_city":          practice_city,
+        "interaction_state":         practice_state,
+        "venue_state":               practice_state,
+        "practice_id":               None,
+        "practice_city":             practice_city,
+        "meal_type":                 meal_type,
+        "meal_cost":                 amount,
+        "attendee_count":            int(rng.integers(1, 12)),
+        "fmv_rate_used":             None,
+        "fmv_tier":                  None,
+        "fmv_benchmark":             None,
+        "fmv_approved":              True,
+        "alcohol_provided":          False,
+        "payment_amount":            amount,
+        "travel_reimbursement":      0.0,
+        "annual_total_ytd":          0.0,
+        "compliance_reviewed":       True,
+        "compliance_flag":           "none",
+        "business_rationale":        "Standalone meal — CMS Food and Beverage allocation",
+        "cms_total_this_year":       0.0,
+        "is_reconciliation_anomaly": False,
+        "program_year":              year,
+        "synthetic_data_flag":       True,
+        "violation_types":           "",
+        "violation_severity":        "none",
+        "is_violation":              False,
+    }
+
+
 # ── Step 5: Generate Speaker Attendees ────────────────────────────────────────
 
 def generate_speaker_attendees(
@@ -937,7 +1966,7 @@ def apply_violation_flags(df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
             vt[i].append("ANNUAL_COMPENSATION_CAP_EXCEEDED")
 
     elif dataset_type == "speaker_events":
-        BAD_VENUES = {"restaurant", "entertainment_venue", "luxury_resort", "sports_venue"}
+        BAD_VENUES = {"entertainment_venue", "luxury_resort", "sports_venue"}
 
         # TYPE 2: SPEAKER_VENUE_INAPPROPRIATE — OIG 2020
         for i in df.index[df["venue_type"].isin(BAD_VENUES)]:
@@ -962,6 +1991,36 @@ def apply_violation_flags(df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
         # Same HCP spoke on same program_topic > 3 times in a year
         for i in df.index[df["times_spoke_same_topic"] > 3]:
             vt[i].append("REPEAT_SAME_TOPIC_PROGRAMS")
+
+        # TYPE 7b: SPEAKER_RAPID_REPEAT — OIG Special Fraud Alert
+        # Two events by same speaker within 30 days (only for speaker_events schema)
+        if "speaker_hcp_id" in df.columns:
+            df_sorted = df.copy()
+            df_sorted["_edt"] = pd.to_datetime(df_sorted["event_date"])
+            df_sorted = df_sorted.sort_values(["speaker_hcp_id", "_edt"])
+            df_sorted["_days_prev"] = (
+                df_sorted.groupby("speaker_hcp_id")["_edt"].diff().dt.days
+            )
+
+            rapid_window = int(get_rule("SPEAKER_005")["effective_threshold"])  # 30 days
+            rapid_mask = (df_sorted["_days_prev"] > 0) & (df_sorted["_days_prev"] < rapid_window)
+
+            for i in df_sorted.index[rapid_mask]:
+                vt[i].append("SPEAKER_RAPID_REPEAT")
+
+            # Also flag the previous event in each rapid pair
+            for idx in df_sorted.index[rapid_mask]:
+                pos = df_sorted.index.get_loc(idx)
+                if pos > 0:
+                    prev_idx = df_sorted.index[pos - 1]
+                    if (
+                        df_sorted.at[prev_idx, "speaker_hcp_id"]
+                        == df_sorted.at[idx, "speaker_hcp_id"]
+                        and "SPEAKER_RAPID_REPEAT" not in vt[prev_idx]
+                    ):
+                        vt[prev_idx].append("SPEAKER_RAPID_REPEAT")
+
+            df_sorted.drop(columns=["_edt", "_days_prev"], inplace=True, errors="ignore")
 
         # TYPE 8: ALCOHOL_PROVIDED — OIG 2020 + PhRMA
         for i in df.index[df["alcohol_provided"] == True]:
@@ -995,6 +2054,178 @@ def apply_violation_flags(df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
     n_viol = df["is_violation"].sum()
     logger.info(f"  {n_viol:,} violations ({100 * n_viol / len(df):.1f}%)")
     return df
+
+
+# ── Step 7b: Verify reconciliation (v2) ──────────────────────────────────────
+
+def verify_reconciliation_v2(
+    hcp_master: pd.DataFrame,
+    interactions_df: pd.DataFrame,
+    speaker_events_df: pd.DataFrame,
+) -> dict:
+    """
+    Cross-validate v2 synthetic totals against CMS category totals.
+
+    Internal totals per (hcp_id, year) — all interaction types included:
+
+        payment amounts:  sum(interactions.payment_amount) across ALL types
+                          (consulting/education fees + standalone meal amounts;
+                           "meeting" records have payment_amount=0.0)
+        attached meals:   sum(interactions.meal_cost) for NON-"meal" types only
+                          (avoids double-counting standalone meals whose
+                           payment_amount already equals their meal_cost)
+        travel:           sum(interactions.travel_reimbursement) — ALL types,
+                          so orphaned-travel "meeting" records are included
+                        + sum(speaker_events.travel_reimbursement)
+        speaker fees:     sum(speaker_events.speaker_fee)
+
+    CMS totals per HCP per year: sum of all category_total rows from
+    cms_category_totals_cache.parquet, plus speaker_total from
+    cms_speaker_totals_cache.parquet.
+
+    Returns a dict with:
+        total_hcp_years    — int
+        perfect_pct        — % within $0.01
+        minor_gap_pct      — % gap ≤ 5%
+        major_gap_pct      — % gap > 10%  (TYPE 11 — CMS_RECONCILIATION_GAP)
+        mean_gap_pct       — float, average |gap| / cms_total
+    """
+    logger.info("Verifying v2 CMS reconciliation...")
+
+    # ── Internal totals ───────────────────────────────────────────────────────
+    # ALL interaction payment_amounts (consulting fees + standalone meal amounts;
+    # "meeting" records contribute 0.0 — their value is in travel_reimbursement)
+    pay_grp = (
+        interactions_df.groupby(["hcp_id", "program_year"])["payment_amount"]
+        .sum()
+        .reset_index(name="internal_pay")
+    )
+
+    # Meal costs attached to non-"meal" interactions (consulting/education with meals).
+    # Standalone "meal" rows are already captured by payment_amount above, so
+    # we exclude them here to avoid double-counting.
+    attached_meal_df = interactions_df[
+        interactions_df["interaction_type"] != "meal"
+    ].copy()
+    attached_meal_df["_mc"] = pd.to_numeric(
+        attached_meal_df["meal_cost"], errors="coerce"
+    ).fillna(0.0)
+    meal_grp = (
+        attached_meal_df.groupby(["hcp_id", "program_year"])["_mc"]
+        .sum()
+        .reset_index(name="internal_meals")
+    )
+
+    # Travel reimbursements from interactions
+    int_travel = (
+        interactions_df.groupby(["hcp_id", "program_year"])["travel_reimbursement"]
+        .sum()
+        .reset_index(name="int_travel")
+    )
+
+    # Travel reimbursements from speaker events
+    spk_events_copy = speaker_events_df.rename(
+        columns={"speaker_hcp_id": "hcp_id"}
+    )
+    spk_travel = (
+        spk_events_copy.groupby(["hcp_id", "program_year"])["travel_reimbursement"]
+        .sum()
+        .reset_index(name="spk_travel")
+    )
+
+    # Speaker fees
+    spk_fees = (
+        spk_events_copy.groupby(["hcp_id", "program_year"])["speaker_fee"]
+        .sum()
+        .reset_index(name="internal_spk_fees")
+    )
+
+    # Merge all internal components
+    internal = (
+        pay_grp
+        .merge(meal_grp,   on=["hcp_id", "program_year"], how="outer")
+        .merge(int_travel,  on=["hcp_id", "program_year"], how="outer")
+        .merge(spk_travel,  on=["hcp_id", "program_year"], how="outer")
+        .merge(spk_fees,    on=["hcp_id", "program_year"], how="outer")
+        .fillna(0.0)
+    )
+    internal["internal_total"] = (
+        internal["internal_pay"]
+        + internal["internal_meals"]
+        + internal["int_travel"]
+        + internal["spk_travel"]
+        + internal["internal_spk_fees"]
+    ).round(2)
+    internal = internal[["hcp_id", "program_year", "internal_total"]]
+
+    # ── CMS totals (category totals + speaker totals) ─────────────────────────
+    cms_cat = load_cms_category_totals()
+    cms_spk = load_cms_speaker_totals()
+
+    if cms_cat is None or cms_cat.empty:
+        logger.warning("CMS category totals unavailable — cannot run verify_reconciliation_v2")
+        return {}
+
+    # Map covered_recipient_profile_id → hcp_id
+    cat_merged = cms_cat.merge(
+        hcp_master[["hcp_id", "physician_profile_id"]].assign(
+            covered_recipient_profile_id=lambda d: d["physician_profile_id"].astype(str)
+        ),
+        on="covered_recipient_profile_id",
+        how="inner",
+    )
+    cms_cat_grp = (
+        cat_merged.groupby(["hcp_id", "program_year"])["category_total"]
+        .sum()
+        .reset_index(name="cms_category_total")
+    )
+
+    cms_grp = cms_cat_grp.copy()
+    if cms_spk is not None and not cms_spk.empty:
+        spk_merged = cms_spk.merge(
+            hcp_master[["hcp_id", "physician_profile_id"]].assign(
+                covered_recipient_profile_id=lambda d: d["physician_profile_id"].astype(str)
+            ),
+            on="covered_recipient_profile_id",
+            how="inner",
+        )
+        spk_grp = (
+            spk_merged.groupby(["hcp_id", "program_year"])["speaker_total"]
+            .sum()
+            .reset_index(name="cms_speaker_total")
+        )
+        cms_grp = cms_grp.merge(spk_grp, on=["hcp_id", "program_year"], how="outer").fillna(0.0)
+        cms_grp["cms_total"] = cms_grp["cms_category_total"] + cms_grp["cms_speaker_total"]
+    else:
+        cms_grp["cms_total"] = cms_grp["cms_category_total"]
+
+    # ── Reconciliation comparison ─────────────────────────────────────────────
+    merged = internal.merge(
+        cms_grp[["hcp_id", "program_year", "cms_total"]],
+        on=["hcp_id", "program_year"],
+        how="inner",
+    )
+    merged = merged[merged["cms_total"] > 0]
+    merged["gap_pct"] = (
+        (merged["internal_total"] - merged["cms_total"]).abs()
+        / merged["cms_total"]
+    )
+
+    total = len(merged)
+    result: dict = {
+        "total_hcp_years": total,
+        "perfect_pct":     round(100 * (merged["gap_pct"] < 0.001).sum() / total, 1) if total else 0,
+        "minor_gap_pct":   round(100 * ((merged["gap_pct"] >= 0.001) & (merged["gap_pct"] <= 0.05)).sum() / total, 1) if total else 0,
+        "major_gap_pct":   round(100 * (merged["gap_pct"] > 0.10).sum() / total, 1) if total else 0,
+        "mean_gap_pct":    round(float(merged["gap_pct"].mean()) * 100, 2) if total else 0.0,
+    }
+    logger.info(
+        f"  v2 Reconciliation: {result['perfect_pct']}% perfect | "
+        f"{result['minor_gap_pct']}% minor | "
+        f"{result['major_gap_pct']}% major gap (TYPE 11) | "
+        f"mean gap {result['mean_gap_pct']}%"
+    )
+    return result
 
 
 # ── Step 7: Verify reconciliation ─────────────────────────────────────────────
@@ -1052,17 +2283,45 @@ def main() -> None:
     logger.info(f"Random seed: {RANDOM_SEED}")
     logger.info("=" * 60)
 
-    cms_totals   = load_cms_hcp_totals()
-    hcp_master   = generate_hcp_master(cms_totals)
-    interactions = generate_hcp_interactions(hcp_master, cms_totals)
-    spk_events   = generate_speaker_events(hcp_master)
+    USE_V2_SPEAKER_GENERATOR = (
+        os.environ.get("USE_V2_SPEAKER_GENERATOR", "false").lower() == "true"
+    )
+    USE_V2_INTERACTIONS_GENERATOR = (
+        os.environ.get("USE_V2_INTERACTIONS_GENERATOR", "false").lower() == "true"
+    )
+
+    cms_totals = load_cms_hcp_totals()
+    hcp_master = generate_hcp_master(cms_totals)
+
+    if USE_V2_INTERACTIONS_GENERATOR:
+        logger.info("Using generate_hcp_interactions_v2 (CMS-seeded per-category)")
+        interactions = generate_hcp_interactions_v2(hcp_master)
+    else:
+        interactions = generate_hcp_interactions(hcp_master, cms_totals)
+
+    if USE_V2_SPEAKER_GENERATOR:
+        logger.info("Using generate_speaker_events_v2 (CMS-seeded, reconciliation-correct)")
+        spk_events = generate_speaker_events_v2(hcp_master)
+    else:
+        spk_events = generate_speaker_events(hcp_master)
+
+    # Allocate meals and travel only when both v2 generators are active
+    if USE_V2_INTERACTIONS_GENERATOR and USE_V2_SPEAKER_GENERATOR:
+        logger.info("Running allocate_meals_and_travel (v2 post-generation pass)...")
+        interactions, spk_events = allocate_meals_and_travel(
+            hcp_master, interactions, spk_events
+        )
+
     attendees    = generate_speaker_attendees(spk_events, hcp_master)
 
     interactions = apply_violation_flags(interactions, "interactions")
     spk_events   = apply_violation_flags(spk_events,   "speaker_events")
     attendees    = apply_violation_flags(attendees,     "attendees")
 
-    recon = verify_reconciliation(interactions, cms_totals)
+    if USE_V2_INTERACTIONS_GENERATOR and USE_V2_SPEAKER_GENERATOR:
+        recon = verify_reconciliation_v2(hcp_master, interactions, spk_events)
+    else:
+        recon = verify_reconciliation(interactions, cms_totals)
 
     logger.info("Saving to S3...")
     save_to_s3(hcp_master,   S3_BUCKET, f"{S3_SYNTHETIC_PREFIX}/hcp_master/hcp_master.parquet")
@@ -1095,9 +2354,11 @@ def main() -> None:
             logger.info(f"    {vtype:<40}: {cnt:,}")
 
     logger.info(f"\n  Reconciliation:")
-    logger.info(f"    Perfect:       {recon['perfect_pct']}%")
-    logger.info(f"    Minor ≤5%:     {recon['minor_gap_pct']}%")
-    logger.info(f"    Major >10%:    {recon['major_gap_pct']}%  ← TYPE 11 violations")
+    logger.info(f"    Perfect:       {recon.get('perfect_pct', 'n/a')}%")
+    logger.info(f"    Minor ≤5%:     {recon.get('minor_gap_pct', 'n/a')}%")
+    logger.info(f"    Major >10%:    {recon.get('major_gap_pct', 'n/a')}%  ← TYPE 11 violations")
+    if "mean_gap_pct" in recon:
+        logger.info(f"    Mean gap:      {recon['mean_gap_pct']}%")
     logger.info(f"\n  Total time: {elapsed:.0f}s")
     logger.info("=" * 60)
 
