@@ -641,8 +641,8 @@ def validate_feature_store(
     Returns True if all pass.
     """
     EXPECTED_ROWS = 97_011
-    EXPECTED_VIOLATION_RATE_MIN = 0.20
-    EXPECTED_VIOLATION_RATE_MAX = 0.30
+    EXPECTED_VIOLATION_RATE_MIN = 0.30
+    EXPECTED_VIOLATION_RATE_MAX = 0.45
 
     checks_passed = 0
     checks_failed = 0

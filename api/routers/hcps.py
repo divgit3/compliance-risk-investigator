@@ -19,6 +19,7 @@ from api.dependencies import (
     get_risk_scores,
     get_rule_flags,
     get_shap_values,
+    get_tov_summary,
 )
 
 router = APIRouter(prefix="/hcps", tags=["hcps"])
@@ -73,12 +74,24 @@ def list_hcps(
 def get_hcp(
     hcp_id: str,
     risk_scores: pd.DataFrame = Depends(get_risk_scores),
+    tov_summary: Optional[pd.DataFrame] = Depends(get_tov_summary),
 ):
-    """Return risk profile for a single HCP."""
+    """Return risk profile for a single HCP, joined with TOV data."""
     row = risk_scores[risk_scores["hcp_id"] == hcp_id]
     if row.empty:
         raise HTTPException(status_code=404, detail=f"HCP '{hcp_id}' not found")
     record = row.iloc[0].replace({float("nan"): None}).to_dict()
+    
+    # Join TOV summary if available
+    if tov_summary is not None:
+        tov_row = tov_summary[tov_summary["hcp_id"] == hcp_id]
+        if not tov_row.empty:
+            tov_record = tov_row.iloc[0].replace({float("nan"): None}).to_dict()
+            # Merge, preferring risk_scores values for shared keys
+            for k, v in tov_record.items():
+                if k not in record:
+                    record[k] = v
+    
     return record
 
 
