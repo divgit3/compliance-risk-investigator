@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import pandas as pd
 
 from api.dependencies import (
+    get_interactions,
     get_investigation_agent,
     get_risk_scores,
     get_rule_flags,
@@ -68,6 +69,72 @@ def list_hcps(
     records = page[available].replace({float("nan"): None}).to_dict(orient="records")
 
     return {"total": total, "offset": offset, "limit": limit, "hcps": records}
+
+
+@router.get("/rep-edges")
+def get_rep_edges(
+    tier:   list[str]     = Query(..., description="Risk tier(s) to include, e.g. critical, high"),
+    state:  Optional[str] = Query(None),
+    limit:  int           = Query(500, ge=1, le=2000, description="Max HCPs per tier"),
+    risk_scores:  pd.DataFrame = Depends(get_risk_scores),
+    interactions: pd.DataFrame = Depends(get_interactions),
+):
+    """Return all (rep_id, hcp_id) edges for the Rep–HCP Network chart.
+
+    The HCP node set matches what GET /hcps returns for the same tier/state/limit
+    filters: top-N HCPs per tier by risk_score, optionally narrowed by state.
+    Every rep who touched any of those HCPs appears as an edge, including secondary
+    reps — not just primary_rep_id — making rep-hopping anomalies visible.
+    """
+    df = risk_scores.copy()
+    df = df[df["risk_tier"].isin(tier)]
+    if state and "state" in df.columns:
+        df = df[df["state"] == state]
+
+    if df.empty:
+        return {"edges": [], "n_hcps": 0, "n_reps": 0, "n_edges": 0}
+
+    # Top-N HCPs per tier by risk_score descending
+    selected = (
+        df.sort_values("risk_score", ascending=False)
+        .groupby("risk_tier", group_keys=False)
+        .head(limit)
+    )
+
+    if selected.empty:
+        return {"edges": [], "n_hcps": 0, "n_reps": 0, "n_edges": 0}
+
+    selected_ids = set(selected["hcp_id"].tolist())
+
+    # primary_rep lookup — defensive against older parquets missing the column
+    primary_series = selected.set_index("hcp_id").get("primary_rep_id", pd.Series(dtype=object))
+    primary_map: dict = primary_series.to_dict()
+
+    # Build edges from interactions
+    ix = interactions[interactions["hcp_id"].isin(selected_ids)].copy()
+    ix = ix[ix["rep_id"].notna()]
+
+    if ix.empty:
+        return {"edges": [], "n_hcps": len(selected_ids), "n_reps": 0, "n_edges": 0}
+
+    agg = (
+        ix.groupby(["rep_id", "hcp_id"], as_index=False)
+        .size()
+        .rename(columns={"size": "interaction_count"})
+    )
+
+    agg["is_primary"] = agg.apply(
+        lambda r: primary_map.get(r["hcp_id"]) == r["rep_id"], axis=1
+    )
+
+    records = agg.replace({float("nan"): None}).to_dict(orient="records")
+
+    return {
+        "edges":   records,
+        "n_hcps":  len(selected_ids),
+        "n_reps":  int(agg["rep_id"].nunique()),
+        "n_edges": len(records),
+    }
 
 
 @router.get("/stats/specialty-tier")

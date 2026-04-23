@@ -54,6 +54,9 @@ async def lifespan(app: FastAPI):
             set_parquet(_bm_name, None)
     print("STARTUP: benchmarks loaded", flush=True)
 
+    set_parquet("interactions", pd.read_parquet(_DATA_DIR / "hcp_interactions.parquet"))
+    print("STARTUP: interactions loaded", flush=True)
+
     _tov_path = _DATA_DIR / "hcp_tov_summary.parquet"
     if _tov_path.exists():
         set_parquet("tov_summary", pd.read_parquet(_tov_path))

@@ -57,6 +57,10 @@ def get_shap_values() -> pd.DataFrame:
     return _STATE["parquet_shap_values"]
 
 
+def get_interactions() -> pd.DataFrame:
+    return _STATE["parquet_interactions"]
+
+
 async def get_investigation_agent():
     if _STATE.get("agent_investigation") is None:
         api_key = _STATE.get("agent_api_key")

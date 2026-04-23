@@ -1,8 +1,8 @@
 """
 streamlit_app/pages/2_Rep_HCP_Network.py — Rep→HCP relationship network graph.
 
-Data source: GET /hcps (FastAPI only — no parquet reads).
-State filter is client-side only (filters in memory after fetch).
+Data source: GET /hcps + GET /hcps/rep-edges (FastAPI only — no parquet reads).
+State filter for HCP nodes is client-side; edges are fetched pre-filtered by state.
 """
 
 from __future__ import annotations
@@ -55,6 +55,18 @@ def fetch_network_hcps(tier_filter_key: str) -> list[dict]:
     return all_hcps
 
 
+@st.cache_data(ttl=300)
+def fetch_network_edges(tier_filter_key: str, state: str) -> list[dict]:
+    """Fetch rep-HCP edges matching the current filter set."""
+    client = get_client()
+    tiers = _TIER_FILTER_MAP[tier_filter_key]
+    params: dict = {"tier": tiers, "limit": 500}
+    if state != "All states":
+        params["state"] = state
+    data = client.get("/hcps/rep-edges", params=params)
+    return data.get("edges", [])
+
+
 def filter_by_state(hcps: list[dict], state: str) -> list[dict]:
     if state == "All states":
         return hcps
@@ -63,9 +75,13 @@ def filter_by_state(hcps: list[dict], state: str) -> list[dict]:
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 
-with st.spinner("Loading HCP data…"):
+with st.spinner("Loading network data…"):
     try:
-        hcp_list = fetch_network_hcps(st.session_state["network_tier_filter"])
+        hcp_list  = fetch_network_hcps(st.session_state["network_tier_filter"])
+        edge_list = fetch_network_edges(
+            st.session_state["network_tier_filter"],
+            st.session_state["network_state_filter"],
+        )
     except APIError as e:
         st.error(f"API error: {e}")
         st.stop()
@@ -109,46 +125,18 @@ with st.sidebar:
 
 # ── Page header ────────────────────────────────────────────────────────────────
 
-hdr_left, hdr_right = st.columns([3, 1])
-with hdr_left:
-    st.markdown("## Rep–HCP Network")
-    st.caption(
-        "Default: critical HCPs only · Up to 500 HCPs per tier shown · "
-        "Full population available in HCP Explorer"
-    )
+st.markdown("## Rep–HCP Network")
+st.caption(
+    "Default: critical HCPs only · Up to 500 HCPs per tier · "
+    "Full population available in HCP Explorer"
+)
 
-with hdr_right:
-    st.markdown("")
-    tier_choice = st.radio(
-        "Tier filter",
-        options=["Critical only", "Critical + High", "All tiers"],
-        index=["Critical only", "Critical + High", "All tiers"].index(
-            st.session_state["network_tier_filter"]
-        ),
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    if tier_choice != st.session_state["network_tier_filter"]:
-        st.session_state["network_tier_filter"] = tier_choice
-        fetch_network_hcps.clear()
-        st.rerun()
+# ── State options (computed before columns, needed by side panel dropdown) ─────
 
-    all_states = sorted(set(
-        h.get("state", "") for h in hcp_list if h.get("state")
-    ))
-    state_options = ["All states"] + all_states
-
-    state_choice = st.selectbox(
-        "State",
-        options=state_options,
-        index=state_options.index(
-            st.session_state["network_state_filter"]
-        ) if st.session_state["network_state_filter"] in state_options else 0,
-        label_visibility="collapsed",
-    )
-    if state_choice != st.session_state["network_state_filter"]:
-        st.session_state["network_state_filter"] = state_choice
-        st.rerun()
+all_states = sorted(set(
+    h.get("state", "") for h in hcp_list if h.get("state")
+))
+state_options = ["All states"] + all_states
 
 # ── Apply state filter ─────────────────────────────────────────────────────────
 
@@ -156,10 +144,60 @@ filtered_hcps = filter_by_state(hcp_list, st.session_state["network_state_filter
 
 # ── Build agraph network ───────────────────────────────────────────────────────
 
-def _build_agraph(hcps: list[dict]):
-    """Build streamlit-agraph nodes and edges from HCP list."""
+def _build_agraph(
+    hcps: list[dict],
+    edge_rows: list[dict],
+    selected_id: str | None = None,
+):
+    """Build streamlit-agraph nodes and edges, with optional 2-hop focus.
+
+    Returns (nodes, edges, n_reps, hop_info). hop_info is None when nothing
+    is selected; otherwise a dict with selected_id, is_rep, n_hop1, n_hop2.
+    """
+    _DIM_NODE = "#f3f4f6"
+    _DIM_EDGE = "#f9fafb"
+
+    def _edge_hop_level(e, hop0, hop1, hop2, focused):
+        if not (focused and e["rep_id"] in focused and e["hcp_id"] in focused):
+            return None  # outside focus — dim
+        if e["rep_id"] in hop0 or e["hcp_id"] in hop0:
+            return 0
+        if e["rep_id"] in hop1 or e["hcp_id"] in hop1:
+            return 1
+        return 2
+
+    # Edges only to HCPs actually rendered (defensive against stale caches)
+    rendered_hcp_ids = {str(h.get("hcp_id", "")) for h in hcps}
+    valid_edges = [e for e in edge_rows if e.get("hcp_id") in rendered_hcp_ids]
+
+    rep_ids = {e["rep_id"] for e in valid_edges if e.get("rep_id")}
+
+    # Compute 2-hop focused set if a valid node is selected
+    focused_nodes: set[str] | None = None
+    hop0: set[str] = set()
+    hop1: set[str] = set()
+    hop2: set[str] = set()
+    hop_info: dict | None = None
+    all_node_ids = rendered_hcp_ids | rep_ids
+
+    if selected_id and selected_id in all_node_ids:
+        neighbors: dict[str, set[str]] = defaultdict(set)
+        for e in valid_edges:
+            r, h = e["rep_id"], e["hcp_id"]
+            neighbors[r].add(h)
+            neighbors[h].add(r)
+        hop0 = {selected_id}
+        hop1 = set().union(*(neighbors[n] for n in hop0)) - hop0
+        hop2 = set().union(*(neighbors[n] for n in hop1)) - hop0 - hop1
+        focused_nodes = hop0 | hop1 | hop2
+        hop_info = {
+            "selected_id": selected_id,
+            "is_rep": not selected_id.startswith("HCP_"),
+            "n_hop1": len(hop1),
+            "n_hop2": len(hop2),
+        }
+
     nodes = []
-    edges = []  # Rep→HCP edges via primary_rep_id
 
     for hcp in hcps:
         hcp_id  = str(hcp.get("hcp_id", ""))
@@ -170,44 +208,63 @@ def _build_agraph(hcps: list[dict]):
         size    = 10 + (score / 100) * 20  # 10–30
         tooltip = f"Score: {score:.0f} | Tier: {tier.title()}"
 
-        nodes.append(Node(
-            id=hcp_id,
-            label=label,
-            size=size,
-            color=color,
-            title=tooltip,
-        ))
+        if hcp_id == selected_id:
+            size  = size * 2.0
+            color = "#fbbf24"
+            label = label + " ★"
+        elif focused_nodes is not None and hcp_id not in focused_nodes:
+            color = _DIM_NODE
 
-    rep_ids = set(
-        h["primary_rep_id"] for h in hcps
-        if h.get("primary_rep_id")
-    )
+        nodes.append(Node(
+            id=hcp_id, label=label, size=size, color=color, title=tooltip,
+        ))
 
     for rep_id in rep_ids:
+        rep_color = "#6366f1"
+        rep_size  = 20
+        rep_label = rep_id
+        if rep_id == selected_id:
+            rep_size  = 40
+            rep_color = "#fbbf24"
+            rep_label = rep_id + " ★"
+        elif focused_nodes is not None and rep_id not in focused_nodes:
+            rep_color = _DIM_NODE
         nodes.append(Node(
-            id=rep_id,
-            label=rep_id,
-            size=20,
-            color="#6366f1",
-            title=f"Rep: {rep_id}",
-            shape="diamond",
+            id=rep_id, label=rep_label, size=rep_size, color=rep_color,
+            title=f"Rep: {rep_id}", shape="diamond",
         ))
 
-    for hcp in hcps:
-        if hcp.get("primary_rep_id"):
-            edges.append(Edge(
-                source=hcp["primary_rep_id"],
-                target=hcp["hcp_id"],
-                color="#d1d5db",
-                width=1,
-            ))
+    edges = []
+    for e in valid_edges:
+        is_primary = e.get("is_primary", False)
+        n_inter    = e.get("interaction_count", 1)
+        if focused_nodes is None:
+            edge_color = "#9ca3af" if is_primary else "#e5e7eb"
+            edge_width = 2 if is_primary else 0.8
+        else:
+            hop = _edge_hop_level(e, hop0, hop1, hop2, focused_nodes)
+            if hop is None:
+                edge_color, edge_width = _DIM_EDGE, 0.3
+            elif hop == 0:
+                edge_color, edge_width = "#374151", 2.5
+            elif hop == 1:
+                edge_color, edge_width = "#9ca3af", 1.5
+            else:
+                edge_color, edge_width = "#d1d5db", 1.0
+        edges.append(Edge(
+            source=e["rep_id"],
+            target=e["hcp_id"],
+            color=edge_color,
+            width=edge_width,
+            title=f"{n_inter} interactions" + (" (primary)" if is_primary else ""),
+        ))
 
-    return nodes, edges, len(rep_ids)
+    return nodes, edges, len(rep_ids), hop_info
 
 
 _AGRAPH_CONFIG = Config(
-    width=1200,
-    height=520,
+    width=900,
+    height=780,
     directed=False,
     physics=True,
     hierarchical=False,
@@ -218,27 +275,15 @@ _AGRAPH_CONFIG = Config(
     link={"labelProperty": "label", "renderLabel": False},
 )
 
-# ── Section A: Full-width graph ────────────────────────────────────────────────
+# ── Build graph data (before columns; agraph render happens inside col_main) ───
 
-if filtered_hcps:
-    nodes, edges, n_reps = _build_agraph(filtered_hcps)
-    clicked_id = agraph(nodes=nodes, edges=edges, config=_AGRAPH_CONFIG)
-
-    if clicked_id:
-        st.session_state["network_selected_hcp"] = clicked_id
-        st.session_state["selected_hcp_id"] = clicked_id
-else:
-    st.info("No HCPs match the current filter.")
-    n_reps = 0
-    edges  = []
-
-st.caption(
-    f"Showing {n_reps} reps · {len(filtered_hcps)} HCPs · "
-    f"{len(edges)} edges · "
-    f"{st.session_state['network_state_filter']}"
+nodes, edges, n_reps, hop_info = _build_agraph(
+    filtered_hcps,
+    edge_list,
+    st.session_state.get("network_selected_hcp"),
 )
 
-# ── Build rep summary (used in both sections B columns) ───────────────────────
+# ── Build rep summary (primary-rep only; used by leaderboard + detail pane) ───
 
 rep_summary: dict = defaultdict(lambda: {
     "hcp_count": 0,
@@ -262,138 +307,120 @@ rep_rows = sorted(
     key=lambda x: (-x[1]["critical"], -x[1]["high"], -x[1]["total_risk"]),
 )
 
-# ── Section B: Two columns below graph ────────────────────────────────────────
+# ── Main layout: [graph + detail | filters + leaderboard] ─────────────────────
 
-col_leaderboard, col_detail = st.columns([1.2, 1])
+state_label = st.session_state["network_state_filter"]
 
-with col_leaderboard:
-    st.markdown("#### Rep Risk Leaderboard")
-    st.caption(
-        f"{len(rep_rows)} reps · "
-        f"{st.session_state['network_state_filter']} · "
-        f"{st.session_state['network_tier_filter']}"
+col_main, col_side = st.columns([0.65, 0.35])
+
+with col_side:
+    tier_choice = st.radio(
+        "Tier filter",
+        options=["Critical only", "Critical + High", "All tiers"],
+        index=["Critical only", "Critical + High", "All tiers"].index(
+            st.session_state["network_tier_filter"]
+        ),
+        horizontal=True,
+    )
+    if tier_choice != st.session_state["network_tier_filter"]:
+        st.session_state["network_tier_filter"] = tier_choice
+        fetch_network_hcps.clear()
+        fetch_network_edges.clear()
+        st.rerun()
+
+    state_choice = st.selectbox(
+        "State",
+        options=state_options,
+        index=state_options.index(
+            st.session_state["network_state_filter"]
+        ) if st.session_state["network_state_filter"] in state_options else 0,
+    )
+    if state_choice != st.session_state["network_state_filter"]:
+        st.session_state["network_state_filter"] = state_choice
+        st.rerun()
+
+    # ── Selected detail panel ──────────────────────────────────────────────────
+    selected_id     = st.session_state.get("network_selected_hcp")
+    is_rep_selected = selected_id and not selected_id.startswith("HCP_")
+
+    PANEL_STYLE = (
+        "padding:14px 16px;"
+        "background:rgba(96,165,250,0.08);"
+        "border-left:3px solid #60a5fa;"
+        "border-radius:4px;margin:8px 0;"
+        "min-height:220px;"
+        "box-sizing:border-box;"
     )
 
-    st.markdown(
-        "<div style='display:grid;"
-        "grid-template-columns:100px 70px 80px 80px 80px 80px;"
-        "gap:8px;font-size:16px;font-weight:800;color:inherit;opacity:0.6;"
-        "text-transform:uppercase;letter-spacing:0.05em;"
-        "padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.15);"
-        "margin-top:8px;'>"
-        "<div>Rep ID</div>"
-        "<div>HCPs</div>"
-        "<div style='color:#DC2626;opacity:1;'>Critical</div>"
-        "<div style='color:#EA580C;opacity:1;'>High</div>"
-        "<div style='color:#CA8A04;opacity:1;'>Medium</div>"
-        "<div>Avg HCP Risk Score</div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    for i, (rep_id, stats) in enumerate(rep_rows[:15]):
-        avg_risk = stats["total_risk"] / max(stats["hcp_count"], 1)
-        row_bg = "rgba(255,255,255,0.05)" if i % 2 == 0 else "transparent"
-        st.markdown(
-            f"<div style='display:grid;"
-            f"grid-template-columns:100px 70px 80px 80px 80px 80px;"
-            f"gap:8px;font-size:16px;padding:10px 12px;"
-            f"background:{row_bg};"
-            f"border-bottom:1px solid rgba(255,255,255,0.08);"
-            f"border-radius:4px;align-items:center;'>"
-            f"<div style='font-weight:700;color:#60a5fa;font-size:15px;'>"
-            f"{rep_id}</div>"
-            f"<div style='font-weight:600;color:inherit;font-size:15px;'>"
-            f"{stats['hcp_count']}</div>"
-            f"<div style='font-weight:800;color:#DC2626;font-size:15px;'>"
-            f"{stats['critical']}</div>"
-            f"<div style='font-weight:800;color:#EA580C;font-size:15px;'>"
-            f"{stats['high']}</div>"
-            f"<div style='font-weight:600;color:#CA8A04;font-size:15px;'>"
-            f"{stats['medium']}</div>"
-            f"<div style='font-weight:700;color:inherit;font-size:15px;'>"
-            f"{avg_risk:.0f}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
+    if is_rep_selected:
+        # Compute from edge_list, not rep_summary — rep_summary is primary-only
+        # but the graph shows all connections; panel should match the graph.
+        rep_edges        = [e for e in edge_list if e["rep_id"] == selected_id]
+        connected_hcp_ids = {e["hcp_id"] for e in rep_edges}
+        connected_hcps   = [
+            h for h in filtered_hcps
+            if str(h.get("hcp_id", "")) in connected_hcp_ids
+        ]
+        hcps        = len(connected_hcps)
+        crit        = sum(1 for h in connected_hcps if h.get("risk_tier") == "critical")
+        high        = sum(1 for h in connected_hcps if h.get("risk_tier") == "high")
+        med         = sum(1 for h in connected_hcps if h.get("risk_tier") == "medium")
+        n_primary   = sum(1 for e in rep_edges if e.get("is_primary"))
+        n_secondary = len(rep_edges) - n_primary
+        total_risk  = sum(float(h.get("risk_score", 0)) for h in connected_hcps)
+        avg         = total_risk / max(hcps, 1)
+        panel_html = (
+            f"<div style='{PANEL_STYLE}'>"
+            f"<div style='font-size:13px;font-weight:700;"
+            f"text-transform:uppercase;letter-spacing:0.05em;"
+            f"opacity:0.75;margin-bottom:6px;'>Rep</div>"
+            f"<div style='font-size:20px;font-weight:800;"
+            f"color:#60a5fa;margin-bottom:14px;'>{selected_id}</div>"
+            f"<div style='font-size:14px;line-height:1.9;'>"
+            f"<div><strong>{hcps}</strong> HCPs connected "
+            f"<span style='opacity:0.7;font-size:13px;'>"
+            f"({n_primary} primary · {n_secondary} secondary)"
+            f"</span></div>"
+            f"<div style='margin-top:4px;'>"
+            f"<span style='color:#DC2626;font-weight:700;'>{crit} Critical</span>"
+            f" &nbsp;·&nbsp; "
+            f"<span style='color:#EA580C;font-weight:700;'>{high} High</span>"
+            f" &nbsp;·&nbsp; "
+            f"<span style='color:#CA8A04;font-weight:700;'>{med} Medium</span>"
+            f"</div>"
+            f"<div style='margin-top:4px;'>"
+            f"Avg risk score: <strong>{avg:.0f}</strong>"
+            f"</div>"
+            f"</div></div>"
         )
-
-with col_detail:
-    selected_id = st.session_state.get("network_selected_hcp")
-    is_rep = selected_id and not selected_id.startswith("HCP_")
-
-    st.markdown("---")
-
-    if is_rep:
-        # ── Rep node clicked ───────────────────────────────────────────────────
-        st.markdown("""
-<style>
-[data-testid="stMetricLabel"] p {
-    font-size: 16px !important;
-    font-weight: 700 !important;
-    color: inherit !important;
-    opacity: 0.85;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-[data-testid="stMetricValue"] {
-    font-size: 42px !important;
-    font-weight: 800 !important;
-}
-</style>
-""", unsafe_allow_html=True)
-        rep_stats = rep_summary.get(selected_id, {})
-        st.markdown(f"#### Rep: {selected_id}")
-        st.metric("HCPs managed", rep_stats.get("hcp_count", 0))
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Critical HCPs", rep_stats.get("critical", 0))
-            st.metric("High HCPs", rep_stats.get("high", 0))
-        with col_b:
-            st.metric("Medium HCPs", rep_stats.get("medium", 0))
-            avg = rep_stats.get("total_risk", 0) / max(rep_stats.get("hcp_count", 1), 1)
-            st.metric("Avg risk score", f"{avg:.0f}")
+        st.markdown(panel_html, unsafe_allow_html=True)
     else:
-        # ── HCP node clicked (or nothing selected) ─────────────────────────────
         selected_hcp_dict: dict | None = None
         if selected_id:
             selected_hcp_dict = next(
                 (h for h in filtered_hcps if str(h.get("hcp_id", "")) == selected_id),
                 None,
             )
-
-        st.markdown("#### Selected HCP")
         if selected_hcp_dict:
             hcp_id = str(selected_hcp_dict.get("hcp_id", "—"))
             score  = float(selected_hcp_dict.get("risk_score", 0))
             tier   = selected_hcp_dict.get("risk_tier", "low")
             color  = RISK_TIER_COLORS.get(tier, "#888")
-
-            st.markdown(
-                f"<div style='font-size:16px;font-weight:600;"
-                f"color:inherit;margin-top:8px;'>"
-                f"HCP ID: &nbsp;"
-                f"<span style='color:#60a5fa;font-weight:700;"
-                f"font-size:18px;'>{hcp_id}</span></div>",
-                unsafe_allow_html=True,
+            panel_html = (
+                f"<div style='{PANEL_STYLE}'>"
+                f"<div style='font-size:13px;font-weight:700;"
+                f"text-transform:uppercase;letter-spacing:0.05em;"
+                f"opacity:0.75;margin-bottom:6px;'>Selected HCP</div>"
+                f"<div style='font-size:20px;font-weight:800;"
+                f"color:#60a5fa;margin-bottom:14px;'>{hcp_id}</div>"
+                f"<div style='font-size:14px;line-height:1.9;'>"
+                f"<div>Risk score: "
+                f"<strong>{score:.0f} / 100</strong></div>"
+                f"<div>Tier: "
+                f"<strong style='color:{color};'>{tier.capitalize()}</strong></div>"
+                f"</div></div>"
             )
-            st.markdown(
-                f"<div style='font-size:18px;font-weight:700;"
-                f"color:inherit;margin-top:8px;'>"
-                f"Risk score: &nbsp;"
-                f"<span style='font-size:22px;font-weight:800;'>"
-                f"{score:.0f} / 100</span></div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<div style='font-size:18px;font-weight:700;"
-                f"color:inherit;margin-top:8px;'>"
-                f"Tier: &nbsp;"
-                f"<span style='color:{color};"
-                f"font-size:20px;font-weight:800;'>"
-                f"{tier.capitalize()}</span></div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+            st.markdown(panel_html, unsafe_allow_html=True)
             if st.button(
                 "Go to HCP Detail →",
                 type="primary",
@@ -403,8 +430,94 @@ with col_detail:
                 st.session_state["selected_hcp_id"] = hcp_id
                 st.switch_page("pages/4_HCP_Detail.py")
         else:
+            placeholder_style = (
+                "padding:14px 16px;color:#9CA3AF;font-size:14px;"
+                "border-top:1px solid rgba(255,255,255,0.08);"
+                "border-bottom:1px solid rgba(255,255,255,0.08);"
+                "margin:12px 0;min-height:220px;box-sizing:border-box;"
+                "display:flex;align-items:center;justify-content:center;"
+                "text-align:center;"
+            )
             st.markdown(
-                "<span style='color:#9CA3AF'>Click a node in the graph "
-                "to view details.</span>",
+                "<div style='" + placeholder_style + "'>"
+                "No node selected · Click a node in the graph for details"
+                "</div>",
                 unsafe_allow_html=True,
             )
+
+    # ── Rep Risk Leaderboard ───────────────────────────────────────────────────
+    st.markdown(f"#### Rep Risk Leaderboard — {state_label}")
+    st.caption(
+        f"Primary reps only · {len(rep_rows)} reps · "
+        f"{st.session_state['network_tier_filter']}"
+    )
+
+    _GRID = "display:grid;grid-template-columns:100px 70px 80px 80px 80px 80px;gap:8px;"
+    _HDR  = ("font-size:15px;font-weight:800;color:inherit;opacity:0.6;"
+             "text-transform:uppercase;letter-spacing:0.05em;"
+             "padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.15);"
+             "position:sticky;top:0;z-index:1;background:#0e1117;")
+
+    scroll_html  = "<div style='max-height:420px;overflow-y:auto;"
+    scroll_html += "border:1px solid rgba(255,255,255,0.08);border-radius:4px;'>"
+    scroll_html += "<div style='" + _GRID + _HDR + "'>"
+    scroll_html += "<div>Rep ID</div><div>HCPs</div>"
+    scroll_html += "<div style='color:#DC2626;opacity:1;'>Critical</div>"
+    scroll_html += "<div style='color:#EA580C;opacity:1;'>High</div>"
+    scroll_html += "<div style='color:#CA8A04;opacity:1;'>Medium</div>"
+    scroll_html += "<div>Avg Risk</div>"
+    scroll_html += "</div>"
+
+    for i, (rep_id, stats) in enumerate(rep_rows):
+        avg_risk = stats["total_risk"] / max(stats["hcp_count"], 1)
+        row_bg   = "rgba(255,255,255,0.05)" if i % 2 == 0 else "transparent"
+        _ROW = (_GRID + "font-size:15px;padding:10px 12px;"
+                "background:" + row_bg + ";"
+                "border-bottom:1px solid rgba(255,255,255,0.08);"
+                "align-items:center;")
+        scroll_html += "<div style='" + _ROW + "'>"
+        scroll_html += "<div style='font-weight:700;color:#60a5fa;'>" + rep_id + "</div>"
+        scroll_html += "<div style='font-weight:600;'>" + str(stats["hcp_count"]) + "</div>"
+        scroll_html += "<div style='font-weight:800;color:#DC2626;'>" + str(stats["critical"]) + "</div>"
+        scroll_html += "<div style='font-weight:800;color:#EA580C;'>" + str(stats["high"]) + "</div>"
+        scroll_html += "<div style='font-weight:600;color:#CA8A04;'>" + str(stats["medium"]) + "</div>"
+        scroll_html += "<div style='font-weight:700;'>" + str(int(avg_risk)) + "</div>"
+        scroll_html += "</div>"
+
+    scroll_html += "</div>"
+    st.markdown(scroll_html, unsafe_allow_html=True)
+
+with col_main:
+    # ── Focus banner ───────────────────────────────────────────────────────────
+    if hop_info:
+        sel_id   = hop_info["selected_id"]
+        is_rep   = hop_info["is_rep"]
+        n1, n2   = hop_info["n_hop1"], hop_info["n_hop2"]
+        label    = "Rep" if is_rep else "HCP"
+        neighbor = "HCPs" if is_rep else "reps"
+        second   = "reps' other HCPs" if is_rep else "HCPs' other reps"
+        st.markdown(
+            f"<div style='background:rgba(251,191,36,0.12);"
+            f"border-left:4px solid #fbbf24;padding:10px 16px;"
+            f"margin-bottom:8px;border-radius:4px;font-size:15px;'>"
+            f"<strong>Focused: {label} {sel_id}</strong> "
+            f"— {n1} direct {neighbor} · {n2} {second} in 2-hop "
+            f"<span style='opacity:0.6;margin-left:12px;'>"
+            f"Click background to reset</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Graph ──────────────────────────────────────────────────────────────────
+    if filtered_hcps:
+        clicked_id = agraph(nodes=nodes, edges=edges, config=_AGRAPH_CONFIG)
+        if clicked_id and clicked_id != st.session_state.get("network_selected_hcp"):
+            st.session_state["network_selected_hcp"] = clicked_id
+            st.session_state["selected_hcp_id"] = clicked_id
+            st.rerun()
+    else:
+        st.info("No HCPs match the current filter.")
+
+    st.caption(
+        f"Showing {n_reps} reps · {len(filtered_hcps)} HCPs · "
+        f"{len(edges)} edges · {state_label}"
+    )
