@@ -504,6 +504,11 @@ with col_main:
             f"— {n1} direct {neighbor} · {n2} {second} in 2-hop</div>",
             unsafe_allow_html=True,
         )
+        if st.button("Clear selection", key="clear_network_selection",
+                     type="secondary"):
+            st.session_state["network_selected_hcp"] = None
+            st.session_state["selected_hcp_id"] = None
+            st.rerun()
 
     # ── Graph ──────────────────────────────────────────────────────────────────
     if filtered_hcps:
