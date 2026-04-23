@@ -125,7 +125,7 @@ NOVA_PHARMA_FMV_RATE_CARD = {
     "Neurology":        {"local": 1000, "regional": 2000, "national": 3500},
     "Oncology":         {"local": 1200, "regional": 2500, "national": 4500},
     "Rare Disease":     {"local": 1500, "regional": 3000, "national": 5500},
-    "Primary Care":     {"local":  750, "regional": 1500, "national": 2500},
+    "Inflammation":     {"local":  750, "regional": 1500, "national": 2500},
     "Other":            {"local":  750, "regional": 1500, "national": 2500},
 }
 
@@ -134,7 +134,7 @@ SPECIALTY_DISTRIBUTION = {
     "Oncology":         0.25,
     "Neurology":        0.20,
     "Rare Disease":     0.15,
-    "Primary Care":     0.10,
+    "Inflammation":     0.10,
 }
 
 MEAL_TYPES = ["breakfast", "lunch", "dinner"]
@@ -172,7 +172,7 @@ CONDITIONS = {
     "Oncology":         ["multiple myeloma", "CML", "ALK-positive NSCLC"],
     "Neurology":        ["epilepsy", "migraine", "Parkinson's disease"],
     "Rare Disease":     ["hereditary angioedema", "hemophilia A", "hemophilia B"],
-    "Primary Care":     ["hypertension", "type 2 diabetes", "hyperlipidemia"],
+    "Inflammation":     ["rheumatoid arthritis", "psoriasis", "inflammatory bowel disease"],
     "Other":            ["chronic pain", "inflammation", "metabolic syndrome"],
 }
 
@@ -218,6 +218,15 @@ INTERACTION_ALPHA_BY_PROFILE = {
     "minor":    1.5,
     "moderate": 1.0,
     "serious":  0.6,
+}
+
+# Monthly interaction frequency estimate by profile (for tier-aware rep selection).
+# Used to classify HCPs as low-touch/regular/KOL when selecting reps.
+PROFILE_MONTHLY_FREQUENCY = {
+    "clean":    0.15,   # ~5 interactions over 3 years
+    "minor":    0.5,    # ~18 interactions over 3 years
+    "moderate": 1.0,    # ~36 interactions over 3 years
+    "serious":  2.0,    # ~72 interactions over 3 years (KOL territory)
 }
 
 # Hard cap on events per category per HCP per year.
@@ -641,8 +650,9 @@ def generate_hcp_interactions(
     }
     itypes = list(INTERACTION_TYPE_WEIGHTS.keys())
     iprobs = list(INTERACTION_TYPE_WEIGHTS.values())
-    rep_ids = [f"REP_{i:04d}" for i in range(1, 201)]
-    rep_territory = {r: rng.choice(TERRITORIES) for r in rep_ids}
+    primary_rep, rep_territory_map, state_panels, anomaly_hcps = _build_rep_panel_and_assignments(hcp_master, rng)
+    rep_ids = [f"REP_{i:04d}" for i in range(1, 501)]
+    rep_territory = rep_territory_map
 
     records = []
     seq = 0
@@ -885,6 +895,84 @@ def load_cms_category_totals() -> "pd.DataFrame | None":
         return None
 
 
+
+def _build_rep_panel_and_assignments(hcp_master, rng):
+    """Build state-aware rep panels and primary rep per HCP.
+
+    Design:
+      - 500 reps assigned randomly to 5 territories
+      - Each state has a rep panel sized to HCP density (min 2, ~1 per 200 HCPs)
+      - Each HCP gets a deterministic primary rep from their state panel
+      - 2% of HCPs flagged as rep-hopping anomaly candidates
+
+    Returns (primary_rep_dict, rep_territory_dict, state_panels_dict, anomaly_hcps_set)
+    """
+    rep_ids = [f"REP_{i:04d}" for i in range(1, 501)]
+    rep_territory = {r: str(rng.choice(TERRITORIES)) for r in rep_ids}
+
+    state_counts = hcp_master.groupby("state").size()
+    state_panels = {}
+    rep_cursor = 0
+    for state, n_hcps in state_counts.items():
+        panel_size = max(2, (int(n_hcps) + 199) // 200)
+        panel = []
+        for _ in range(panel_size):
+            panel.append(rep_ids[rep_cursor % len(rep_ids)])
+            rep_cursor += 1
+        state_panels[state] = panel
+
+    primary_rep = {}
+    for _, row in hcp_master.iterrows():
+        hcp_id = row["hcp_id"]
+        state = row["state"]
+        panel = state_panels.get(state, rep_ids[:2])
+        idx = abs(hash(hcp_id)) % len(panel)
+        primary_rep[hcp_id] = panel[idx]
+
+    n_anomaly = max(10, int(len(hcp_master) * 0.02))
+    anomaly_hcps = set(rng.choice(hcp_master["hcp_id"].values, size=n_anomaly, replace=False))
+
+    return primary_rep, rep_territory, state_panels, anomaly_hcps
+
+
+def _select_rep_for_interaction(
+    hcp_id, hcp_state, total_hcp_interactions,
+    primary_rep, state_panels, rep_ids, anomaly_hcps, rng,
+):
+    """Select rep per interaction using touch-tier mix.
+
+    Tiers:
+      - Anomaly HCPs: 40% primary, 60% random (5+ unique reps pattern)
+      - Low-touch (<=4 interactions): 100% primary
+      - Regular (5-20): 85% primary, 15% state panel
+      - KOL (>20): 70% primary, 20% state panel, 10% any rep
+    """
+    primary = primary_rep.get(hcp_id)
+    if primary is None:
+        return str(rng.choice(rep_ids))
+
+    if hcp_id in anomaly_hcps:
+        if rng.random() < 0.4:
+            return primary
+        return str(rng.choice(rep_ids))
+
+    if total_hcp_interactions <= 4:
+        return primary
+
+    panel = state_panels.get(hcp_state, [primary])
+    r = rng.random()
+    if total_hcp_interactions <= 20:
+        if r < 0.85:
+            return primary
+        return str(rng.choice(panel))
+    else:
+        if r < 0.70:
+            return primary
+        elif r < 0.90:
+            return str(rng.choice(panel))
+        return str(rng.choice(rep_ids))
+
+
 def generate_hcp_interactions_v2(hcp_master: pd.DataFrame) -> pd.DataFrame:
     """
     V2 CMS per-category interaction generator — consulting + education only.
@@ -954,8 +1042,10 @@ def generate_hcp_interactions_v2(hcp_master: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"  CMS category join (consulting+education): {len(joined):,} rows")
 
     # ── Rep pool (same pattern as v1) ─────────────────────────────────────────
-    rep_ids       = [f"REP_{i:04d}" for i in range(1, 201)]
-    rep_territory = {r: rng.choice(TERRITORIES) for r in rep_ids}
+    primary_rep, rep_territory_map, state_panels, anomaly_hcps = _build_rep_panel_and_assignments(hcp_master, rng)
+    rep_ids       = [f"REP_{i:04d}" for i in range(1, 501)]
+    rep_territory = rep_territory_map
+    _hcp_state_lookup = dict(zip(hcp_master["hcp_id"].astype(str), hcp_master["state"].astype(str)))
 
     # ── CMS total per (hcp_id, year) for cms_total_this_year field ────────────
     cms_hcp_yr_total = (
@@ -1013,7 +1103,11 @@ def generate_hcp_interactions_v2(hcp_master: pd.DataFrame) -> pd.DataFrame:
         for event_i, fee in enumerate(fees):
             seq += 1
             idate   = _random_business_date(year, rng)
-            rep     = str(rng.choice(rep_ids))
+            _est_interactions = int(PROFILE_MONTHLY_FREQUENCY.get(profile, 1.0) * 12 * 3)
+            rep     = _select_rep_for_interaction(
+                hcp_id, _hcp_state_lookup.get(hcp_id, "NY"), _est_interactions,
+                primary_rep, state_panels, rep_ids, anomaly_hcps, rng
+            )
             product = str(rng.choice(NOVA_PHARMA_PRODUCTS))
 
             # ── Venue state: local or remote ──────────────────────────────────
@@ -1543,10 +1637,8 @@ def allocate_meals_and_travel(
     """
     logger.info("Allocating meals and travel (v2 post-generation pass)...")
     rng = np.random.default_rng(RANDOM_SEED + 6)
-
-    # ── Rep pool for orphaned-travel meeting defaults ─────────────────────────
-    _rep_ids = [f"REP_{i:04d}" for i in range(1, 201)]
-    _rep_territory = {r: str(rng.choice(TERRITORIES)) for r in _rep_ids}
+    primary_rep, _rep_territory, _state_panels, _anomaly_hcps = _build_rep_panel_and_assignments(hcp_master, rng)
+    _rep_ids = [f"REP_{i:04d}" for i in range(1, 501)]
 
     # ── Load CMS category totals ──────────────────────────────────────────────
     cms_cat = load_cms_category_totals()
@@ -1635,6 +1727,9 @@ def allocate_meals_and_travel(
         )
         n_spk         = int(spk_mask.sum())
         n_anchor      = n_int + n_spk
+        # Determine rep for standalone meals (reps take HCPs to meals)
+        _meal_rep_id = primary_rep.get(hcp_id, _rep_ids[abs(hash(hcp_id)) % len(_rep_ids)])
+        _meal_rep_territory = _rep_territory.get(_meal_rep_id)
 
         # ── Meal allocation ───────────────────────────────────────────────────
         cms_meal_total = meal_lookup.get(k, 0.0)
@@ -1669,6 +1764,7 @@ def allocate_meals_and_travel(
                         new_records.append(_standalone_meal_record(
                             hcp_id, year, j, practice_city, practice_state,
                             meal_type, float(s_amount), rng,
+                            rep_id=_meal_rep_id, rep_territory=_meal_rep_territory,
                         ))
 
             else:
@@ -1684,6 +1780,7 @@ def allocate_meals_and_travel(
                     new_records.append(_standalone_meal_record(
                         hcp_id, year, j, practice_city, practice_state,
                         meal_type, float(s_amount), rng,
+                        rep_id=_meal_rep_id, rep_territory=_meal_rep_territory,
                     ))
 
         # ── Travel allocation ─────────────────────────────────────────────────
@@ -1717,7 +1814,8 @@ def allocate_meals_and_travel(
 
             else:
                 # Orphaned travel: no remote events — generate a synthetic meeting record
-                rep = str(rng.choice(_rep_ids))
+                # Use primary rep for consistency with other interactions
+                rep = primary_rep.get(hcp_id, str(rng.choice(_rep_ids)))
                 new_records.append({
                     "interaction_id":            f"INT-MEETING-{year}-{meeting_seq:07d}",
                     "hcp_id":                    hcp_id,
@@ -1783,15 +1881,22 @@ def _standalone_meal_record(
     meal_type: str,
     amount: float,
     rng: np.random.Generator,
+    rep_id: str | None = None,
+    rep_territory: str | None = None,
 ) -> dict:
-    """Build a single standalone meal interaction record dict."""
+    """Build a single standalone meal interaction record dict.
+
+    Reps take HCPs out to meals — so rep_id should not be None. Callers pass
+    the HCPs primary rep (or a random rep if none is known) so downstream
+    rep-HCP network analysis works.
+    """
     return {
         "interaction_id":            f"MEAL-{year}-{hcp_id}-{seq:04d}",
         "hcp_id":                    hcp_id,
         "interaction_date":          str(_random_business_date(year, rng)),
         "interaction_type":          "meal",
-        "rep_id":                    None,
-        "rep_territory":             None,
+        "rep_id":                    rep_id,
+        "rep_territory":             rep_territory,
         "product_discussed":         None,
         "interaction_city":          practice_city,
         "interaction_state":         practice_state,

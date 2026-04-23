@@ -70,63 +70,29 @@ def fetch_tier_total(tier: str) -> int:
 
 @st.cache_data(ttl=300)
 def fetch_state_distribution() -> dict[str, dict[str, int]]:
-    """Paginate /hcps (up to 10,000) and aggregate critical+high counts by state."""
+    """Fetch per-state total + critical+high counts from server-side endpoint.
+    
+    Uses /hcps/stats/state-tier which aggregates across the full HCP
+    population server-side (not limited by pagination).
+    """
     client = get_client()
-    all_hcps: list[dict] = []
-    offset = 0
-    while len(all_hcps) < 10000:
-        data  = client.get("/hcps", params={"limit": 500, "offset": offset})
-        batch = data.get("hcps", [])
-        if not batch:
-            break
-        all_hcps.extend(batch)
-        offset += len(batch)
-        if offset >= data.get("total", 0):
-            break
-    state_agg: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "critical_high": 0})
-    for h in all_hcps:
-        state = h.get("state")
-        if not state:
-            continue
-        tier = h.get("risk_tier", "low")
-        state_agg[state]["total"] += 1
-        if tier in ("critical", "high"):
-            state_agg[state]["critical_high"] += 1
-    return dict(state_agg)
+    data = client.get("/hcps/stats/state-tier")
+    return {
+        r["state"]: {"total": r["total"], "critical_high": r["critical_high"]}
+        for r in data.get("rows", [])
+    }
 
 
 @st.cache_data(ttl=300)
 def fetch_specialty_distribution() -> list[dict]:
-    """Paginate /hcps (up to 10,000) and return per-specialty per-tier counts."""
+    """Fetch per-specialty per-tier counts from the server-side stats endpoint.
+    
+    Uses /hcps/stats/specialty-tier which aggregates across the full HCP
+    population server-side (not limited by pagination).
+    """
     client = get_client()
-    all_hcps: list[dict] = []
-    offset = 0
-    while len(all_hcps) < 10000:
-        data  = client.get("/hcps", params={"limit": 500, "offset": offset})
-        batch = data.get("hcps", [])
-        if not batch:
-            break
-        all_hcps.extend(batch)
-        offset += len(batch)
-        if offset >= data.get("total", 0):
-            break
-    spec_agg: dict[str, dict[str, int]] = defaultdict(lambda: {t: 0 for t in TIER_ORDER})
-    for h in all_hcps:
-        spec = h.get("specialty")
-        if not spec:
-            continue
-        tier = h.get("risk_tier", "low")
-        spec_agg[spec][tier] += 1
-    rows = []
-    for spec, counts in spec_agg.items():
-        for tier in TIER_ORDER:
-            rows.append({
-                "specialty": spec,
-                "tier":      tier.capitalize(),
-                "count":     counts[tier],
-                "_total":    sum(counts.values()),
-            })
-    return rows
+    data = client.get("/hcps/stats/specialty-tier")
+    return data.get("rows", [])
 
 
 @st.cache_data(ttl=300)
@@ -304,38 +270,34 @@ st.markdown("---")
 chart_left, chart_right = st.columns(2)
 
 with chart_left:
-    tier_df = pd.DataFrame({
-        "risk_tier": ["Critical", "High", "Medium", "Low"],
-        "count":     [critical_total, high_total, medium_total, low_total],
-    })
-    tier_df["label"] = tier_df["count"].apply(lambda x: f"{x:,.0f}")
-    fig_bar = px.bar(
-        tier_df,
-        x="count",
-        y="risk_tier",
-        orientation="h",
-        color="risk_tier",
-        color_discrete_map={
-            "Critical": RISK_TIER_COLORS["critical"],
-            "High":     RISK_TIER_COLORS["high"],
-            "Medium":   RISK_TIER_COLORS["medium"],
-            "Low":      RISK_TIER_COLORS["low"],
-        },
-        text="label",
-    )
-    fig_bar.update_traces(
-        textposition="outside",
+    # Build tier data — Plotly renders categorical y-axis bottom-to-top,
+    # so reverse the display order so Low appears at top, Critical at bottom
+    tiers_display = [("Critical", critical_total), ("High", high_total),
+                     ("Medium", medium_total), ("Low", low_total)]
+    tiers_rev = tiers_display  # Low at top, Critical at bottom
+    y_vals = [t[0] for t in tiers_rev]
+    x_vals = [t[1] for t in tiers_rev]
+    colors = [RISK_TIER_COLORS[t[0].lower()] for t in tiers_rev]
+    labels = [f"{v:,}" for v in x_vals]
+
+    fig_bar = go.Figure(go.Bar(
+        x=x_vals, y=y_vals, orientation="h",
+        marker=dict(color=colors),
+        text=labels, textposition="outside",
         textfont=dict(size=15, color="#1e3a5f", family="Arial Black"),
         cliponaxis=False,
+        hovertemplate="<b>%{y}</b><br>%{x:,} HCPs<extra></extra>",
         hoverlabel=dict(
             bgcolor="#ffffff", bordercolor="#1e3a5f",
             font=dict(size=14, color="#1e3a5f", family="Arial Bold"),
         ),
-    )
+    ))
     fig_bar.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
+        height=340,
+        bargap=0.35,
         font=dict(color="#1e3a5f", family="Arial"),
         title=dict(
             text="Risk Tier Distribution",
@@ -347,12 +309,11 @@ with chart_left:
             title=dict(text=""),
         ),
         yaxis=dict(
-            showgrid=False, zeroline=False, title="", autorange="reversed",
+            showgrid=False, zeroline=False, title="",
             tickfont=dict(size=15, color="#1e3a5f", family="Arial Black"),
-            categoryorder="array",
-            categoryarray=["Low", "Medium", "High", "Critical"],
+            type="category",
         ),
-        margin=dict(l=10, r=70, t=40, b=10),
+        margin=dict(l=90, r=80, t=50, b=10),
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -533,40 +494,44 @@ else:  # By specialty
     spec_rows = fetch_specialty_distribution()
     if spec_rows:
         spec_df = pd.DataFrame(spec_rows)
-        # Top 10 specialties by total HCP count, sorted descending
-        top10 = (
+        # Top specialties by total HCP count (up to 10)
+        top_specs = (
             spec_df.groupby("specialty")["count"]
             .sum()
             .nlargest(10)
             .index.tolist()
         )
-        spec_df = spec_df[spec_df["specialty"].isin(top10)]
+        spec_df = spec_df[spec_df["specialty"].isin(top_specs)].copy()
 
-        fig_spec = px.bar(
-            spec_df,
-            x="count",
-            y="specialty",
-            color="tier",
-            orientation="h",
-            color_discrete_map={
-                "Critical": "#DC2626",
-                "High":     "#EA580C",
-                "Medium":   "#CA8A04",
-                "Low":      "#16A34A",
-            },
-            barmode="stack",
-            labels={"count": "HCP Count", "specialty": "", "tier": "Risk Tier"},
-            title="HCP Risk Distribution by Top 10 Specialties",
-        )
-        # Annotate totals outside each bar; hide per-segment text
-        fig_spec.update_traces(
-            texttemplate="",
-            hoverlabel=dict(
-                bgcolor="#ffffff", bordercolor="#1e3a5f",
-                font=dict(size=14, color="#1e3a5f", family="Arial Bold"),
-            ),
-        )
-        totals   = spec_df.groupby("specialty")["count"].sum()
+        # Force tier order for proper stacking (Low bottom, Critical top)
+        tier_order = ["Low", "Medium", "High", "Critical"]
+        spec_df["tier"] = pd.Categorical(spec_df["tier"], categories=tier_order, ordered=True)
+        spec_df = spec_df.sort_values(["specialty", "tier"])
+
+        # Build stacked bar with go.Figure for explicit control
+        fig_spec = go.Figure()
+        tier_colors = {
+            "Low":      "#16A34A",
+            "Medium":   "#CA8A04",
+            "High":     "#EA580C",
+            "Critical": "#DC2626",
+        }
+        for tier in tier_order:
+            tier_data = spec_df[spec_df["tier"] == tier]
+            fig_spec.add_trace(go.Bar(
+                y=tier_data["specialty"],
+                x=tier_data["count"],
+                name=tier,
+                orientation="h",
+                marker=dict(color=tier_colors[tier]),
+                hovertemplate=f"<b>%{{y}}</b><br>{tier}: %{{x:,}}<extra></extra>",
+                hoverlabel=dict(
+                    bgcolor="#ffffff", bordercolor="#1e3a5f",
+                    font=dict(size=14, color="#1e3a5f", family="Arial Bold"),
+                ),
+            ))
+        # Compute totals for annotation
+        totals   = spec_df.groupby("specialty", observed=True)["count"].sum()
         max_val  = totals.max()
         for specialty, total in totals.items():
             fig_spec.add_annotation(
@@ -578,12 +543,13 @@ else:  # By specialty
                 font=dict(color="#1e3a5f", size=14, family="Arial Black"),
             )
         fig_spec.update_layout(
+            barmode="stack",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             height=420,
             margin=dict(l=0, r=80, t=40, b=20),
             title=dict(
-                text="HCP Risk Distribution by Top 10 Specialties",
+                text="HCP Risk Distribution by Top Specialties",
                 font=dict(size=18, color="#1e3a5f", family="Arial Black"),
                 x=0.01,
             ),

@@ -117,37 +117,10 @@ def main() -> None:
 
     enrich_parquet(_FEATURE_RAW, profile, rep_map, "feature_store_raw.parquet")
 
-    # Step 4 — feature_store.parquet has no hcp_id column or index.
-    # Row order matches feature_store_raw.parquet exactly.
-    print("Step 4 — Enriching feature_store.parquet…")
-    raw_ids = pd.read_parquet(_FEATURE_RAW, columns=["hcp_id"])
-    fs = pd.read_parquet(_FEATURE_STORE)
-    print(f"  Loaded {len(fs):,} rows")
-
-    assert len(fs) == len(raw_ids), (
-        f"Row count mismatch: feature_store={len(fs)}, feature_store_raw={len(raw_ids)}"
-    )
-
-    fs["hcp_id"] = raw_ids["hcp_id"].values
-
-    for col in ("specialty", "state", "primary_rep_id"):
-        if col in fs.columns:
-            fs = fs.drop(columns=[col])
-
-    fs = fs.merge(profile, on="hcp_id", how="left")
-    fs = fs.merge(rep_map,  on="hcp_id", how="left")
-
-    fs = fs.drop(columns=["hcp_id"])
-
-    assert len(fs) == len(raw_ids), (
-        f"Row count changed after merge: {len(raw_ids)} → {len(fs)}"
-    )
-
-    fs.to_parquet(_FEATURE_STORE, index=False)
-    print(f"  Saved {len(fs):,} rows → {_FEATURE_STORE.relative_to(_ROOT)}")
-    print(f"  specialty null:      {fs['specialty'].isna().sum():,}")
-    print(f"  state null:          {fs['state'].isna().sum():,}")
-    print(f"  primary_rep_id null: {fs['primary_rep_id'].isna().sum():,}")
+    # Step 4 SKIPPED: feature_store.parquet is ML-only and must not contain
+    # string columns (specialty/state/primary_rep_id). Those fields are
+    # enriched into risk_scores.parquet only (which the API reads).
+    print('Step 4 Skipped (feature_store.parquet is ML-only by design)')
 
     # Step 5 — risk_scores.parquet has hcp_id as a column
     print("Step 5 — Enriching risk_scores.parquet…")

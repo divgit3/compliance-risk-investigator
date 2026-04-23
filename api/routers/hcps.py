@@ -70,6 +70,70 @@ def list_hcps(
     return {"total": total, "offset": offset, "limit": limit, "hcps": records}
 
 
+@router.get("/stats/specialty-tier")
+def stats_specialty_tier(
+    risk_scores: pd.DataFrame = Depends(get_risk_scores),
+):
+    """Per-specialty HCP counts by risk tier (server-side aggregation).
+    
+    Returns list of {specialty, tier, count} rows for chart rendering.
+    """
+    if "specialty" not in risk_scores.columns or "risk_tier" not in risk_scores.columns:
+        return {"rows": []}
+    
+    # Group by specialty + tier
+    grouped = (
+        risk_scores
+        .groupby(["specialty", "risk_tier"], dropna=True)
+        .size()
+        .reset_index(name="count")
+    )
+    
+    rows = [
+        {
+            "specialty": str(r["specialty"]),
+            "tier": str(r["risk_tier"]).capitalize(),
+            "count": int(r["count"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
+    return {"rows": rows}
+
+
+@router.get("/stats/state-tier")
+def stats_state_tier(
+    risk_scores: pd.DataFrame = Depends(get_risk_scores),
+):
+    """Per-state HCP counts + critical+high counts (server-side aggregation).
+    
+    Returns list of {state, total, critical_high} rows for chart rendering.
+    """
+    if "state" not in risk_scores.columns or "risk_tier" not in risk_scores.columns:
+        return {"rows": []}
+    
+    df = risk_scores[risk_scores["state"].notna()].copy()
+    df["is_critical_high"] = df["risk_tier"].isin(["critical", "high"])
+    
+    grouped = (
+        df.groupby("state")
+        .agg(
+            total=("risk_tier", "count"),
+            critical_high=("is_critical_high", "sum"),
+        )
+        .reset_index()
+    )
+    
+    rows = [
+        {
+            "state": str(r["state"]),
+            "total": int(r["total"]),
+            "critical_high": int(r["critical_high"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
+    return {"rows": rows}
+
+
 @router.get("/{hcp_id}")
 def get_hcp(
     hcp_id: str,
