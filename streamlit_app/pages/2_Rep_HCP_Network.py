@@ -501,9 +501,7 @@ with col_main:
             f"border-left:4px solid #fbbf24;padding:10px 16px;"
             f"margin-bottom:8px;border-radius:4px;font-size:15px;'>"
             f"<strong>Focused: {label} {sel_id}</strong> "
-            f"— {n1} direct {neighbor} · {n2} {second} in 2-hop "
-            f"<span style='opacity:0.6;margin-left:12px;'>"
-            f"Click background to reset</span></div>",
+            f"— {n1} direct {neighbor} · {n2} {second} in 2-hop</div>",
             unsafe_allow_html=True,
         )
 
