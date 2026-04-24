@@ -25,15 +25,32 @@ if "explorer_page" not in st.session_state:
     st.session_state["explorer_page"] = 1
 if "selected_hcp_id" not in st.session_state:
     st.session_state["selected_hcp_id"] = None
+if "explorer_specialty" not in st.session_state:
+    st.session_state["explorer_specialty"] = "All"
+if "explorer_state" not in st.session_state:
+    st.session_state["explorer_state"] = "All"
 
 # ── Data fetching ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def fetch_hcp_page(tier: str | None, limit: int, offset: int) -> dict:
+def fetch_filter_options() -> dict:
+    """Return distinct specialty and state values for filter dropdowns."""
+    try:
+        return get_client().get("/hcps/filter-options")
+    except Exception:
+        return {"specialties": [], "states": []}
+
+
+@st.cache_data(ttl=300)
+def fetch_hcp_page(tier: str | None, specialty: str | None, state: str | None, limit: int, offset: int) -> dict:
     """Fetch a single page of HCPs. tier=None fetches all tiers."""
     params: dict = {"limit": limit, "offset": offset}
     if tier and tier != "all":
         params["tier"] = tier
+    if specialty and specialty != "All":
+        params["specialty"] = specialty
+    if state and state != "All":
+        params["state"] = state
     return get_client().get("/hcps", params=params)
 
 
@@ -43,6 +60,20 @@ def fetch_tier_total(tier: str | None) -> int:
     params: dict = {"limit": 1}
     if tier and tier != "all":
         params["tier"] = tier
+    data = get_client().get("/hcps", params=params)
+    return data.get("total", 0)
+
+
+@st.cache_data(ttl=300)
+def fetch_filtered_total(tier: str | None, specialty: str | None, state: str | None) -> int:
+    """Return total HCP count with all active filters applied."""
+    params: dict = {"limit": 1}
+    if tier and tier != "all":
+        params["tier"] = tier
+    if specialty and specialty != "All":
+        params["specialty"] = specialty
+    if state and state != "All":
+        params["state"] = state
     data = get_client().get("/hcps", params=params)
     return data.get("total", 0)
 
@@ -150,11 +181,44 @@ for col, (tier_key, tier_label, tier_count, tier_color) in zip(card_cols, _TIER_
 
 st.markdown("")
 
+# ── Specialty / State filter dropdowns ────────────────────────────────────────
+
+filter_options = fetch_filter_options()
+specialty_options = ["All"] + filter_options.get("specialties", [])
+state_options     = ["All"] + filter_options.get("states", [])
+
+filt_col1, filt_col2 = st.columns(2)
+with filt_col1:
+    new_specialty = st.selectbox(
+        "Specialty",
+        options=specialty_options,
+        index=specialty_options.index(st.session_state["explorer_specialty"])
+              if st.session_state["explorer_specialty"] in specialty_options else 0,
+        key="specialty_select",
+    )
+with filt_col2:
+    new_state = st.selectbox(
+        "State",
+        options=state_options,
+        index=state_options.index(st.session_state["explorer_state"])
+              if st.session_state["explorer_state"] in state_options else 0,
+        key="state_select",
+    )
+
+if new_specialty != st.session_state["explorer_specialty"] or new_state != st.session_state["explorer_state"]:
+    st.session_state["explorer_specialty"] = new_specialty
+    st.session_state["explorer_state"]     = new_state
+    st.session_state["explorer_page"]      = 1
+    st.rerun()
+
+active_specialty = st.session_state["explorer_specialty"]
+active_state     = st.session_state["explorer_state"]
+
 # ── Determine active tier ──────────────────────────────────────────────────────
 
 active_tier = st.session_state["explorer_tier"]
 
-# Determine total for pagination
+# Use filtered total when any filter is active, otherwise use pre-fetched tier total
 _tier_total_map = {
     "all":      total_all,
     "critical": total_critical,
@@ -162,7 +226,12 @@ _tier_total_map = {
     "medium":   total_medium,
     "low":      total_low,
 }
-current_total = _tier_total_map.get(active_tier, total_all)
+_filters_active = (active_specialty != "All") or (active_state != "All")
+if _filters_active:
+    current_total = fetch_filtered_total(active_tier, active_specialty, active_state)
+else:
+    current_total = _tier_total_map.get(active_tier, total_all)
+
 total_pages   = max(1, (current_total + rows_per_page - 1) // rows_per_page)
 
 # Clamp page within range
@@ -175,7 +244,7 @@ offset       = (current_page - 1) * rows_per_page
 # ── Fetch current page ────────────────────────────────────────────────────────
 
 try:
-    page_data = fetch_hcp_page(active_tier, rows_per_page, offset)
+    page_data = fetch_hcp_page(active_tier, active_specialty, active_state, rows_per_page, offset)
     hcp_rows  = page_data.get("hcps", [])
 except APIError as e:
     st.error(f"API error: {e}")
@@ -193,12 +262,19 @@ if search_text:
 
 # ── Pagination controls (top) ─────────────────────────────────────────────────
 
+_filter_parts = []
+if active_specialty != "All":
+    _filter_parts.append(active_specialty)
+if active_state != "All":
+    _filter_parts.append(active_state)
+_filter_suffix = f" · Filtered: {', '.join(_filter_parts)}" if _filter_parts else ""
+
 a = offset + 1
 b = min(offset + rows_per_page, current_total)
 st.caption(
     f"Page {current_page} of {total_pages} · "
     f"Showing {a:,}–{b:,} of {current_total:,} HCPs · "
-    f"Sorted: risk score desc"
+    f"Sorted: risk score desc{_filter_suffix}"
 )
 
 st.markdown("""
@@ -223,6 +299,17 @@ st.markdown("---")
 
 # ── HCP table ─────────────────────────────────────────────────────────────────
 
+if not hcp_rows and not search_text:
+    _active_filters = [p for p in [
+        active_specialty if active_specialty != "All" else None,
+        active_state     if active_state     != "All" else None,
+    ] if p]
+    if _active_filters:
+        st.info(f"No HCPs found for the current filters ({', '.join(_active_filters)}). Try a different combination.")
+    else:
+        st.info("No HCPs found.")
+    st.stop()
+
 # Fetch top flags for current page (cached, fast after first load)
 top_flags = {
     hcp["hcp_id"]: fetch_hcp_top_flag(hcp["hcp_id"])
@@ -230,8 +317,9 @@ top_flags = {
 }
 
 # Header row
-hdr = st.columns([2, 2, 1, 2])
-for col, label in zip(hdr, ["HCP ID", "Risk Score", "Tier", "Top Flag"]):
+_COL_RATIOS = [1.2, 1.3, 0.5, 1.5, 0.7, 1.2]
+hdr = st.columns(_COL_RATIOS)
+for col, label in zip(hdr, ["HCP ID", "Specialty", "State", "Risk Score", "Tier", "Top Flag"]):
     col.markdown(f"**{label}**")
 
 st.markdown(
@@ -245,17 +333,25 @@ for hcp in hcp_rows:
     tier       = hcp.get("risk_tier", "low")
     tier_color = RISK_TIER_COLORS.get(tier, "#888")
     top_flag   = top_flags.get(hcp_id, "—")
+    specialty  = hcp.get("specialty") or "—"
+    state      = hcp.get("state") or "—"
 
-    row = st.columns([2, 2, 1, 2])
+    row = st.columns(_COL_RATIOS)
 
-    # col1: clickable HCP ID button
+    # col0: clickable HCP ID button
     if row[0].button(hcp_id, key=f"hcp_{hcp_id}"):
         st.session_state["selected_hcp_id"] = hcp_id
         st.switch_page("pages/4_HCP_Detail.py")
 
-    # col2: colored HTML progress bar + score
+    # col1: specialty
+    row[1].write(specialty)
+
+    # col2: state abbreviation
+    row[2].write(state)
+
+    # col3: colored HTML progress bar + score
     bar_color = RISK_TIER_COLORS.get(tier, "#16A34A")
-    row[1].markdown(
+    row[3].markdown(
         f"""
         <div style="background:rgba(255,255,255,0.12);border-radius:999px;height:8px;width:100%;">
           <div style="background:{bar_color};width:{risk_score:.0f}%;
@@ -268,14 +364,14 @@ for hcp in hcp_rows:
         unsafe_allow_html=True,
     )
 
-    # col3: colored tier badge
-    row[2].markdown(
+    # col4: colored tier badge
+    row[4].markdown(
         f"<span style='color:{tier_color};font-weight:600'>{tier.capitalize()}</span>",
         unsafe_allow_html=True,
     )
 
-    # col4: top flag label
-    row[3].markdown(
+    # col5: top flag label
+    row[5].markdown(
         f"<span style='font-size:12px;color:#374151'>{top_flag}</span>",
         unsafe_allow_html=True,
     )

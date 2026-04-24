@@ -43,10 +43,11 @@ _FLAG_COLS = [
 
 @router.get("")
 def list_hcps(
-    limit:  int           = Query(50, ge=1, le=500),
-    offset: int           = Query(0, ge=0),
-    tier:   Optional[str] = Query(None, description="Filter by risk_tier"),
-    state:  Optional[str] = Query(None),
+    limit:     int           = Query(50, ge=1, le=500),
+    offset:    int           = Query(0, ge=0),
+    tier:      Optional[str] = Query(None, description="Filter by risk_tier"),
+    state:     Optional[str] = Query(None),
+    specialty: Optional[str] = Query(None),
     risk_scores: pd.DataFrame = Depends(get_risk_scores),
 ):
     """List HCPs sorted by risk_score descending."""
@@ -56,6 +57,9 @@ def list_hcps(
     if state:
         if "state" in df.columns:
             df = df[df["state"] == state]
+    if specialty:
+        if "specialty" in df.columns:
+            df = df[df["specialty"] == specialty]
     df = df.sort_values("risk_score", ascending=False)
     total = len(df)
     page = df.iloc[offset : offset + limit]
@@ -135,6 +139,22 @@ def get_rep_edges(
         "n_reps":  int(agg["rep_id"].nunique()),
         "n_edges": len(records),
     }
+
+
+@router.get("/filter-options")
+def get_filter_options(
+    risk_scores: pd.DataFrame = Depends(get_risk_scores),
+):
+    """Return distinct specialty and state values for filter dropdowns."""
+    specialties = (
+        sorted(risk_scores["specialty"].dropna().unique().tolist())
+        if "specialty" in risk_scores.columns else []
+    )
+    states = (
+        sorted(risk_scores["state"].dropna().unique().tolist())
+        if "state" in risk_scores.columns else []
+    )
+    return {"specialties": specialties, "states": states}
 
 
 @router.get("/stats/specialty-tier")

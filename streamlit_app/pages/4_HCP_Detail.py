@@ -145,9 +145,30 @@ if _last_hcp != hcp_id:
 
 # ── Page header ────────────────────────────────────────────────────────────────
 
+_STATE_NAMES = {
+    "AL":"Alabama","AK":"Alaska","AZ":"Arizona","AR":"Arkansas","CA":"California",
+    "CO":"Colorado","CT":"Connecticut","DE":"Delaware","FL":"Florida","GA":"Georgia",
+    "HI":"Hawaii","ID":"Idaho","IL":"Illinois","IN":"Indiana","IA":"Iowa",
+    "KS":"Kansas","KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland",
+    "MA":"Massachusetts","MI":"Michigan","MN":"Minnesota","MS":"Mississippi",
+    "MO":"Missouri","MT":"Montana","NE":"Nebraska","NV":"Nevada","NH":"New Hampshire",
+    "NJ":"New Jersey","NM":"New Mexico","NY":"New York","NC":"North Carolina",
+    "ND":"North Dakota","OH":"Ohio","OK":"Oklahoma","OR":"Oregon","PA":"Pennsylvania",
+    "RI":"Rhode Island","SC":"South Carolina","SD":"South Dakota","TN":"Tennessee",
+    "TX":"Texas","UT":"Utah","VT":"Vermont","VA":"Virginia","WA":"Washington",
+    "WV":"West Virginia","WI":"Wisconsin","WY":"Wyoming","DC":"Washington D.C.",
+}
+
 hdr_left, hdr_right = st.columns([3, 1])
 with hdr_left:
     st.markdown(f"## HCP Detail — {hcp_id}")
+
+    _spec      = profile.get("specialty") or ""
+    _state_raw = profile.get("state") or ""
+    _state     = _STATE_NAMES.get(_state_raw.upper(), _state_raw)
+    _spec_state = " · ".join(x for x in [_spec, _state] if x)
+    if _spec_state:
+        st.caption(_spec_state)
 
     # Derive last engagement year from nova ToV fields
     _tov_by_year = {
@@ -181,6 +202,30 @@ with hdr_right:
                 st.session_state["investigation_result"] = fetch_hcp_investigation(hcp_id)
             except APIError as e:
                 st.error(f"Investigation error: {e}")
+
+# Note on tooltip overlap: the TOP RISK DRIVERS ℹ️ tooltip (col_shap, below) says
+# "SHAP feature importance scores show which factors most influenced this HCP risk
+# score" — this partially duplicates the expander's "Top Risk Drivers" paragraph.
+# The RISK SCORE ℹ️ tooltip also lightly overlaps the expander's closing sentence.
+# Both tooltips are technical; the expander is plain-English for business users.
+# A future consolidation pass could remove the tooltips and fold their content here.
+with st.expander("ⓘ How to read this page", expanded=False):
+    st.markdown(
+        "**Rule Flags** show specific policy violations this HCP triggered. "
+        "Each flag corresponds to a compliance threshold the HCP crossed — "
+        "for example, exceeding the meal limit or receiving speaker fees "
+        "above fair market value. These are explicit, auditable violations of "
+        "Nova Pharma and PhRMA policy.\n\n"
+        "**Top Risk Drivers** show statistical patterns in this HCP's "
+        "behavior that our anomaly detection model identified as unusual. "
+        "These are not policy violations on their own — they indicate that "
+        "this HCP's profile (spend levels, rep interactions, engagement "
+        "patterns) stands out compared to similar HCPs. Unusual statistical "
+        "behavior is worth reviewing even when no rules have fired.\n\n"
+        "A high-risk HCP typically has both: specific policy violations and "
+        "unusual statistical patterns. The overall Risk Score combines both "
+        "signals to prioritize investigation."
+    )
 
 # ── Pre-compute ToV so it's available in Row 1 peer benchmark fallback ────────
 
