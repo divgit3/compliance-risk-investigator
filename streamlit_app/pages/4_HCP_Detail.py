@@ -14,13 +14,19 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from components.api_client import APIError, get_client
-from config import FLAG_LABELS, RISK_TIER_COLORS, SHAP_LABELS, TIER_ORDER
+from config import (
+    FLAG_LABELS, FEATURE_DISPLAY_LABELS, RISK_TIER_COLORS, SHAP_LABELS,
+    TIER_ORDER, clean_feature_name, get_feature_tooltip,
+)
 
 st.set_page_config(
     page_title="HCP Detail",
     layout="wide",
     page_icon="👤",
 )
+
+# IF scores below this value trigger a contextual caption in the SHAP chart
+LOW_IF_SCORE_THRESHOLD = 30
 
 # ── Session state defaults ─────────────────────────────────────────────────────
 
@@ -343,14 +349,25 @@ with col_shap:
         _shap_data = fetch_hcp_shap(hcp_id, top_n=7)
         _top_features = _shap_data.get("top_features", [])
         if _top_features:
-            _feat_names = [f["feature"].replace("_", " ").title() for f in reversed(_top_features)]
-            _shap_vals  = [f["shap_value"] for f in reversed(_top_features)]
-            _bar_colors = ["#DC2626" if v < 0 else "#16A34A" for v in _shap_vals]
+            _reversed = list(reversed(_top_features))
+            _feat_names = [
+                FEATURE_DISPLAY_LABELS.get(f["feature"]) or clean_feature_name(f["feature"])
+                for f in _reversed
+            ]
+            # Negate for display: IF decision_function is inverted, so negating
+            # makes positive = pushes toward anomaly (red), negative = away (gray).
+            _display_vals = [-f["shap_value"] for f in _reversed]
+            _bar_colors   = ["#DC2626" if v > 0 else "#9CA3AF" for v in _display_vals]
+            _tooltips     = [get_feature_tooltip(f["feature"]) for f in _reversed]
             fig_shap = go.Figure(go.Bar(
-                x=_shap_vals,
+                x=_display_vals,
                 y=_feat_names,
                 orientation="h",
                 marker_color=_bar_colors,
+                text=[f"{v:.2f}" for v in _display_vals],
+                textposition="outside",
+                textfont=dict(color="#374151"),
+                hovertemplate="<b>%{y}</b><br>Contribution: %{x:.3f}<extra></extra>",
             ))
             fig_shap.update_layout(
                 plot_bgcolor="rgba(0,0,0,0)",
@@ -358,6 +375,7 @@ with col_shap:
                 height=280,
                 margin=dict(l=0, r=0, t=4, b=0),
                 xaxis=dict(
+                    title=dict(text="Contribution to anomaly score", font=dict(size=11, color="#6B7280")),
                     gridcolor="rgba(0,0,0,0.08)",
                     tickfont=dict(color="#374151"),
                 ),
@@ -367,6 +385,15 @@ with col_shap:
                 ),
                 font=dict(color="#374151"),
             )
+            _if_score = float(profile.get("anomaly_score") or 0)
+            if _if_score < LOW_IF_SCORE_THRESHOLD:
+                st.caption(
+                    f"IF score: {_if_score:.2f} (low) — this HCP did not strongly trigger "
+                    "the statistical anomaly detection model. The contributions below reflect "
+                    "IF's analysis but the overall anomaly signal for this HCP is weak. "
+                    "See the Rule Flags panel for the explicit policy violations driving "
+                    "this HCP's risk score."
+                )
             st.plotly_chart(fig_shap, use_container_width=True)
         else:
             st.caption("No SHAP data available for this HCP.")

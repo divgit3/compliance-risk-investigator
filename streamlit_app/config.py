@@ -45,13 +45,162 @@ FLAG_LABELS = {
     "flag_annual_cap_breach":           "Annual spend cap breached",
 }
 
-SHAP_LABELS = {
-    "speaker_events_count": "Speaker events attended",
-    "total_spend_ytd":      "Total spend this year",
-    "meal_count_90d":       "Meals in last 90 days",
-    "fmv_ratio":            "Speaker pay vs fair market",
-    "peer_spend_delta":     "Spend vs peer average",
+FEATURE_DISPLAY_LABELS = {
+    # Top-10 most common in SHAP top-5
+    "np_escalating_rank":                    "Escalating peer rank (YoY)",
+    "np_spend_outlier_2023_real":            "Spend outlier vs peers (2023)",
+    "np_spend_outlier_2023":                 "Spend outlier vs peers (2023)",
+    "engagement_priority_score_real":        "Engagement priority score",
+    "engagement_priority_score":             "Engagement priority score",
+    "spend_trend_real":                      "Multi-year spend trend",
+    "np_outlier_years_count_real":           "Years flagged as outlier vs peers",
+    "np_outlier_years_count":                "Years flagged as outlier vs peers",
+    "np_spend_vs_peer_avg_2024":             "2024 spend vs peer average",
+    "np_spend_vs_peer_avg_2024_real":        "2024 spend vs peer average",
+    "np_spend_vs_peer_avg_2023_real":        "2023 spend vs peer average",
+    "np_spend_vs_peer_avg_2023":             "2023 spend vs peer average",
+    "np_spend_vs_peer_avg_2022_real":        "2022 spend vs peer average",
+    "np_spend_pct_rank_specialty_2024_real": "2024 spend percentile (specialty)",
+    "np_spend_pct_rank_specialty_2024":      "2024 spend percentile (specialty)",
+    "np_spend_pct_rank_specialty_2023_real": "2023 spend percentile (specialty)",
+    "np_spend_pct_rank_specialty_2023":      "2023 spend percentile (specialty)",
+    "np_spend_pct_rank_specialty_2022_real": "2022 spend percentile (specialty)",
+    "np_spend_pct_rank_specialty_2022":      "2022 spend percentile (specialty)",
+
+    # Direct spend measures
+    "spend_2024_raw":                        "2024 total spend",
+    "spend_2023_raw":                        "2023 total spend",
+    "spend_2022_raw":                        "2022 total spend",
+    "spend_2024":                            "2024 total spend",
+    "spend_2023":                            "2023 total spend",
+    "spend_2022":                            "2022 total spend",
+    "peak_year_spend":                       "Peak-year spend",
+
+    # Spend growth
+    "yoy_growth_2324":                       "Spend growth 2023→2024",
+    "yoy_growth_2223":                       "Spend growth 2022→2023",
+
+    # Spend composition
+    "pct_food_beverage":                     "Food/beverage share of spend",
+    "pct_speaking_fee":                      "Speaking fee share of spend",
+    "pct_consulting":                        "Consulting share of spend",
+
+    # Outlier patterns
+    "np_spend_outlier_2022_real":            "Spend outlier vs peers (2022)",
+    "np_spend_outlier_2022":                 "Spend outlier vs peers (2022)",
+    "np_spend_outlier_2024_real":            "Spend outlier vs peers (2024)",
+    "np_spend_outlier_2024":                 "Spend outlier vs peers (2024)",
+    "np_persistent_outlier":                 "Outlier vs peers in 2+ years",
+    "np_persistent_outlier_real":            "Outlier vs peers in 2+ years",
+
+    # Share-of-wallet features (industry-wide, from mart_benchmark.sql)
+    "sow_dominant_years_count":              "Years Nova was dominant payer",
+
+    # Composite flags (from mart_benchmark.sql)
+    "dual_outlier_flag":                     "Outlier vs Nova peers and industry (2024)",
+    "triple_signal_flag":                    "All-signal outlier (Nova + industry + exclusive SOW)",
+    "escalating_risk_flag":                  "Escalating rank and share of wallet",
+    "chronic_risk_flag":                     "Outlier in 2+ years (chronic)",
+
+    # Interaction and meals
+    "total_meals":                           "Total meals",
+    "avg_meal_cost":                         "Average meal cost",
+    "total_interactions":                    "Total rep interactions",
+    "unique_reps_interacted":                "Unique reps interacted",
+    "interaction_frequency_score":           "Interaction frequency score",
+
+    # Annual cap usage
+    "annual_cap_pct_used_2022":              "2022 annual cap used (%)",
+    "annual_cap_pct_used_2023":              "2023 annual cap used (%)",
+    "annual_cap_pct_used_2024":              "2024 annual cap used (%)",
 }
+
+# Keep old name as alias so existing imports don't break
+SHAP_LABELS = FEATURE_DISPLAY_LABELS
+
+
+def clean_feature_name(feature: str) -> str:
+    """Display-label fallback for features not in FEATURE_DISPLAY_LABELS."""
+    name = feature
+    for suffix in ("_real", "_raw"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    if name.startswith("np_"):
+        name = "peer " + name[3:]
+    return name.replace("_", " ").title()
+
+
+# Plain-English explanations shown in SHAP bar chart tooltips.
+# Keys are canonical feature names (without _real/_raw suffix).
+# Lookup via get_feature_tooltip() which handles suffix stripping.
+FEATURE_DISPLAY_TOOLTIPS: dict[str, str] = {
+    # Peer-relative rank and outlier patterns
+    "np_escalating_rank":               "Rank among same-specialty peers is rising year-over-year — this HCP is receiving a growing share of Nova's spend relative to peers.",
+    "np_spend_outlier_2022":            "Statistical outlier vs same-specialty peers in 2022.",
+    "np_spend_outlier_2023":            "Statistical outlier vs same-specialty peers in 2023.",
+    "np_spend_outlier_2024":            "Statistical outlier vs same-specialty peers in 2024.",
+    "np_outlier_years_count":           "Number of years (out of 2022–2024) this HCP was flagged as a statistical outlier vs same-specialty peers.",
+    "np_persistent_outlier":            "Flagged as a statistical outlier vs same-specialty peers in two or more years — pattern is not isolated to a single year.",
+    "np_spend_vs_peer_avg_2022":        "Difference between this HCP's spend and the same-specialty peer average in 2022.",
+    "np_spend_vs_peer_avg_2023":        "Difference between this HCP's spend and the same-specialty peer average in 2023.",
+    "np_spend_vs_peer_avg_2024":        "Difference between this HCP's spend and the same-specialty peer average in 2024.",
+    "np_spend_pct_rank_specialty_2022": "Percentile rank among same-specialty HCPs by spend in 2022. 0.99 = top 1% of their specialty.",
+    "np_spend_pct_rank_specialty_2023": "Percentile rank among same-specialty HCPs by spend in 2023. 0.99 = top 1% of their specialty.",
+    "np_spend_pct_rank_specialty_2024": "Percentile rank among same-specialty HCPs by spend in 2024. 0.99 = top 1% of their specialty.",
+
+    # Engagement
+    "engagement_priority_score":        "Internal engagement prioritization score. High values indicate the HCP was flagged for elevated commercial attention.",
+
+    # Direct spend
+    "spend_trend":                      "Direction and magnitude of spend change across all available years.",
+    "spend_2022":                       "Total spend received from Nova in 2022 across all transfer-of-value categories.",
+    "spend_2023":                       "Total spend received from Nova in 2023 across all transfer-of-value categories.",
+    "spend_2024":                       "Total spend received from Nova in 2024 across all transfer-of-value categories.",
+    "peak_year_spend":                  "Highest single-year spend across all years on record.",
+
+    # Spend growth
+    "yoy_growth_2223":                  "Year-over-year spend change from 2022 to 2023.",
+    "yoy_growth_2324":                  "Year-over-year spend change from 2023 to 2024.",
+
+    # Spend composition
+    "pct_food_beverage":                "Proportion of total spend from food and beverage (meals). High values may indicate per-event cap exposure.",
+    "pct_speaking_fee":                 "Proportion of total spend from speaking fees. High values flag FMV and repeat-speaker risk.",
+    "pct_consulting":                   "Proportion of total spend from consulting arrangements.",
+
+    # Share-of-wallet
+    "sow_dominant_years_count":         "Number of years Nova was the dominant pharma payer for this HCP across all industry transfers.",
+
+    # Composite risk flags
+    "dual_outlier_flag":                "Outlier both vs Nova's same-specialty peers and vs the broader pharma industry in 2024.",
+    "triple_signal_flag":               "Highest-risk composite: Nova-peer outlier, industry outlier, and Nova was the dominant exclusive payer.",
+    "escalating_risk_flag":             "Peer rank rising year-over-year AND Nova's share of their total pharma spend is increasing.",
+    "chronic_risk_flag":                "Statistical outlier in two or more years — risk pattern is not isolated to a single year.",
+
+    # Interactions and meals
+    "total_meals":                      "Total number of meal events with Nova reps across all years.",
+    "avg_meal_cost":                    "Average cost per meal event. High values may signal per-event cap exposure.",
+    "total_interactions":               "Total number of rep interactions (all types) across all years.",
+    "unique_reps_interacted":           "Number of distinct Nova reps who interacted with this HCP. High values can indicate rep-hopping patterns.",
+    "interaction_frequency_score":      "Composite score capturing how frequently and recently this HCP interacted with Nova reps.",
+
+    # Annual cap usage
+    "annual_cap_pct_used_2022":         "Percentage of the annual meal/entertainment cap consumed in 2022. Values at or above 1.0 indicate cap breach.",
+    "annual_cap_pct_used_2023":         "Percentage of the annual meal/entertainment cap consumed in 2023. Values at or above 1.0 indicate cap breach.",
+    "annual_cap_pct_used_2024":         "Percentage of the annual meal/entertainment cap consumed in 2024. Values at or above 1.0 indicate cap breach.",
+}
+
+
+def get_feature_tooltip(feature: str) -> str:
+    """Return plain-English tooltip for a SHAP feature, or empty string if unknown."""
+    if feature in FEATURE_DISPLAY_TOOLTIPS:
+        return FEATURE_DISPLAY_TOOLTIPS[feature]
+    # Strip _real / _raw suffix and retry
+    for suffix in ("_real", "_raw"):
+        if feature.endswith(suffix):
+            stripped = feature[: -len(suffix)]
+            if stripped in FEATURE_DISPLAY_TOOLTIPS:
+                return FEATURE_DISPLAY_TOOLTIPS[stripped]
+    return ""
 
 US_STATE_CENTROIDS = {
     "AL": (32.8, -86.8), "AK": (64.2, -153.4), "AZ": (34.3, -111.1),
