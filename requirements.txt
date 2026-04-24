@@ -53,6 +53,7 @@ watchdog>=4.0.0
 # scikit-learn for anomaly detection models; shap for feature explanations (Task 3.7)
 # mlflow tracks experiments and model runs
 scikit-learn==1.5.0
+pyod
 shap
 mlflow>=2.0.0
 
