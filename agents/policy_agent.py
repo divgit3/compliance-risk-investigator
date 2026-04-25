@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,7 +27,7 @@ from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_openai import ChatOpenAI
 
 from agents.schemas import NovaVsPhRMA, PolicyAnswer, PolicyCitation
-from agents.tools.policy_tools import lookup_rule, search_policy_docs
+from agents.tools.policy_tools import lookup_rule, search_policy_docs, list_rule_dimensions
 
 # ── MLflow config ──────────────────────────────────────────────────────────────
 
@@ -34,43 +35,7 @@ _MLFLOW_URI        = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:500
 _MLFLOW_EXPERIMENT = "policy_agent"
 _MLFLOW_ENABLED    = os.environ.get("MLFLOW_ENABLED", "true").lower() == "true"
 
-# ── System prompt ──────────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """You are a pharmaceutical compliance policy expert AI for Nova Pharma Inc.
-You answer compliance questions by searching a curated policy knowledge
-base and a rules registry. You provide precise, citation-backed answers.
-
-Your knowledge base contains 5 documents (128 chunks total):
-  - PhRMA Code 2022: industry standard voluntary guidelines
-  - OIG Compliance Program Guidance: federal advisory guidance
-  - OIG Speaker Program Fraud Alert: enforcement risk guidance
-  - CMS Data Dictionary: open payments data definitions
-  - Nova Pharma Internal Policy: company policy (STRICTER than PhRMA)
-
-Nova Pharma key overrides vs PhRMA:
-  Meals: $25 breakfast / $50 lunch / $100 dinner
-         (PhRMA allows up to ~$100 flat — Nova is stricter for most meal types)
-  Speaker FMV: $3,500 per engagement cap
-  Annual speaker cap: $75,000 per program year
-
-Risk model context (for questions about scoring):
-  Tiers: critical>=60, high>=25, medium>=10, low<10
-  Score: 60% rule-based + 40% Isolation Forest anomaly detection
-
-Instructions:
-  - ALWAYS call lookup_rule first for any question with a threshold,
-    dollar amount, or named rule (meals, FMV, speaker, cap, rationale)
-  - ALWAYS call search_policy_docs for every question — even threshold
-    questions benefit from narrative policy context
-  - Call search_policy_docs multiple times with different queries if
-    the question has multiple aspects
-  - Always cite chunk_ids and rule_ids explicitly in your answer
-  - When Nova Pharma policy differs from PhRMA, always flag the difference
-  - Never invent thresholds — use only what lookup_rule returns
-  - If a question is outside your knowledge base, say so clearly
-    and cite what partial information you do have"""
-
-_TOOLS = [search_policy_docs, lookup_rule]
+_TOOLS = [search_policy_docs, lookup_rule, list_rule_dimensions]
 
 # ── Keywords that trigger data_limitations entries ─────────────────────────────
 
@@ -135,25 +100,75 @@ class PolicyAgent:
                 "- CMS Data Dictionary: open payments data definitions\n"
                 "- Nova Pharma Internal Policy: company policy (STRICTER than PhRMA)\n\n"
                 "Nova Pharma overrides vs PhRMA:\n"
-                "- Meals: $25 internal / $50 external / $100 international\n"
-                "  (PhRMA allows $100 flat — Nova is stricter for domestic events)\n"
+                "- Meals: $25 breakfast / $50 lunch / $100 dinner (per meal, not annual)\n"
                 "- Speaker FMV: $3,500 per engagement\n"
-                "- Annual speaker cap: $75,000 per program year\n\n"
+                "- Annual HCP compensation cap: $75,000 per program year\n\n"
                 "Tool call order:\n"
                 "1. Call lookup_rule first for any question involving a threshold,\n"
-                "   dollar amount, or named rule (meals, FMV, speaker, cap, rationale)\n"
-                "2. Call search_policy_docs for every question — use broad regulatory\n"
-                "   language, not internal flag names\n"
-                "   Good queries: 'fair market value speaker honoraria'\n"
-                "                 'pharmaceutical representative meal entertainment limit'\n"
-                "                 'anti-kickback statute speaker program'\n"
-                "                 'OIG compliance program pharmaceutical manufacturer'\n\n"
-                "After both tools have returned results, write your final answer immediately.\n"
-                "Never repeat a tool call you have already made successfully.\n"
-                "Always cite chunk_ids and rule_ids explicitly in your answer.\n"
-                "When Nova policy differs from PhRMA, always flag the difference.\n"
-                "Never invent thresholds — use only what lookup_rule returns.\n"
-                "If a question is outside your knowledge base, say so clearly."
+                "   dollar amount, or named rule\n"
+                "2. Call search_policy_docs with broad regulatory language (not\n"
+                "   internal flag names)\n\n"
+                "CRITICAL — scope verification before answering:\n"
+                "Every rule returned by lookup_rule includes a `scope` field with\n"
+                "`time_scope` (annual, monthly, weekly, daily, per_event_or_per_instance,\n"
+                "window_in_days) and `entity_scope` (per_meal, per_event, per_engagement,\n"
+                "per_hcp, per_hcp_aggregate, per_attendee, unspecified).\n\n"
+                "Before composing your final answer, you MUST:\n"
+                "(a) Identify the scope the question is asking about. If the question\n"
+                "    says 'annual', the user is asking about time_scope=annual. If it\n"
+                "    says 'per meal', they are asking about entity_scope=per_meal. If\n"
+                "    the question implies a scope combination that does not exist in\n"
+                "    any retrieved rule, do not silently substitute a different scope.\n"
+                "(b) Check whether any retrieved rule actually matches the question's\n"
+                "    scope. A rule with time_scope=per_event_or_per_instance does NOT\n"
+                "    answer a question about an annual limit, even if the entity_scope\n"
+                "    matches. A rule with entity_scope=per_hcp_aggregate does NOT\n"
+                "    answer a question about a per-meal limit.\n"
+                "(c) If no retrieved rule matches the question's scope, your answer\n"
+                "    MUST begin by stating that no rule with that scope exists in the\n"
+                "    policy. You may then describe the closest related rules, but you\n"
+                "    must label them as related-but-different scope, not as the answer.\n"
+                "    Do NOT reframe the user's question to fit the rules you found.\n\n"
+                "Example of correct scope-mismatch handling:\n"
+                "  Question: 'What is the annual meal cap for HCPs?'\n"
+                "  Retrieved: MEAL_001-004 (scope: per_meal/per_event), COMP_001\n"
+                "             (scope: annual/per_hcp_aggregate, but covers all\n"
+                "             compensation, not meals specifically).\n"
+                "  Correct answer opening: 'The policy does not define an annual\n"
+                "    meal-specific cap. It defines per-meal limits ($25/$50/$100\n"
+                "    for breakfast/lunch/dinner) and a separate $75,000 annual cap\n"
+                "    on total HCP compensation across all interactions, which would\n"
+                "    include but is not limited to meals.'\n\n"
+                "DIMENSION CHECK — when the question references a scope qualifier:\n"
+                "If the question references a specific jurisdiction (state name like\n"
+                "'California', or phrases like 'state-specific', 'by region'), an HCP\n"
+                "specialty (cardiologist, oncologist, etc., or phrases like 'by specialty'),\n"
+                "an HCP role (nurse practitioner, physician assistant, pharmacist, or\n"
+                "phrases like 'by role'), a drug/product, or a patient population — call\n"
+                "list_rule_dimensions to verify whether the rules registry segments rules\n"
+                "by that dimension. If the dimension is in dimensions_absent, the policy\n"
+                "applies uniformly across that dimension — your answer must explicitly\n"
+                "state this rather than substituting general rules as if they were specific\n"
+                "to the qualifier.\n\n"
+                "Example: Question 'What is the meal limit for HCPs in California?'\n"
+                "  Step: Call list_rule_dimensions. See that 'jurisdiction' is in\n"
+                "        dimensions_absent.\n"
+                "  Correct answer opening: 'The policy does not segment meal limits by\n"
+                "    state. The general meal limits ($25 breakfast, $50 lunch, $100 dinner)\n"
+                "    apply uniformly to all jurisdictions, including California.'\n\n"
+                "RETRIEVAL FAITHFULNESS:\n"
+                "If search_policy_docs returns chunks with low relevance and lookup_rule\n"
+                "returns no relevant rules for a question, you MUST refuse to answer beyond\n"
+                "what the retrieved content supports. State explicitly: 'I cannot answer\n"
+                "this from the policy corpus.' Do NOT supplement with general industry\n"
+                "knowledge, OIG/PhRMA/regulatory knowledge from your training data, or\n"
+                "'typical' or 'general' information. The user is asking what THIS corpus\n"
+                "says, not what is generally true in pharma compliance. If the corpus\n"
+                "doesn't say it, the corpus doesn't say it.\n\n"
+                "After both tools have returned results and you have completed scope\n"
+                "verification, write your final answer. Never repeat a successful tool\n"
+                "call. Always cite chunk_ids and rule_ids. Never invent thresholds —\n"
+                "use only what lookup_rule returns."
             )),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "{input}"),
@@ -234,6 +249,7 @@ class PolicyAgent:
                     "source_doc": r.get("source_doc", ""),
                     "chunk_id":  r.get("chunk_id", ""),
                     "severity":  r.get("severity", ""),
+                    "scope":     r.get("scope"),
                 })
         return thresholds
 
@@ -275,6 +291,278 @@ class PolicyAgent:
                 seen.add(cid)
                 ids.append(cid)
         return ids
+
+    def _judge_groundedness(
+        self,
+        question: str,
+        answer: str,
+        citations: list,
+        rule_thresholds: list[dict],
+        nova_vs_phrma: list,
+    ) -> Optional[dict]:
+        """
+        Cross-model-class groundedness judge. The Policy Agent runs on
+        gpt-4o-mini; this judge runs on gpt-4o. Different model in the same
+        family is a weaker form of cross-model judging than cross-vendor
+        (e.g., Claude judging GPT) but still buys some asymmetry — gpt-4o has
+        different post-training and different failure modes than gpt-4o-mini.
+
+        The judge specifically checks numeric claims, named rule IDs, and named
+        entities (e.g., "OIG fraud indicators include X, Y, Z") against the
+        retrieved chunks and rules. Topic overlap is not enough — the exact
+        claim must be supported.
+
+        Returns:
+          dict with keys {grounded, ungrounded_claims, reasoning, judge_model}
+          on success; None on judge failure (timeout, parse error, API error).
+
+        Failure mode is intentionally non-blocking — if the judge fails, the
+        response continues without a groundedness check, and the calling code
+        surfaces this via data_limitations.
+        """
+        from openai import OpenAI
+        import os
+
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            return None
+
+        chunks_payload = [
+            {"chunk_id": c.chunk_id, "source_doc": c.source_doc, "excerpt": c.excerpt}
+            for c in citations
+        ]
+        rules_payload = [
+            {
+                "rule_id": r.get("rule_id"),
+                "rule_name": r.get("rule_name"),
+                "threshold": r.get("threshold"),
+                "authority": r.get("authority"),
+            }
+            for r in rule_thresholds
+        ]
+        comparisons_payload = [
+            {
+                "rule_name": c.rule_name,
+                "nova_threshold": c.nova_threshold,
+                "phrma_or_fallback_threshold": c.phrma_threshold,
+                "nova_is_stricter": c.nova_is_stricter,
+                "source_rule_id": c.source_rule_id,
+            }
+            for c in nova_vs_phrma
+        ]
+
+        judge_prompt = f"""You are evaluating whether a compliance answer is grounded in retrieved content.
+
+Question: {question}
+
+Retrieved policy chunk excerpts:
+{json.dumps(chunks_payload, indent=2)}
+
+Retrieved rules from rules registry:
+{json.dumps(rules_payload, indent=2)}
+
+Nova Pharma vs PhRMA comparisons (derived from rules registry):
+{json.dumps(comparisons_payload, indent=2)}
+
+Generated answer:
+{answer}
+
+Your task: Identify every specific factual claim in the answer — numeric thresholds (dollar amounts, counts, percentages), named rule IDs, named entities (e.g., "OIG fraud indicators include X, Y, Z"), and named statutes or regulations.
+
+For each claim, check whether it is supported by the retrieved content.
+- Topic overlap is NOT enough. If the answer says "OIG identifies low attendance as a fraud indicator" but the retrieved chunks discuss speaker programs without naming low attendance, that claim is NOT grounded.
+- Numeric values must match exactly. "$50 lunch limit" is grounded only if a retrieved rule has threshold 50 USD for lunch.
+- Rule IDs cited in the answer must appear in the retrieved rules list.
+- General statements that don't make specific factual claims (e.g., "compliance is important") can be considered grounded by default.
+
+Respond with JSON only, no preamble, no code fences:
+{{"grounded": true | false,
+  "ungrounded_claims": ["<exact claim from answer>", ...],
+  "reasoning": "<one sentence explaining the verdict>"}}
+
+If grounded is true, ungrounded_claims should be an empty list."""
+
+        try:
+            client = OpenAI(api_key=api_key, timeout=30.0)
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are a strict groundedness judge. Respond with JSON only."},
+                    {"role": "user", "content": judge_prompt},
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+                max_tokens=1000,
+            )
+            raw = response.choices[0].message.content
+            verdict = json.loads(raw)
+            if not isinstance(verdict, dict):
+                return None
+            if "grounded" not in verdict or "ungrounded_claims" not in verdict:
+                return None
+            return {
+                "grounded": bool(verdict["grounded"]),
+                "ungrounded_claims": list(verdict.get("ungrounded_claims", [])),
+                "reasoning": str(verdict.get("reasoning", "")),
+                "judge_model": "gpt-4o",
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _detect_unsupported_scope_dimension(
+        question: str,
+        rule_thresholds: list[dict],
+    ) -> Optional[dict]:
+        """
+        Deterministic fallback for scope-dimension recognition. Catches questions
+        that reference jurisdiction, specialty, or role qualifiers that the
+        rules registry does not segment by.
+
+        Used when the agent fails to call `list_rule_dimensions` despite a clear
+        scope qualifier in the question. The warning explicitly notes the
+        fallback fired, so dataset analysis can distinguish "agent recognized
+        the qualifier" from "fallback caught it."
+
+        Returns a dict with warning details if fired, None otherwise.
+        """
+        q_lower = question.lower()
+
+        us_states = [
+            "alabama", "alaska", "arizona", "arkansas", "california",
+            "colorado", "connecticut", "delaware", "florida", "georgia",
+            "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas",
+            "kentucky", "louisiana", "maine", "maryland", "massachusetts",
+            "michigan", "minnesota", "mississippi", "missouri", "montana",
+            "nebraska", "nevada", "new hampshire", "new jersey", "new mexico",
+            "new york", "north carolina", "north dakota", "ohio", "oklahoma",
+            "oregon", "pennsylvania", "rhode island", "south carolina",
+            "south dakota", "tennessee", "texas", "utah", "vermont",
+            "virginia", "washington", "west virginia", "wisconsin", "wyoming",
+            "district of columbia",
+        ]
+        jurisdiction_phrases = [
+            "state-specific", "by state", "in this state", "per state",
+            "jurisdiction", "regional", "by region",
+        ]
+        specialties = [
+            "cardiologist", "oncologist", "pediatrician", "neurologist",
+            "psychiatrist", "endocrinologist", "rheumatologist", "dermatologist",
+            "gastroenterologist", "hematologist", "nephrologist", "urologist",
+            "internist", "family practitioner", "general practitioner",
+        ]
+        specialty_phrases = [
+            "by specialty", "per specialty", "specialty-specific",
+            "specialist", "for specialists",
+        ]
+        role_markers = [
+            "nurse practitioner", "physician assistant", "pharmacist",
+            "by role", "for nurses", "for nps", "for pas",
+            "role-specific",
+        ]
+
+        matched_dimension = None
+        matched_marker = None
+
+        for state in us_states:
+            if re.search(rf"\b{re.escape(state)}\b", q_lower):
+                matched_dimension = "jurisdiction"
+                matched_marker = state
+                break
+
+        if matched_dimension is None:
+            for phrase in jurisdiction_phrases:
+                if phrase in q_lower:
+                    matched_dimension = "jurisdiction"
+                    matched_marker = phrase
+                    break
+
+        if matched_dimension is None:
+            for spec in specialties:
+                if re.search(rf"\b{re.escape(spec)}s?\b", q_lower):
+                    matched_dimension = "hcp_specialty"
+                    matched_marker = spec
+                    break
+
+        if matched_dimension is None:
+            for phrase in specialty_phrases:
+                if phrase in q_lower:
+                    matched_dimension = "hcp_specialty"
+                    matched_marker = phrase
+                    break
+
+        if matched_dimension is None:
+            for marker in role_markers:
+                if marker in q_lower:
+                    matched_dimension = "hcp_role"
+                    matched_marker = marker
+                    break
+
+        if matched_dimension is None:
+            return None
+
+        return {
+            "fallback_fired": True,
+            "matched_dimension": matched_dimension,
+            "matched_marker": matched_marker,
+            "warning": (
+                f"Safety net (not schema tool) caught dimension "
+                f"'{matched_dimension}' in question (marker: '{matched_marker}'). "
+                f"The rules registry does not segment rules by this dimension; "
+                f"all rules apply uniformly. The agent should have called "
+                f"list_rule_dimensions to recognize this; that it didn't suggests "
+                f"the answer may incorrectly substitute general rules as if they "
+                f"were specific to '{matched_marker}'."
+            ),
+        }
+
+    @staticmethod
+    def _detect_scope_mismatch(
+        question: str,
+        rule_thresholds: list[dict],
+    ) -> Optional[str]:
+        """
+        Heuristic check: if the question explicitly asks about a time scope
+        (annual / monthly / weekly / daily) and no retrieved rule has that
+        time scope, return a warning string. Otherwise return None.
+
+        Conservative by design — only fires on explicit scope words to avoid
+        false positives on neutral questions.
+        """
+        q_lower = question.lower()
+        scope_words = {
+            "annual":    "annual",
+            "yearly":    "annual",
+            "per year":  "annual",
+            "monthly":   "monthly",
+            "per month": "monthly",
+            "weekly":    "weekly",
+            "per week":  "weekly",
+            "daily":     "daily",
+            "per day":   "daily",
+        }
+        question_scope = None
+        for word, scope in scope_words.items():
+            if word in q_lower:
+                question_scope = scope
+                break
+        if question_scope is None:
+            return None
+        if not rule_thresholds:
+            return None
+
+        retrieved_scopes = {
+            (r.get("scope") or {}).get("time_scope")
+            for r in rule_thresholds
+        }
+        if question_scope in retrieved_scopes:
+            return None
+        return (
+            f"Question asked about a '{question_scope}' scope, but no rule "
+            f"with that time scope was retrieved. Retrieved rules have time "
+            f"scopes: {sorted(s for s in retrieved_scopes if s)}. The answer "
+            f"below may not directly address the question's scope."
+        )
 
     @staticmethod
     def _assign_confidence(
@@ -409,6 +697,53 @@ class PolicyAgent:
             confidence      = self._assign_confidence(citations, rule_thresholds)
             limitations     = self._build_limitations(question)
 
+            # Scope-mismatch safety net (defense in depth vs prompt-only fix).
+            # Even if the prompt change above doesn't fully prevent scope conflation,
+            # this catches the obvious cases (annual/monthly/weekly/daily) and surfaces
+            # the warning to the user via data_limitations.
+            scope_warning = self._detect_scope_mismatch(question, rule_thresholds)
+            if scope_warning:
+                limitations.insert(0, scope_warning)
+                if confidence == "high":
+                    confidence = "medium"
+
+            # Bug A safety net — catches scope dimensions the agent should
+            # have recognized via list_rule_dimensions but didn't.
+            dimension_warning = self._detect_unsupported_scope_dimension(
+                question, rule_thresholds
+            )
+            if dimension_warning:
+                limitations.insert(0, dimension_warning["warning"])
+                if confidence == "high":
+                    confidence = "medium"
+
+            # Bug B safety net — cross-model-class groundedness judge.
+            # Non-blocking: if judge fails, response continues with a note
+            # in data_limitations. Synchronous call wrapped in executor to
+            # match the existing async pattern.
+            groundedness_check = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._judge_groundedness(
+                    question, llm_output.strip(), citations, rule_thresholds, nova_vs_phrma
+                ),
+            )
+            if groundedness_check is None:
+                limitations.append(
+                    "Groundedness check unavailable for this query "
+                    "(judge call failed or timed out)."
+                )
+            elif not groundedness_check["grounded"]:
+                ungrounded_summary = "; ".join(
+                    groundedness_check["ungrounded_claims"][:3]
+                )
+                limitations.insert(
+                    0,
+                    f"Groundedness check flagged ungrounded claims: "
+                    f"{ungrounded_summary}. Judge reasoning: "
+                    f"{groundedness_check['reasoning']}"
+                )
+                confidence = "low"
+
             latency_ms = (time.monotonic() - t0) * 1000
 
             answer = PolicyAnswer(
@@ -421,6 +756,7 @@ class PolicyAgent:
                 chunk_ids_for_audit=chunk_ids,
                 confidence=confidence,
                 data_limitations=limitations,
+                groundedness_check=groundedness_check,
                 agent_reasoning=reasoning,
             )
 
@@ -437,6 +773,7 @@ class PolicyAgent:
                 confidence="low",
                 data_limitations=self._build_limitations(question)
                     + [f"Agent error: {e}"],
+                groundedness_check=None,
                 agent_reasoning=f"ERROR: {e}",
             )
 

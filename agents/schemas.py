@@ -152,4 +152,5 @@ class PolicyAnswer(BaseModel):
     chunk_ids_for_audit: List[str] = Field(default_factory=list)          # deduplicated
     confidence: str = "medium"                               # "high" | "medium" | "low"
     data_limitations: List[str] = Field(default_factory=list)
+    groundedness_check: Optional[dict] = None               # judge output: {grounded, ungrounded_claims, reasoning, judge_model}
     agent_reasoning: str = ""                                # full ReAct chain for audit

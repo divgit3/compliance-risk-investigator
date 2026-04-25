@@ -40,7 +40,6 @@ def _get_rules() -> Dict[str, Any]:
             _rules_cache = json.load(f)
     return _rules_cache
 
-import os
 _QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
 _QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 _COLLECTION        = "policy_docs"
@@ -181,6 +180,50 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
 
 # ── lookup_rule (Task 3.3) ─────────────────────────────────────────────────────
 
+def _infer_scope(rule: dict) -> dict:
+    """Derive explicit scope metadata from a rule's structural fields."""
+    name           = rule.get("rule_name", "").lower()
+    category       = rule.get("category", "")
+    unit           = rule.get("unit", "")
+    threshold_type = rule.get("threshold_type", "")
+
+    # Time scope
+    if "annual" in name or "per year" in name or "per program year" in name:
+        time_scope = "annual"
+    elif "per month" in name or "monthly" in name:
+        time_scope = "monthly"
+    elif "per week" in name or "weekly" in name:
+        time_scope = "weekly"
+    elif "per day" in name or "daily" in name:
+        time_scope = "daily"
+    elif unit == "days":
+        time_scope = "window_in_days"
+    else:
+        time_scope = "per_event_or_per_instance"
+
+    # Entity scope
+    if "per attendee" in name:
+        entity_scope = "per_attendee"
+    elif "per event" in name or category == "venue_event_costs":
+        entity_scope = "per_event"
+    elif "per meal" in name or category == "meal_limits":
+        entity_scope = "per_meal"
+    elif "per engagement" in name or "fmv" in name:
+        entity_scope = "per_engagement"
+    elif "per hcp" in name:
+        entity_scope = "per_hcp"
+    elif category == "hcp_compensation":
+        entity_scope = "per_hcp_aggregate"
+    else:
+        entity_scope = "unspecified"
+
+    return {
+        "time_scope":      time_scope,
+        "entity_scope":    entity_scope,
+        "threshold_type":  threshold_type,
+    }
+
+
 def _rule_score(rule: dict, tokens: list[str]) -> int:
     """Count how many query tokens appear in searchable rule fields."""
     searchable = " ".join(filter(None, [
@@ -192,6 +235,64 @@ def _rule_score(rule: dict, tokens: list[str]) -> int:
         " ".join(rule.get("applies_to", [])),
     ])).lower()
     return sum(1 for t in tokens if t in searchable)
+
+
+@tool
+def list_rule_dimensions() -> dict:
+    """
+    Return the list of scope dimensions the rules registry segments by, and
+    the list of dimensions it does NOT segment by.
+
+    Call this when the question references a scope qualifier — a jurisdiction
+    (state, region), HCP specialty (cardiologist, oncologist, etc.), HCP role
+    (nurse practitioner, physician assistant, etc.), drug or product, or
+    patient population. The answer to "is there a per-X cap" depends on
+    whether the rules registry has any rules segmented by X.
+
+    If the question's qualifier is in `dimensions_absent`, the policy applies
+    uniformly across that dimension — your answer must explicitly state this
+    rather than substituting general rules as if they were specific to the
+    qualifier.
+    """
+    rules_data = _get_rules()
+    rules = rules_data["rules"]
+
+    dimensions_present = {
+        "time_scope": set(),
+        "entity_scope": set(),
+        "applies_to": set(),
+        "category": set(),
+        "severity": set(),
+    }
+
+    for r in rules:
+        scope = _infer_scope(r)
+        dimensions_present["time_scope"].add(scope["time_scope"])
+        dimensions_present["entity_scope"].add(scope["entity_scope"])
+        for at in r.get("applies_to", []):
+            dimensions_present["applies_to"].add(at)
+        dimensions_present["category"].add(r.get("category", ""))
+        dimensions_present["severity"].add(r.get("severity", ""))
+
+    dimensions_absent = [
+        "jurisdiction",
+        "hcp_specialty",
+        "hcp_role",
+        "drug_or_product",
+        "patient_population",
+    ]
+
+    return {
+        "dimensions_present": {k: sorted(v) for k, v in dimensions_present.items()},
+        "dimensions_absent": dimensions_absent,
+        "note": (
+            "If the question references a dimension in `dimensions_absent`, "
+            "the policy does not segment rules by that dimension — all rules "
+            "apply uniformly across that dimension. Your answer must state "
+            "this explicitly rather than substituting general rules as if "
+            "they were specific to the dimension the question asked about."
+        ),
+    }
 
 
 @tool
@@ -277,6 +378,7 @@ def lookup_rule(query: str) -> dict:
                 "category":          r.get("category", ""),
                 "threshold":         threshold_str,
                 "threshold_type":    r.get("threshold_type", ""),
+                "scope":             _infer_scope(r),
                 "severity":          r.get("severity", ""),
                 "violation_type":    r.get("violation_type", ""),
                 "authority":         authority,

@@ -63,3 +63,6 @@ docker/.env
 mlflow.db
 .venv_py312_install.txt
 backups/
+
+# Evaluation smoke test artifacts
+evaluation/policy_ragas/stage2_smoke_results/
