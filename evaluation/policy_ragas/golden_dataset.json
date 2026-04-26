@@ -1,0 +1,146 @@
+[
+  {
+    "id": "rb_01_lunch_meal_limit",
+    "user_input": "What is the meal limit for lunch?",
+    "reference": "The meal limit for lunch at Nova Pharma is $50 per meal. This is stricter than the PhRMA Code, which allows up to $75 per meal. Source: Nova Pharma Internal Policy, rule MEAL_002.",
+    "category": "rule_backed",
+    "ground_truth_source": "rules_registry:MEAL_002",
+    "expected_behavior": "Agent calls lookup_rule with a meal-limit query, retrieves MEAL_002, narrates the $50 figure with rule_id citation. nova_vs_phrma should include the $75 PhRMA comparison.",
+    "notes": "Used as smoke-test control across all sessions. Confirms no regression on the simplest rule-backed path."
+  },
+  {
+    "id": "rb_02_speaker_fmv_ceiling",
+    "user_input": "What is the speaker FMV ceiling?",
+    "reference": "Nova Pharma's speaker fee fair market value (FMV) ceiling is $3,500 per engagement (rule SPEAKER_001). This is stricter than the system's industry proxy of $4,000.",
+    "category": "rule_backed",
+    "ground_truth_source": "rules_registry:SPEAKER_001",
+    "expected_behavior": "Agent retrieves SPEAKER_001, cites $3,500 with rule_id. The $4,000 comparison is a fallback \u2014 Per the lessons log, this is a known 'fallback laundering' risk; agent should not present it as a real PhRMA value but the current implementation does. Reference written to be neutral on that distinction.",
+    "notes": "Tests fallback-laundering bug class indirectly. If the agent narrative asserts the $4,000 IS a PhRMA-published value, that's the laundering showing through and worth flagging in RAGAS analysis."
+  },
+  {
+    "id": "rb_03_annual_compensation_cap",
+    "user_input": "What is the annual cap on total HCP compensation?",
+    "reference": "Nova Pharma's annual cap on total HCP compensation is $75,000 per program year, applied per HCP across all interactions. Source: rule COMP_001.",
+    "category": "rule_backed",
+    "ground_truth_source": "rules_registry:COMP_001",
+    "expected_behavior": "Agent retrieves COMP_001, cites $75,000 with rule_id, scope=annual/per_hcp_aggregate. Should NOT be confused with the meal-specific or speaker-specific caps elsewhere in the registry.",
+    "notes": "Tests time-scope discrimination on a positive case. The scope-conflation fix should keep this answer clean (it did in smoke testing)."
+  },
+  {
+    "id": "rb_04_meal_per_attendee_ceiling",
+    "user_input": "What is the per-attendee meal cost ceiling at speaker events?",
+    "reference": "Nova Pharma sets the per-attendee meal cost ceiling at speaker events to $100 (rule VENUE_003). The OIG documents reference a higher figure, but Nova Pharma's stricter $100 limit applies.",
+    "category": "rule_backed",
+    "ground_truth_source": "rules_registry:VENUE_003",
+    "expected_behavior": "Agent retrieves VENUE_003. Note this rule has multiple sources (OIG and Nova Pharma) with stricter-wins reconciliation \u2014 the answer should reflect Nova Pharma's $100 as the effective threshold.",
+    "notes": "Tests rule reconciliation handling \u2014 VENUE_003 has Nova Pharma stricter than OIG, and the registry's reconciliation_note documents this. Whether the agent surfaces the reconciliation or just cites $100 is interesting either way."
+  },
+  {
+    "id": "ret_01_oig_speaker_fraud_indicators",
+    "user_input": "What characteristics has the OIG identified as potentially indicating a speaker program arrangement that could violate the anti-kickback statute?",
+    "reference": "Per the OIG's 2020 Special Fraud Alert on Speaker Programs, suspect characteristics (illustrative, not exhaustive) include: (1) speaker programs where little or no substantive information is presented; (2) alcohol available or meals exceeding modest value provided to attendees; (3) programs held at venues not conducive to educational exchange (restaurants, sports venues, entertainment venues); (4) sponsoring a large number of programs on the same topic; (5) significant time without new medical/scientific information or FDA-approved indication; (6) HCPs attending repeat programs on the same topic; (7) attendees without legitimate business reason (friends, family, the speaker's own staff); (8) sales/marketing influencing speaker selection or selecting speakers based on expected revenue; (9) paying speakers above fair market value or tying compensation to volume/value of business generated.",
+    "category": "retrieval",
+    "ground_truth_source": "pdf:oig_speaker_fraud_alert_2020.pdf:p5-6",
+    "expected_behavior": "Ideal: agent retrieves DOC_004 chunks containing the suspect-characteristics list and synthesizes the 9 indicators. Realistic: retrieval relevance is 0.02-0.04 noise; agent admits retrieval failure ('specific excerpts were not retrieved') and either refuses or fabricates from training-data knowledge. The judge should flag the fabrication case.",
+    "notes": "This is the original ret_03 case from smoke testing. Direct test of knowledge-leakage bug class. RAGAS Faithfulness on the agent's response will be the key metric here."
+  },
+  {
+    "id": "ret_02_anti_kickback_penalties",
+    "user_input": "What are the criminal penalties for violating the federal anti-kickback statute?",
+    "reference": "Violation of the federal anti-kickback statute is a felony punishable by a maximum fine of $100,000, imprisonment up to 10 years, or both. Criminal conviction also results in mandatory exclusion from Federal health care programs, including Medicare and Medicaid. Source: OIG Special Fraud Alert on Speaker Programs (2020), citing Social Security Act \u00a7 1128B(b)(1)\u2013(2) and 42 U.S.C. \u00a7 1320a-7b(b)(1)\u2013(2).",
+    "category": "retrieval",
+    "ground_truth_source": "pdf:oig_speaker_fraud_alert_2020.pdf:p3",
+    "expected_behavior": "Specific factual recall question. Numeric and named-entity claims are easy for the judge to verify. If the agent gets the $100,000 and 10 years correct AND grounds them in retrieved chunks, groundedness should be true.",
+    "notes": "Concrete-fact retrieval question. Easier judging than the synthesis question above."
+  },
+  {
+    "id": "ret_03_phrma_sales_meal_conditions",
+    "user_input": "Under the PhRMA Code, what conditions must be met for a sales representative to offer a meal to an HCP?",
+    "reference": "Per Section 2 of the PhRMA Code (2022), incidental meals offered by company representatives during informational presentations are appropriate when: (a) the meal is modest as judged by local standards; (b) the meal is not part of an entertainment or recreational event; (c) the meal is provided in a manner conducive to informational communication. Field sales representative meals must additionally be limited to in-office or in-hospital settings. The presentation must provide scientific or educational value, each attendee must have a substantive interaction with the company representative, and 'grab-and-go' meals are not appropriate.",
+    "category": "retrieval",
+    "ground_truth_source": "pdf:phrma_code_2022.pdf:p6-7",
+    "expected_behavior": "The registry has dollar-amount meal limits (MEAL_001-004) but NOT the qualitative conditions. The agent might mistakenly cite MEAL_xxx and miss the conditional content entirely. If retrieval works, answer surfaces conditions. If retrieval fails, agent might substitute the dollar-limit answer.",
+    "notes": "Tests whether the agent recognizes the question is about CONDITIONS rather than thresholds. Useful diagnostic for query understanding."
+  },
+  {
+    "id": "ret_04_phrma_educational_items_threshold",
+    "user_input": "Under the PhRMA Code, what is the value threshold for educational items that can be provided to HCPs, and what conditions apply?",
+    "reference": "Per Section 11 of the PhRMA Code (2022), companies may offer items designed primarily for the education of patients or HCPs if the items are not of substantial value ($100 or less) and do not have value to HCPs outside of their professional responsibilities. Such items should not be offered on more than an occasional basis. Examples of permissible items include medical textbooks, subscriptions to scientific journals, and copies of clinical treatment guidelines. Items like stethoscopes, even though useful in patient care, are not permitted because they are designed for patient treatment rather than education.",
+    "category": "retrieval",
+    "ground_truth_source": "pdf:phrma_code_2022.pdf:p16",
+    "expected_behavior": "Specific threshold ($100) plus conditional content. Registry has PROHIBIT_002 ('Gifts to HCPs Prohibited') but no rule capturing the educational-item exception. If agent only consults registry, will answer 'gifts are prohibited' and miss the exception entirely.",
+    "notes": "Tests whether agent recognizes this is an EXCEPTION question that the rule registry doesn't capture. Strong test of retrieval path."
+  },
+  {
+    "id": "ret_05_oig_compliance_program_elements",
+    "user_input": "What are the seven elements of an effective pharmaceutical compliance program according to OIG guidance?",
+    "reference": "Per the OIG Compliance Program Guidance for Pharmaceutical Manufacturers (2003), the seven elements of an effective compliance program are: (1) implementing written policies and procedures; (2) designating a compliance officer and compliance committee; (3) conducting effective training and education; (4) developing effective lines of communication; (5) conducting internal monitoring and auditing; (6) enforcing standards through well-publicized disciplinary guidelines; and (7) responding promptly to detected problems and undertaking corrective action.",
+    "category": "retrieval",
+    "ground_truth_source": "pdf:oig_cpg_pharmaceutical.pdf:p23731",
+    "expected_behavior": "Listable factual recall. The 7 elements have nothing to do with the rules registry \u2014 pure retrieval test. Either retrieval surfaces DOC_003 chunks containing the list, or agent admits failure / fabricates from training data.",
+    "notes": "Cleanest pure-retrieval test in the set. No registry contamination possible."
+  },
+  {
+    "id": "un_01_telehealth_specific_policy",
+    "user_input": "What is Nova Pharma's policy on telehealth-only HCP interactions?",
+    "reference": "The corpus does not contain a Nova Pharma policy specifically addressing telehealth-only HCP interactions. The Nova Pharma Internal Policy (Sections 1-10) governs general HCP engagements including meals, speaker programs, and consulting, but does not differentiate based on interaction modality. The agent should explicitly state that the policy does not specifically address this topic rather than extrapolating from general rules.",
+    "category": "unanswerable",
+    "ground_truth_source": "absent_from_corpus",
+    "expected_behavior": "Honest refusal: 'The policy does not specifically address telehealth-only interactions.' Agent should not extrapolate or fabricate. May optionally mention general rules apply, but must mark this as extrapolation, not stated policy.",
+    "notes": "Tests honest-refusal behavior. Smoke testing showed the agent handles this well ('not explicitly defined'). Included as a regression check for that good behavior."
+  },
+  {
+    "id": "un_02_drug_sample_distribution_rules",
+    "user_input": "What are Nova Pharma's specific rules for distributing drug samples to HCPs?",
+    "reference": "The corpus does not contain Nova Pharma-specific rules for drug sample distribution. The OIG Compliance Program Guidance discusses drug samples generally as a risk area governed by the Prescription Drug Marketing Act (PDMA), but Nova Pharma's Internal Policy (the synthetic policy in the corpus) does not include sample-specific rules. The agent should distinguish 'Nova Pharma has no specific rules on samples' from 'samples are unregulated' \u2014 the latter would be wrong.",
+    "category": "unanswerable",
+    "ground_truth_source": "absent_from_corpus",
+    "expected_behavior": "Honest refusal acknowledging Nova Pharma doesn't have specific sample rules in this corpus. Agent may reference OIG/PDMA general framework if it retrieves DOC_003 content but must mark that as external context, not Nova Pharma policy.",
+    "notes": "Tests whether agent can distinguish 'specific rule absent' from 'topic unregulated.' Knowledge-leakage risk: agent might fabricate Nova Pharma rules from general PDMA knowledge."
+  },
+  {
+    "id": "fp_01_california_meal_limit",
+    "user_input": "What is the meal limit for HCPs in California specifically?",
+    "reference": "The Nova Pharma policy does not segment meal limits by state or jurisdiction. The general meal limits \u2014 $25 breakfast, $50 lunch, $100 dinner per HCP \u2014 apply uniformly across all jurisdictions, including California. The agent should explicitly state that the policy is not jurisdictionally segmented before describing the general limits.",
+    "category": "false_premise",
+    "ground_truth_source": "absent_dimension:jurisdiction",
+    "expected_behavior": "Either: (a) agent calls list_rule_dimensions, sees 'jurisdiction' in dimensions_absent, narrates accordingly. Or (b) safety net fires on 'california' marker and warning prepends to data_limitations. Either is correct; defense in depth working.",
+    "notes": "Original failing case for jurisdictional scope conflation. Tests both schema-tool path and safety-net fallback."
+  },
+  {
+    "id": "fp_02_per_specialty_compensation_cap",
+    "user_input": "What is the per-specialty compensation cap for cardiologists?",
+    "reference": "The Nova Pharma policy does not segment compensation caps by HCP specialty. The annual HCP compensation cap of $75,000 (rule COMP_001) applies uniformly across all specialties, including cardiology. Note: the policy DOES have specialty-tiered FMV rates for speaker fees per engagement (Section 3.1), but these are per-program rates, not annual caps. The annual aggregate cap is uniform.",
+    "category": "false_premise",
+    "ground_truth_source": "absent_dimension:hcp_specialty",
+    "expected_behavior": "Same as fp_01: schema tool or safety net fires. Bonus credit if the agent correctly flags that specialty-tiered FMV rates DO exist for per-engagement fees but not for the annual cap.",
+    "notes": "Tests entity-scope (specialty) conflation. The bonus credit case tests whether the agent can distinguish 'this dimension is absent for THIS rule' from 'this dimension is absent in the policy entirely.' More demanding than fp_01."
+  },
+  {
+    "id": "fp_03_quarterly_speaker_fee_limit",
+    "user_input": "What is the quarterly speaker fee limit?",
+    "reference": "The Nova Pharma policy does not define a quarterly speaker fee limit. Speaker fees are governed by: (a) the per-engagement FMV ceiling of $3,500 (rule SPEAKER_001), and (b) the annual speaker fee cap of $75,000 per HCP per calendar year (Section 3.2 of the policy, also captured as COMP_001 in the rules registry). No intermediate quarterly limit is defined.",
+    "category": "false_premise",
+    "ground_truth_source": "absent_dimension:time_scope_quarterly",
+    "expected_behavior": "Agent should explicitly state that no quarterly limit exists. May describe the per-engagement and annual limits as related-but-different scope. The marker safety net does NOT currently include 'quarterly' \u2014 this case relies on the prompt-only scope-verification layer.",
+    "notes": "Tests time-scope conflation on a scope word the safety net doesn't catch. Pure prompt-only test. Smoke testing showed the agent handles this correctly via prompt alone."
+  },
+  {
+    "id": "rg_01_annual_meal_cap",
+    "user_input": "What is Nova Pharma's annual meal cap for HCPs?",
+    "reference": "Per Section 2.2 of the Nova Pharma Internal Policy: 'No HCP may receive meals from Nova Pharma field personnel exceeding $500 in any rolling 12-month period.' Note: this rule exists in the policy PDF but is NOT captured in the rules registry (compliance/rules.json). The agent must retrieve this from PDF text; it cannot answer via lookup_rule alone.",
+    "category": "registry_gap",
+    "ground_truth_source": "pdf:nova_pharma_internal_policy_SYNTHETIC.pdf:section_2.2",
+    "expected_behavior": "Ideal: retrieval surfaces DOC_002 chunks containing Section 2.2; agent answers $500/rolling-12-month. Realistic given current retrieval relevance (0.02-0.04): agent fails to retrieve, then EITHER incorrectly says 'no annual meal cap exists' (the current smoke-test behavior) OR honestly admits it can't find the answer. The first is the registry-gap bug; the second is the desired fallback.",
+    "notes": "Canonical test case for the registry-incompleteness bug class. Currently the agent answers wrong (says no annual cap exists when one does). Critical baseline measurement for whether 1.2 retrieval improvements actually fix anything."
+  },
+  {
+    "id": "rg_02_office_visit_frequency_by_hcp_type",
+    "user_input": "What are Nova Pharma's office visit frequency limits per HCP per year, by HCP type?",
+    "reference": "Per Section 5.1 of the Nova Pharma Internal Policy, field personnel may visit an HCP's office for educational detailing no more than: (a) 12 times per calendar year for primary care physicians; (b) 8 times per calendar year for specialists; (c) 6 times per calendar year for sub-specialists. Note: these tiered limits are NOT in the rules registry. The closest registry rules (FREQ_001-003) cover meals and general interactions, not office-visit detailing.",
+    "category": "registry_gap",
+    "ground_truth_source": "pdf:nova_pharma_internal_policy_SYNTHETIC.pdf:section_5.1",
+    "expected_behavior": "Tests retrieval on a specific tiered-numeric question. Agent might retrieve FREQ_xxx rules and substitute those (24 meals/year, 3 interactions/week) \u2014 that would be wrong because the question is about office visits, not meals or interactions. Agent might also honestly say 'I cannot find office-visit specific limits.'",
+    "notes": "Second registry-gap test. Different shape than rg_01 \u2014 this one has tiered numerics (PCP/specialist/sub-specialist), which makes fabrication easier to detect (agent can't credibly produce the exact 12/8/6 numbers from training data; if it does, that's a specific knowledge-leakage finding)."
+  }
+]

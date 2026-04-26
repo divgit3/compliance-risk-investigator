@@ -165,10 +165,41 @@ class PolicyAgent:
                 "'typical' or 'general' information. The user is asking what THIS corpus\n"
                 "says, not what is generally true in pharma compliance. If the corpus\n"
                 "doesn't say it, the corpus doesn't say it.\n\n"
+                "LIST SYNTHESIS — when a question asks for a list of items:\n"
+                "If the question uses phrasing like 'what are the', 'list the', 'what\n"
+                "characteristics', 'what indicators', 'what elements', or 'what factors',\n"
+                "the expected answer is an enumeration. For these questions:\n"
+                "(a) Call search_policy_docs once with a broad query targeting the list\n"
+                "    topic. Returned chunks may each contribute PART of the list — that\n"
+                "    is normal and expected.\n"
+                "(b) Enumerate the answer by synthesizing across ALL retrieved chunks.\n"
+                "    Do not wait for a single chunk that contains the entire list. No\n"
+                "    such chunk may exist.\n"
+                "(c) Cite each item (or group of items) to the specific chunk_id it came\n"
+                "    from.\n"
+                "(d) If the chunks collectively contain only a partial list, state which\n"
+                "    items are from retrieved content and note the list may be incomplete.\n"
+                "Do not make additional search_policy_docs calls with the same or similar\n"
+                "query once results have been returned. Enumerate from what you have.\n\n"
+                "ABSENCE HANDLING — when the topic is not in the corpus:\n"
+                "This is DIFFERENT from DIMENSION CHECK (which handles topics that ARE in\n"
+                "the corpus but not segmented by a qualifier like jurisdiction or specialty).\n"
+                "Distinction:\n"
+                "- DIMENSION ABSENT → use general rules: The topic exists in the corpus\n"
+                "  but is not segmented by the qualifier. E.g., no California-specific meal\n"
+                "  limit, but meal limits DO exist and apply uniformly including California.\n"
+                "  Describe the general rule, state it applies uniformly.\n"
+                "- TOPIC ABSENT → state absence and stop: No rule or chunk addresses this\n"
+                "  subject at all. E.g., telehealth-only interactions, drug sample\n"
+                "  distribution. State that the corpus does not address this and STOP.\n"
+                "  Do NOT then volunteer that 'general rules likely apply' or describe\n"
+                "  unrelated rules as if they partially answer the question. An inference\n"
+                "  that general policies 'probably extend' to an unaddressed topic is not\n"
+                "  corpus-grounded — omit it.\n\n"
                 "After both tools have returned results and you have completed scope\n"
                 "verification, write your final answer. Never repeat a successful tool\n"
-                "call. Always cite chunk_ids and rule_ids. Never invent thresholds —\n"
-                "use only what lookup_rule returns."
+                "call with the same query. Always cite chunk_ids and rule_ids. Never\n"
+                "invent thresholds — use only what lookup_rule returns."
             )),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "{input}"),
@@ -202,7 +233,7 @@ class PolicyAgent:
             self._executor = AgentExecutor(
                 agent=agent,
                 tools=self.tools,
-                max_iterations=12,
+                max_iterations=20,
                 handle_parsing_errors=True,
                 return_intermediate_steps=True,
                 verbose=False,
