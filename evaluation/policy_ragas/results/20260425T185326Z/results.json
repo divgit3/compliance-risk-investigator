@@ -1,0 +1,1338 @@
+[
+  {
+    "id": "rb_01_lunch_meal_limit",
+    "category": "rule_backed",
+    "user_input": "What is the meal limit for lunch?",
+    "reference": "The meal limit for lunch at Nova Pharma is $50 per meal. This is stricter than the PhRMA Code, which allows up to $75 per meal. Source: Nova Pharma Internal Policy, rule MEAL_002.",
+    "ground_truth_source": "rules_registry:MEAL_002",
+    "expected_behavior": "Agent calls lookup_rule with a meal-limit query, retrieves MEAL_002, narrates the $50 figure with rule_id citation. nova_vs_phrma should include the $75 PhRMA comparison.",
+    "notes": "Used as smoke-test control across all sessions. Confirms no regression on the simplest rule-backed path.",
+    "agent_answer": "The meal limit for lunch at Nova Pharma Inc. is set at **$50 per meal**. This is a stricter limit compared to the PhRMA Code, which allows for a maximum of **$75 per meal** for lunch.\n\n### Relevant Policy Details:\n- **Nova Pharma Limit**: $50 for lunch (Rule ID: MEAL_002, Chunk ID: DOC_002_chunk_0000).\n- **PhRMA Limit**: $75 for lunch (as referenced in the comparison).\n\n### Summary:\n- **Nova Pharma**: $50 lunch limit (stricter than PhRMA).\n- **PhRMA**: $75 lunch limit.\n\nThis information ensures compliance with Nova Pharma's internal policies, which are designed to be more stringent than industry standards.",
+    "retrieved_contexts": [
+      "conferences or professional meetings and virtual meetings conducted via a digital platform (with audio and/or video conferencing capabilities) with or",
+      "arrangements are potentially beneficial, they also pose a risk of fraud and abuse. In particular, the use of health care professionals for marketing p",
+      "for services exceed the fair market value of any legitimate, reasonable, and necessary services rendered by the physician to the manufacturer? \u2022 Poten"
+    ],
+    "rule_ids_matched": [
+      "MEAL_002",
+      "MEAL_001",
+      "MEAL_003",
+      "MEAL_004",
+      "VENUE_003"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      },
+      {
+        "rule_name": "Meal Cost Per Attendee Ceiling",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "VENUE_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "high",
+      "latency_ms": 6575.7,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0382,
+        0.0345,
+        0.03
+      ],
+      "avg_relevance": 0.0342,
+      "rule_ids_matched": [
+        "MEAL_002",
+        "MEAL_001",
+        "MEAL_003",
+        "MEAL_004",
+        "VENUE_003"
+      ],
+      "nova_vs_phrma_count": 4,
+      "chunk_ids_for_audit": [
+        "DOC_005_chunk_0004",
+        "DOC_003_chunk_0017",
+        "DOC_003_chunk_0016",
+        "DOC_002_chunk_0000",
+        "DOC_004_chunk_0000"
+      ],
+      "data_limitations_count": 1,
+      "data_limitations": [
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": true,
+        "ungrounded_claims": [],
+        "reasoning": "All specific factual claims in the answer, including the $50 lunch limit and the comparison with the PhRMA $75 limit, are supported by the retrieved rules and comparisons.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "rb_02_speaker_fmv_ceiling",
+    "category": "rule_backed",
+    "user_input": "What is the speaker FMV ceiling?",
+    "reference": "Nova Pharma's speaker fee fair market value (FMV) ceiling is $3,500 per engagement (rule SPEAKER_001). This is stricter than the system's industry proxy of $4,000.",
+    "ground_truth_source": "rules_registry:SPEAKER_001",
+    "expected_behavior": "Agent retrieves SPEAKER_001, cites $3,500 with rule_id. The $4,000 comparison is a fallback \u2014 Per the lessons log, this is a known 'fallback laundering' risk; agent should not present it as a real PhRMA value but the current implementation does. Reference written to be neutral on that distinction.",
+    "notes": "Tests fallback-laundering bug class indirectly. If the agent narrative asserts the $4,000 IS a PhRMA-published value, that's the laundering showing through and worth flagging in RAGAS analysis.",
+    "agent_answer": "The speaker fair market value (FMV) ceiling for Nova Pharma Inc. is set at **$3,500 per engagement**. This is a stricter limit compared to the PhRMA Code, which allows for a maximum of **$4,000 per engagement**.\n\n### Relevant Policy Citations:\n- **Nova Pharma Rule**: \n  - **Rule ID**: SPEAKER_001\n  - **Threshold**: $3,500 USD (maximum)\n  - **Scope**: per engagement (per_event_or_per_instance)\n  - **Source Document**: [Nova Pharma Internal Policy](DOC_002_chunk_0001)\n\n- **PhRMA Code Reference**: \n  - The PhRMA Code does not specify a ceiling in the retrieved chunks, but it is known to allow up to $4,000 per engagement.\n\nThis information indicates that Nova Pharma has established a more conservative approach to speaker fees compared to the industry standard set by PhRMA.",
+    "retrieved_contexts": [
+      "health care professional\u2019s office or hospital? A. \u0007The Code does not prohibit company employees other than field sales representatives or their immedi",
+      "CODE ON INTERACTIONS with Health Care Professionals TABLE OF CONTENTS Preamble 4 1. Basis of Interactions 6 2. \u0007Informational Presentations by Pharmac",
+      "practitioner belongs to). 2495351826 NUMBER(10,0) number 10 Open Payments Methodology Overview & Data Dictionary OMB Control No: 0938-1237 Expiration"
+    ],
+    "rule_ids_matched": [
+      "SPEAKER_001",
+      "ATTEST_003",
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Speaker Fee FMV Ceiling",
+        "phrma_threshold": "4000.0 USD",
+        "nova_threshold": "3500 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "SPEAKER_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "high",
+      "latency_ms": 7161.7,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0446,
+        0.0407,
+        0.0384
+      ],
+      "avg_relevance": 0.0412,
+      "rule_ids_matched": [
+        "SPEAKER_001",
+        "ATTEST_003",
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003"
+      ],
+      "nova_vs_phrma_count": 4,
+      "chunk_ids_for_audit": [
+        "DOC_005_chunk_0014",
+        "DOC_005_chunk_0000",
+        "DOC_001_chunk_0061",
+        "DOC_002_chunk_0001",
+        "DOC_002_chunk_0002",
+        "DOC_002_chunk_0000"
+      ],
+      "data_limitations_count": 1,
+      "data_limitations": [
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": true,
+        "ungrounded_claims": [],
+        "reasoning": "All specific factual claims, including numeric thresholds and rule IDs, are supported by the retrieved rules and comparisons.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "rb_03_annual_compensation_cap",
+    "category": "rule_backed",
+    "user_input": "What is the annual cap on total HCP compensation?",
+    "reference": "Nova Pharma's annual cap on total HCP compensation is $75,000 per program year, applied per HCP across all interactions. Source: rule COMP_001.",
+    "ground_truth_source": "rules_registry:COMP_001",
+    "expected_behavior": "Agent retrieves COMP_001, cites $75,000 with rule_id, scope=annual/per_hcp_aggregate. Should NOT be confused with the meal-specific or speaker-specific caps elsewhere in the registry.",
+    "notes": "Tests time-scope discrimination on a positive case. The scope-conflation fix should keep this answer clean (it did in smoke testing).",
+    "agent_answer": "The annual cap on total HCP compensation at Nova Pharma Inc. is set at **$75,000** per program year. This cap applies to the aggregate compensation for each healthcare professional (HCP) across all interactions. This information is sourced from the Nova Pharma internal policy (rule ID: COMP_001, chunk ID: DOC_002_chunk_0001).\n\nThe policy does not specify a corresponding cap in the PhRMA Code, indicating that Nova Pharma's cap is a unique internal standard. Therefore, Nova Pharma's cap is stricter than any industry standard that may exist under the PhRMA guidelines.\n\nIf you have any further questions or need additional information, feel free to ask!",
+    "retrieved_contexts": [
+      "of up to 5 covered products (drugs, devices, biologicals, or medical supplies) Sample Drug 4 VARCHAR2(500) string 500 Name_of_Associated_Covered_Drug_",
+      "value 7500 Security Blvd. VARCHAR2(55) string 55 Recipient_Primary_Business_Stree t_Address_Line2 The second line of the primary business street addre",
+      "value. 7500 Security Blvd. VARCHAR2(55) string 55 Principal_Investigator_1_Busi ness_Street_Address_Line2 The second line of the primary practice/busi"
+    ],
+    "rule_ids_matched": [
+      "COMP_001",
+      "COMP_003"
+    ],
+    "nova_vs_phrma": [],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 5837.0,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0478,
+        0.0456,
+        0.0455
+      ],
+      "avg_relevance": 0.0463,
+      "rule_ids_matched": [
+        "COMP_001",
+        "COMP_003"
+      ],
+      "nova_vs_phrma_count": 0,
+      "chunk_ids_for_audit": [
+        "DOC_001_chunk_0025",
+        "DOC_001_chunk_0046",
+        "DOC_001_chunk_0030",
+        "DOC_002_chunk_0001"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The annual cap on total HCP compensation at Nova Pharma Inc. is set at **$75,000** per program year.; This information is sourced from the Nova Pharma internal policy (rule ID: COMP_001, chunk ID: DOC_002_chunk_0001).. Judge reasoning: The retrieved content does not contain any information about an annual cap of $75,000 or a rule ID COMP_001, making these claims ungrounded.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The annual cap on total HCP compensation at Nova Pharma Inc. is set at **$75,000** per program year.",
+          "This information is sourced from the Nova Pharma internal policy (rule ID: COMP_001, chunk ID: DOC_002_chunk_0001)."
+        ],
+        "reasoning": "The retrieved content does not contain any information about an annual cap of $75,000 or a rule ID COMP_001, making these claims ungrounded.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "rb_04_meal_per_attendee_ceiling",
+    "category": "rule_backed",
+    "user_input": "What is the per-attendee meal cost ceiling at speaker events?",
+    "reference": "Nova Pharma sets the per-attendee meal cost ceiling at speaker events to $100 (rule VENUE_003). The OIG documents reference a higher figure, but Nova Pharma's stricter $100 limit applies.",
+    "ground_truth_source": "rules_registry:VENUE_003",
+    "expected_behavior": "Agent retrieves VENUE_003. Note this rule has multiple sources (OIG and Nova Pharma) with stricter-wins reconciliation \u2014 the answer should reflect Nova Pharma's $100 as the effective threshold.",
+    "notes": "Tests rule reconciliation handling \u2014 VENUE_003 has Nova Pharma stricter than OIG, and the registry's reconciliation_note documents this. Whether the agent surfaces the reconciliation or just cites $100 is interesting either way.",
+    "agent_answer": "The per-attendee meal cost ceiling at speaker events for Nova Pharma Inc. is set at **$100**. This limit applies to each attendee per event, as specified in the policy.\n\n### Relevant Policy Details:\n- **Rule ID**: VENUE_003\n- **Threshold**: $100 per attendee\n- **Scope**: per_event_or_per_instance (per attendee)\n- **Authority**: Nova Pharma\n- **Source Document**: [DOC_004_chunk_0000]\n\n### Comparison with PhRMA Code:\nNova Pharma's meal cost ceiling of $100 per attendee is stricter than the PhRMA Code, which allows for a maximum of **$125** per attendee. This reflects Nova Pharma's commitment to maintaining higher compliance standards.\n\nIf you have any further questions or need additional information, feel free to ask!",
+    "retrieved_contexts": [
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti",
+      "health care professional\u2019s office or hospital? A. \u0007The Code does not prohibit company employees other than field sales representatives or their immedi",
+      "arrangements are potentially beneficial, they also pose a risk of fraud and abuse. In particular, the use of health care professionals for marketing p"
+    ],
+    "rule_ids_matched": [
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003",
+      "MEAL_004",
+      "VENUE_003"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      },
+      {
+        "rule_name": "Meal Cost Per Attendee Ceiling",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "VENUE_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "high",
+      "latency_ms": 7050.1,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0389,
+        0.0339,
+        0.0328
+      ],
+      "avg_relevance": 0.0352,
+      "rule_ids_matched": [
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003",
+        "MEAL_004",
+        "VENUE_003"
+      ],
+      "nova_vs_phrma_count": 4,
+      "chunk_ids_for_audit": [
+        "DOC_003_chunk_0007",
+        "DOC_005_chunk_0014",
+        "DOC_003_chunk_0017",
+        "DOC_002_chunk_0000",
+        "DOC_004_chunk_0000"
+      ],
+      "data_limitations_count": 1,
+      "data_limitations": [
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": true,
+        "ungrounded_claims": [],
+        "reasoning": "All specific factual claims in the answer, including the $100 per-attendee meal cost ceiling, the rule ID VENUE_003, and the comparison with the PhRMA Code, are supported by the retrieved rules and comparisons.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "ret_01_oig_speaker_fraud_indicators",
+    "category": "retrieval",
+    "user_input": "What characteristics has the OIG identified as potentially indicating a speaker program arrangement that could violate the anti-kickback statute?",
+    "reference": "Per the OIG's 2020 Special Fraud Alert on Speaker Programs, suspect characteristics (illustrative, not exhaustive) include: (1) speaker programs where little or no substantive information is presented; (2) alcohol available or meals exceeding modest value provided to attendees; (3) programs held at venues not conducive to educational exchange (restaurants, sports venues, entertainment venues); (4) sponsoring a large number of programs on the same topic; (5) significant time without new medical/scientific information or FDA-approved indication; (6) HCPs attending repeat programs on the same topic; (7) attendees without legitimate business reason (friends, family, the speaker's own staff); (8) sales/marketing influencing speaker selection or selecting speakers based on expected revenue; (9) paying speakers above fair market value or tying compensation to volume/value of business generated.",
+    "ground_truth_source": "pdf:oig_speaker_fraud_alert_2020.pdf:p5-6",
+    "expected_behavior": "Ideal: agent retrieves DOC_004 chunks containing the suspect-characteristics list and synthesizes the 9 indicators. Realistic: retrieval relevance is 0.02-0.04 noise; agent admits retrieval failure ('specific excerpts were not retrieved') and either refuses or fabricates from training-data knowledge. The judge should flag the fabrication case.",
+    "notes": "This is the original ret_03 case from smoke testing. Direct test of knowledge-leakage bug class. RAGAS Faithfulness on the agent's response will be the key metric here.",
+    "agent_answer": "Agent stopped due to max iterations.",
+    "retrieved_contexts": [
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti",
+      "Code, if any, of the drug or biological associated with the payment or other transfer of value (if applicable); the record may report up to 5 codes 36",
+      "take advantage of any option to be identified as the sponsor of a meal. Q20. \u0007A national specialty society is holding its three-day annual conference,",
+      "commitment to abide by the Code and that complete an annual certification that they have policies and procedures in place to foster compliance with th",
+      "practices used by its sales force; and (v) establish an effective system for tracking, compiling, and reviewing information about sales force activiti",
+      "teaching hospital (covered recipient) receiving the payment or other transfer of value Baltimore VARCHAR2(40) string 40 Recipient_State The primary pr",
+      "5 physician license states if a physician is licensed in multiple states WI CHAR(2) string 2 Submitting_Applicable_Manufacturer_o r_Applicable_GPO_Nam"
+    ],
+    "rule_ids_matched": [],
+    "nova_vs_phrma": [],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 14772.0,
+      "chunk_count": 7,
+      "relevance_scores": [
+        0.0163,
+        0.0107,
+        0.0054,
+        0.0258,
+        0.0062,
+        0.0169,
+        0.0143
+      ],
+      "avg_relevance": 0.0137,
+      "rule_ids_matched": [],
+      "nova_vs_phrma_count": 0,
+      "chunk_ids_for_audit": [
+        "DOC_003_chunk_0007",
+        "DOC_001_chunk_0056",
+        "DOC_005_chunk_0018",
+        "DOC_005_chunk_0010",
+        "DOC_003_chunk_0019",
+        "DOC_001_chunk_0022",
+        "DOC_001_chunk_0023"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: . Judge reasoning: The generated answer does not contain any specific factual claims to evaluate for grounding, as it was stopped due to max iterations.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [],
+        "reasoning": "The generated answer does not contain any specific factual claims to evaluate for grounding, as it was stopped due to max iterations.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "ret_02_anti_kickback_penalties",
+    "category": "retrieval",
+    "user_input": "What are the criminal penalties for violating the federal anti-kickback statute?",
+    "reference": "Violation of the federal anti-kickback statute is a felony punishable by a maximum fine of $100,000, imprisonment up to 10 years, or both. Criminal conviction also results in mandatory exclusion from Federal health care programs, including Medicare and Medicaid. Source: OIG Special Fraud Alert on Speaker Programs (2020), citing Social Security Act \u00a7 1128B(b)(1)\u2013(2) and 42 U.S.C. \u00a7 1320a-7b(b)(1)\u2013(2).",
+    "ground_truth_source": "pdf:oig_speaker_fraud_alert_2020.pdf:p3",
+    "expected_behavior": "Specific factual recall question. Numeric and named-entity claims are easy for the judge to verify. If the agent gets the $100,000 and 10 years correct AND grounds them in retrieved chunks, groundedness should be true.",
+    "notes": "Concrete-fact retrieval question. Easier judging than the synthesis question above.",
+    "agent_answer": "I cannot answer this from the policy corpus. The search for relevant policy chunks did not yield specific information regarding the criminal penalties for violating the federal anti-kickback statute, and there are no rules in the registry that address this topic. \n\nIf you need information on this subject, I recommend consulting legal resources or compliance experts familiar with federal regulations.",
+    "retrieved_contexts": [
+      "20 Principal_Investigator_3_Midd le_Name The middle name of the Principal Investigator associated with the payment or transfer of value, as reported b",
+      "teaching hospital (covered recipient) receiving the payment or other transfer of value Baltimore VARCHAR2(40) string 40 Recipient_State The primary pr",
+      "transfer of value. Endocrinology VARCHAR 2 (100) string 100 Name_of_Drug_or_Biological_or_Devi ce_or_Medical_Supply_1 The marketed name of the drug, d"
+    ],
+    "rule_ids_matched": [],
+    "nova_vs_phrma": [],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 7761.0,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0467,
+        0.0449,
+        0.0448
+      ],
+      "avg_relevance": 0.0455,
+      "rule_ids_matched": [],
+      "nova_vs_phrma_count": 0,
+      "chunk_ids_for_audit": [
+        "DOC_001_chunk_0034",
+        "DOC_001_chunk_0022",
+        "DOC_001_chunk_0018"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The search for relevant policy chunks did not yield specific information regarding the criminal penalties for violating the federal anti-kickback statute, and there are no rules in the registry that address this topic.. Judge reasoning: The answer makes a specific claim about the absence of information on criminal penalties for the federal anti-kickback statute, which is not supported by the retrieved content.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The search for relevant policy chunks did not yield specific information regarding the criminal penalties for violating the federal anti-kickback statute, and there are no rules in the registry that address this topic."
+        ],
+        "reasoning": "The answer makes a specific claim about the absence of information on criminal penalties for the federal anti-kickback statute, which is not supported by the retrieved content.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "ret_03_phrma_sales_meal_conditions",
+    "category": "retrieval",
+    "user_input": "Under the PhRMA Code, what conditions must be met for a sales representative to offer a meal to an HCP?",
+    "reference": "Per Section 2 of the PhRMA Code (2022), incidental meals offered by company representatives during informational presentations are appropriate when: (a) the meal is modest as judged by local standards; (b) the meal is not part of an entertainment or recreational event; (c) the meal is provided in a manner conducive to informational communication. Field sales representative meals must additionally be limited to in-office or in-hospital settings. The presentation must provide scientific or educational value, each attendee must have a substantive interaction with the company representative, and 'grab-and-go' meals are not appropriate.",
+    "ground_truth_source": "pdf:phrma_code_2022.pdf:p6-7",
+    "expected_behavior": "The registry has dollar-amount meal limits (MEAL_001-004) but NOT the qualitative conditions. The agent might mistakenly cite MEAL_xxx and miss the conditional content entirely. If retrieval works, answer surfaces conditions. If retrieval fails, agent might substitute the dollar-limit answer.",
+    "notes": "Tests whether the agent recognizes the question is about CONDITIONS rather than thresholds. Useful diagnostic for query understanding.",
+    "agent_answer": "The policy does not provide specific conditions under which a sales representative can offer a meal to a healthcare professional (HCP) according to the PhRMA Code. The retrieved documents did not contain relevant excerpts that outline these conditions.\n\nHowever, I can provide the meal limits set by Nova Pharma, which are stricter than those in the PhRMA Code:\n\n1. **Breakfast**: $25 per meal (PhRMA equivalent: $30)\n2. **Lunch**: $50 per meal (PhRMA equivalent: $75)\n3. **Dinner**: $100 per meal (PhRMA equivalent: $125)\n\nThese limits are defined under the rules for meal expenses (rule IDs: MEAL_001, MEAL_002, MEAL_003) and are applicable per meal event (scope: per_meal) (source: DOC_002_chunk_0000).\n\nIf you need more specific conditions or guidelines regarding the offering of meals, I cannot provide that from the current policy corpus.",
+    "retrieved_contexts": [
+      "of up to 5 covered products (drugs, devices, biologicals, or medical supplies) Sample Drug 4 VARCHAR2(500) string 500 Name_of_Associated_Covered_Drug_",
+      "the drug, device, biological, or medical supply. May report the marketed name of up to five products (drugs, devices, biologicals, or medical supplies",
+      "Code, if any, of the drug or biological associated with the payment or other transfer of value (if applicable); the record may report up to 5 codes 36"
+    ],
+    "rule_ids_matched": [
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003",
+      "MEAL_004",
+      "VENUE_003"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      },
+      {
+        "rule_name": "Meal Cost Per Attendee Ceiling",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "VENUE_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.2222,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 7449.6,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.006,
+        0.0018,
+        0.0011
+      ],
+      "avg_relevance": 0.003,
+      "rule_ids_matched": [
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003",
+        "MEAL_004",
+        "VENUE_003"
+      ],
+      "nova_vs_phrma_count": 4,
+      "chunk_ids_for_audit": [
+        "DOC_001_chunk_0025",
+        "DOC_001_chunk_0041",
+        "DOC_001_chunk_0056",
+        "DOC_002_chunk_0000",
+        "DOC_004_chunk_0000"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The policy does not provide specific conditions under which a sales representative can offer a meal to a healthcare professional (HCP) according to the PhRMA Code.; These limits are defined under the rules for meal expenses (rule IDs: MEAL_001, MEAL_002, MEAL_003) and are applicable per meal event (scope: per_meal) (source: DOC_002_chunk_0000).. Judge reasoning: The retrieved content does not provide specific conditions from the PhRMA Code or confirm the applicability scope of the meal limits as per the generated answer.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": true,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The policy does not provide specific conditions under which a sales representative can offer a meal to a healthcare professional (HCP) according to the PhRMA Code.",
+          "These limits are defined under the rules for meal expenses (rule IDs: MEAL_001, MEAL_002, MEAL_003) and are applicable per meal event (scope: per_meal) (source: DOC_002_chunk_0000)."
+        ],
+        "reasoning": "The retrieved content does not provide specific conditions from the PhRMA Code or confirm the applicability scope of the meal limits as per the generated answer.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "ret_04_phrma_educational_items_threshold",
+    "category": "retrieval",
+    "user_input": "Under the PhRMA Code, what is the value threshold for educational items that can be provided to HCPs, and what conditions apply?",
+    "reference": "Per Section 11 of the PhRMA Code (2022), companies may offer items designed primarily for the education of patients or HCPs if the items are not of substantial value ($100 or less) and do not have value to HCPs outside of their professional responsibilities. Such items should not be offered on more than an occasional basis. Examples of permissible items include medical textbooks, subscriptions to scientific journals, and copies of clinical treatment guidelines. Items like stethoscopes, even though useful in patient care, are not permitted because they are designed for patient treatment rather than education.",
+    "ground_truth_source": "pdf:phrma_code_2022.pdf:p16",
+    "expected_behavior": "Specific threshold ($100) plus conditional content. Registry has PROHIBIT_002 ('Gifts to HCPs Prohibited') but no rule capturing the educational-item exception. If agent only consults registry, will answer 'gifts are prohibited' and miss the exception entirely.",
+    "notes": "Tests whether agent recognizes this is an EXCEPTION question that the rule registry doesn't capture. Strong test of retrieval path.",
+    "agent_answer": "I cannot answer this from the policy corpus. The search for relevant policy chunks regarding the value threshold for educational items provided to healthcare professionals (HCPs) did not yield any results. Additionally, the lookup for specific thresholds related to educational items also did not return any relevant rules.\n\nIf you have further questions or need information on a different topic, please let me know!",
+    "retrieved_contexts": [],
+    "rule_ids_matched": [
+      "MEAL_004",
+      "SPEAKER_002",
+      "SPEAKER_003",
+      "SPEAKER_005",
+      "VENUE_001"
+    ],
+    "nova_vs_phrma": [],
+    "ragas_scores": {
+      "faithfulness": 0.75,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 4484.5,
+      "chunk_count": 0,
+      "relevance_scores": [],
+      "avg_relevance": 0.0,
+      "rule_ids_matched": [
+        "MEAL_004",
+        "SPEAKER_002",
+        "SPEAKER_003",
+        "SPEAKER_005",
+        "VENUE_001"
+      ],
+      "nova_vs_phrma_count": 0,
+      "chunk_ids_for_audit": [
+        "DOC_002_chunk_0001"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The search for relevant policy chunks regarding the value threshold for educational items provided to healthcare professionals (HCPs) did not yield any results.; The lookup for specific thresholds related to educational items also did not return any relevant rules.. Judge reasoning: The answer makes claims about the absence of specific thresholds for educational items, but no retrieved content supports these claims.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The search for relevant policy chunks regarding the value threshold for educational items provided to healthcare professionals (HCPs) did not yield any results.",
+          "The lookup for specific thresholds related to educational items also did not return any relevant rules."
+        ],
+        "reasoning": "The answer makes claims about the absence of specific thresholds for educational items, but no retrieved content supports these claims.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "ret_05_oig_compliance_program_elements",
+    "category": "retrieval",
+    "user_input": "What are the seven elements of an effective pharmaceutical compliance program according to OIG guidance?",
+    "reference": "Per the OIG Compliance Program Guidance for Pharmaceutical Manufacturers (2003), the seven elements of an effective compliance program are: (1) implementing written policies and procedures; (2) designating a compliance officer and compliance committee; (3) conducting effective training and education; (4) developing effective lines of communication; (5) conducting internal monitoring and auditing; (6) enforcing standards through well-publicized disciplinary guidelines; and (7) responding promptly to detected problems and undertaking corrective action.",
+    "ground_truth_source": "pdf:oig_cpg_pharmaceutical.pdf:p23731",
+    "expected_behavior": "Listable factual recall. The 7 elements have nothing to do with the rules registry \u2014 pure retrieval test. Either retrieval surfaces DOC_003 chunks containing the list, or agent admits failure / fabricates from training data.",
+    "notes": "Cleanest pure-retrieval test in the set. No registry contamination possible.",
+    "agent_answer": "I cannot answer this from the policy corpus. The search for specific references to the seven elements of an effective pharmaceutical compliance program according to OIG guidance did not yield relevant results in the knowledge base. \n\nHowever, I can provide a general understanding of the seven elements based on common industry knowledge, which typically include:\n\n1. **Written Policies and Procedures**: Clear guidelines that outline the compliance program.\n2. **Compliance Officer and Compliance Committee**: Designation of a compliance officer and a committee to oversee compliance efforts.\n3. **Effective Training and Education**: Regular training for employees on compliance policies and relevant laws.\n4. **Effective Communication**: Mechanisms for employees to report compliance issues without fear of retaliation.\n5. **Monitoring and Auditing**: Regular assessments of compliance program effectiveness and adherence to policies.\n6. **Enforcement of Disciplinary Standards**: Consistent enforcement of compliance standards and disciplinary measures for violations.\n7. **Response and Prevention**: Procedures for responding to compliance issues and preventing future violations.\n\nFor specific thresholds or rules related to compliance at Nova Pharma, I found some relevant rules regarding speaker programs, but they do not directly address the seven elements of a compliance program. If you need information on specific compliance thresholds or rules, please let me know!",
+    "retrieved_contexts": [
+      "entity. III VARCHAR 2 (5) string 5 Recipient_Primary_Business_Street_A ddress_Line1 The first line of the primary practice/business street address of",
+      "as available in the CMS- provided MPL for physician/non-physician practitioner that were successfully matched on the list. For physician/non- physicia",
+      "by AM/GPO's in the published records across all PYs in all payment categories where the physician/non-physician practitioner was reported. If no valid",
+      "not be sold or billed (thus vitiating any monetary value of the sample); (ii) clearly and conspicuously labeling individual samples as units that may",
+      "practices used by its sales force; and (v) establish an effective system for tracking, compiling, and reviewing information about sales force activiti",
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti"
+    ],
+    "rule_ids_matched": [
+      "SPEAKER_001",
+      "SPEAKER_002",
+      "SPEAKER_003",
+      "SPEAKER_004",
+      "SPEAKER_005"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Speaker Fee FMV Ceiling",
+        "phrma_threshold": "4000.0 USD",
+        "nova_threshold": "3500 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "SPEAKER_001"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": null,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 18592.9,
+      "chunk_count": 6,
+      "relevance_scores": [
+        0.003,
+        0.0024,
+        0.0023,
+        0.0091,
+        0.0086,
+        0.0068
+      ],
+      "avg_relevance": 0.0054,
+      "rule_ids_matched": [
+        "SPEAKER_001",
+        "SPEAKER_002",
+        "SPEAKER_003",
+        "SPEAKER_004",
+        "SPEAKER_005"
+      ],
+      "nova_vs_phrma_count": 1,
+      "chunk_ids_for_audit": [
+        "DOC_001_chunk_0014",
+        "DOC_001_chunk_0062",
+        "DOC_001_chunk_0066",
+        "DOC_003_chunk_0020",
+        "DOC_003_chunk_0019",
+        "DOC_003_chunk_0007",
+        "DOC_002_chunk_0001"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The seven elements of an effective pharmaceutical compliance program according to OIG guidance include: Written Policies and Procedures, Compliance Officer and Compliance Committee, Effective Training and Education, Effective Communication, Monitoring and Auditing, Enforcement of Disciplinary Standards, Response and Prevention.. Judge reasoning: The retrieved content does not provide any information about the seven elements of an effective pharmaceutical compliance program according to OIG guidance, making the claims ungrounded.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The seven elements of an effective pharmaceutical compliance program according to OIG guidance include: Written Policies and Procedures, Compliance Officer and Compliance Committee, Effective Training and Education, Effective Communication, Monitoring and Auditing, Enforcement of Disciplinary Standards, Response and Prevention."
+        ],
+        "reasoning": "The retrieved content does not provide any information about the seven elements of an effective pharmaceutical compliance program according to OIG guidance, making the claims ungrounded.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "un_01_telehealth_specific_policy",
+    "category": "unanswerable",
+    "user_input": "What is Nova Pharma's policy on telehealth-only HCP interactions?",
+    "reference": "The corpus does not contain a Nova Pharma policy specifically addressing telehealth-only HCP interactions. The Nova Pharma Internal Policy (Sections 1-10) governs general HCP engagements including meals, speaker programs, and consulting, but does not differentiate based on interaction modality. The agent should explicitly state that the policy does not specifically address this topic rather than extrapolating from general rules.",
+    "ground_truth_source": "absent_from_corpus",
+    "expected_behavior": "Honest refusal: 'The policy does not specifically address telehealth-only interactions.' Agent should not extrapolate or fabricate. May optionally mention general rules apply, but must mark this as extrapolation, not stated policy.",
+    "notes": "Tests honest-refusal behavior. Smoke testing showed the agent handles this well ('not explicitly defined'). Included as a regression check for that good behavior.",
+    "agent_answer": "The policy does not specifically address telehealth-only HCP interactions. I could not find any relevant policy chunks or specific rules regarding telehealth interactions in the Nova Pharma knowledge base. \n\nThe closest related information pertains to general HCP interactions, but it does not provide specific guidance on telehealth formats. Additionally, the policy does not segment rules by dimensions such as HCP specialty or role, meaning that any rules applicable to HCP interactions would apply uniformly across all types of interactions, including telehealth.\n\nFor general HCP interactions, Nova Pharma has established meal limits and an annual compensation cap:\n- **Meal Limits**: \n  - Breakfast: $25\n  - Lunch: $50\n  - Dinner: $100\n- **Annual HCP Compensation Cap**: $75,000 per program year (rule_id: COMP_001, chunk_id: DOC_002_chunk_0001).\n\nThese limits are stricter than the PhRMA Code, which allows for higher meal limits and does not specify an annual cap on compensation.\n\nIf you need further clarification or specific guidance on telehealth interactions, I recommend consulting with compliance leadership or legal counsel within Nova Pharma.",
+    "retrieved_contexts": [
+      "of up to 5 covered products (drugs, devices, biologicals, or medical supplies) Sample Drug 4 VARCHAR2(500) string 500 Name_of_Associated_Covered_Drug_",
+      "the drug, device, biological, or medical supply. May report the marketed name of up to five products (drugs, devices, biologicals, or medical supplies",
+      "be removed in the data refresh publication and any subsequent publications. 4. Records without disputes that are updated after the submission period w",
+      "conferences or professional meetings and virtual meetings conducted via a digital platform (with audio and/or video conferencing capabilities) with or",
+      "arrangements are potentially beneficial, they also pose a risk of fraud and abuse. In particular, the use of health care professionals for marketing p"
+    ],
+    "rule_ids_matched": [
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003",
+      "MEAL_004",
+      "COMP_001"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 1.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 10197.2,
+      "chunk_count": 5,
+      "relevance_scores": [
+        0.0044,
+        0.0004,
+        0.0004,
+        0.0085,
+        0.0071
+      ],
+      "avg_relevance": 0.0042,
+      "rule_ids_matched": [
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003",
+        "MEAL_004",
+        "COMP_001"
+      ],
+      "nova_vs_phrma_count": 3,
+      "chunk_ids_for_audit": [
+        "DOC_001_chunk_0025",
+        "DOC_001_chunk_0041",
+        "DOC_001_chunk_0007",
+        "DOC_005_chunk_0004",
+        "DOC_003_chunk_0017",
+        "DOC_002_chunk_0000",
+        "DOC_002_chunk_0001"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The policy does not specifically address telehealth-only HCP interactions.; The closest related information pertains to general HCP interactions, but it does not provide specific guidance on telehealth formats.; Additionally, the policy does not segment rules by dimensions such as HCP specialty or role, meaning that any rules applicable to HCP interactions would apply uniformly across all types of interactions, including telehealth.. Judge reasoning: The retrieved content does not contain any specific information or rules regarding telehealth-only HCP interactions, nor does it confirm the absence of such policies or segmentation by HCP specialty or role.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The policy does not specifically address telehealth-only HCP interactions.",
+          "The closest related information pertains to general HCP interactions, but it does not provide specific guidance on telehealth formats.",
+          "Additionally, the policy does not segment rules by dimensions such as HCP specialty or role, meaning that any rules applicable to HCP interactions would apply uniformly across all types of interactions, including telehealth."
+        ],
+        "reasoning": "The retrieved content does not contain any specific information or rules regarding telehealth-only HCP interactions, nor does it confirm the absence of such policies or segmentation by HCP specialty or role.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "un_02_drug_sample_distribution_rules",
+    "category": "unanswerable",
+    "user_input": "What are Nova Pharma's specific rules for distributing drug samples to HCPs?",
+    "reference": "The corpus does not contain Nova Pharma-specific rules for drug sample distribution. The OIG Compliance Program Guidance discusses drug samples generally as a risk area governed by the Prescription Drug Marketing Act (PDMA), but Nova Pharma's Internal Policy (the synthetic policy in the corpus) does not include sample-specific rules. The agent should distinguish 'Nova Pharma has no specific rules on samples' from 'samples are unregulated' \u2014 the latter would be wrong.",
+    "ground_truth_source": "absent_from_corpus",
+    "expected_behavior": "Honest refusal acknowledging Nova Pharma doesn't have specific sample rules in this corpus. Agent may reference OIG/PDMA general framework if it retrieves DOC_003 content but must mark that as external context, not Nova Pharma policy.",
+    "notes": "Tests whether agent can distinguish 'specific rule absent' from 'topic unregulated.' Knowledge-leakage risk: agent might fabricate Nova Pharma rules from general PDMA knowledge.",
+    "agent_answer": "I cannot answer this from the policy corpus. The search for relevant policy chunks did not yield specific guidance on distributing drug samples to HCPs, and there are no rules in the registry that address this topic. \n\nIf you have any other questions or need information on a different compliance topic, feel free to ask!",
+    "retrieved_contexts": [
+      "OMB Control No: 0938-1237 Expiration Date: 07/31/2026 Open Payments Public Use Files: Methodology Overview & Data Dictionary January 2025 Disclaimer:",
+      "or its agents directly or indirectly to person in a position to influence formulary decisions related to the manufacturer\u2019s products are suspect and s",
+      "value. 7500 Security Blvd. VARCHAR2(55) string 55 Principal_Investigator_1_Busi ness_Street_Address_Line2 The second line of the primary practice/busi"
+    ],
+    "rule_ids_matched": [],
+    "nova_vs_phrma": [],
+    "ragas_scores": {
+      "faithfulness": 0.25,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 5167.3,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0354,
+        0.0346,
+        0.0325
+      ],
+      "avg_relevance": 0.0342,
+      "rule_ids_matched": [],
+      "nova_vs_phrma_count": 0,
+      "chunk_ids_for_audit": [
+        "DOC_001_chunk_0000",
+        "DOC_003_chunk_0013",
+        "DOC_001_chunk_0030"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The search for relevant policy chunks did not yield specific guidance on distributing drug samples to HCPs; there are no rules in the registry that address this topic. Judge reasoning: The retrieved content does not provide specific guidance or rules on distributing drug samples to HCPs, nor does it confirm the absence of such rules in the registry.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The search for relevant policy chunks did not yield specific guidance on distributing drug samples to HCPs",
+          "there are no rules in the registry that address this topic"
+        ],
+        "reasoning": "The retrieved content does not provide specific guidance or rules on distributing drug samples to HCPs, nor does it confirm the absence of such rules in the registry.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "fp_01_california_meal_limit",
+    "category": "false_premise",
+    "user_input": "What is the meal limit for HCPs in California specifically?",
+    "reference": "The Nova Pharma policy does not segment meal limits by state or jurisdiction. The general meal limits \u2014 $25 breakfast, $50 lunch, $100 dinner per HCP \u2014 apply uniformly across all jurisdictions, including California. The agent should explicitly state that the policy is not jurisdictionally segmented before describing the general limits.",
+    "ground_truth_source": "absent_dimension:jurisdiction",
+    "expected_behavior": "Either: (a) agent calls list_rule_dimensions, sees 'jurisdiction' in dimensions_absent, narrates accordingly. Or (b) safety net fires on 'california' marker and warning prepends to data_limitations. Either is correct; defense in depth working.",
+    "notes": "Original failing case for jurisdictional scope conflation. Tests both schema-tool path and safety-net fallback.",
+    "agent_answer": "The policy does not segment meal limits by state, including California. Therefore, the general meal limits apply uniformly across all jurisdictions.\n\nFor Nova Pharma Inc., the meal limits for healthcare professionals (HCPs) are as follows:\n- **Breakfast**: $25 per meal (Nova Pharma is stricter than PhRMA, which allows $30) [Rule ID: MEAL_001, Chunk ID: DOC_002_chunk_0000].\n- **Lunch**: $50 per meal (Nova Pharma is stricter than PhRMA, which allows $75) [Rule ID: MEAL_002, Chunk ID: DOC_002_chunk_0000].\n- **Dinner**: $100 per meal (Nova Pharma is stricter than PhRMA, which allows $125) [Rule ID: MEAL_003, Chunk ID: DOC_002_chunk_0000].\n\nThese limits are enforced on a per-meal basis, meaning they apply to each individual meal provided to HCPs during events or interactions.",
+    "retrieved_contexts": [
+      "conferences or professional meetings and virtual meetings conducted via a digital platform (with audio and/or video conferencing capabilities) with or",
+      "arrangements are potentially beneficial, they also pose a risk of fraud and abuse. In particular, the use of health care professionals for marketing p",
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti"
+    ],
+    "rule_ids_matched": [
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003",
+      "MEAL_004",
+      "VENUE_003"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      },
+      {
+        "rule_name": "Meal Cost Per Attendee Ceiling",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "VENUE_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 7297.4,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0297,
+        0.0292,
+        0.025
+      ],
+      "avg_relevance": 0.028,
+      "rule_ids_matched": [
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003",
+        "MEAL_004",
+        "VENUE_003"
+      ],
+      "nova_vs_phrma_count": 4,
+      "chunk_ids_for_audit": [
+        "DOC_005_chunk_0004",
+        "DOC_003_chunk_0017",
+        "DOC_003_chunk_0007",
+        "DOC_002_chunk_0000",
+        "DOC_004_chunk_0000"
+      ],
+      "data_limitations_count": 3,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: Chunk ID: DOC_002_chunk_0000. Judge reasoning: The answer incorrectly references a Chunk ID (DOC_002_chunk_0000) that does not appear in the retrieved content, making the claim ungrounded.",
+        "Safety net (not schema tool) caught dimension 'jurisdiction' in question (marker: 'california'). The rules registry does not segment rules by this dimension; all rules apply uniformly. The agent should have called list_rule_dimensions to recognize this; that it didn't suggests the answer may incorrectly substitute general rules as if they were specific to 'california'.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": true,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "Chunk ID: DOC_002_chunk_0000"
+        ],
+        "reasoning": "The answer incorrectly references a Chunk ID (DOC_002_chunk_0000) that does not appear in the retrieved content, making the claim ungrounded.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "fp_02_per_specialty_compensation_cap",
+    "category": "false_premise",
+    "user_input": "What is the per-specialty compensation cap for cardiologists?",
+    "reference": "The Nova Pharma policy does not segment compensation caps by HCP specialty. The annual HCP compensation cap of $75,000 (rule COMP_001) applies uniformly across all specialties, including cardiology. Note: the policy DOES have specialty-tiered FMV rates for speaker fees per engagement (Section 3.1), but these are per-program rates, not annual caps. The annual aggregate cap is uniform.",
+    "ground_truth_source": "absent_dimension:hcp_specialty",
+    "expected_behavior": "Same as fp_01: schema tool or safety net fires. Bonus credit if the agent correctly flags that specialty-tiered FMV rates DO exist for per-engagement fees but not for the annual cap.",
+    "notes": "Tests entity-scope (specialty) conflation. The bonus credit case tests whether the agent can distinguish 'this dimension is absent for THIS rule' from 'this dimension is absent in the policy entirely.' More demanding than fp_01.",
+    "agent_answer": "The policy does not define a per-specialty compensation cap for cardiologists. Instead, it establishes an annual cap on total HCP compensation across all interactions, which applies uniformly to all specialties, including cardiologists. \n\nThe annual compensation cap is set at **$75,000 per program year** (rule ID: COMP_001, source: DOC_002_chunk_0001). This cap applies to all healthcare professionals (HCPs) collectively, rather than being segmented by specialty.\n\nAdditionally, Nova Pharma's policy is stricter than the PhRMA Code, which does not specify an annual cap but allows for various compensation structures. The Nova Pharma policy ensures that all HCPs, regardless of specialty, adhere to this uniform cap.\n\nIf you have further questions or need clarification on other aspects of the policy, feel free to ask!",
+    "retrieved_contexts": [
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti",
+      "of up to 5 covered products (drugs, devices, biologicals, or medical supplies) Sample Drug 4 VARCHAR2(500) string 500 Name_of_Associated_Covered_Drug_",
+      "Contextual category for this research payment or other transfer of value Patient Care VARCHAR2(50) string 50 Expenditure_Category5 Contextual category"
+    ],
+    "rule_ids_matched": [
+      "COMP_001",
+      "COMP_003",
+      "COMP_002",
+      "MEAL_001",
+      "MEAL_002"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 9596.8,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0202,
+        0.0186,
+        0.0185
+      ],
+      "avg_relevance": 0.0191,
+      "rule_ids_matched": [
+        "COMP_001",
+        "COMP_003",
+        "COMP_002",
+        "MEAL_001",
+        "MEAL_002"
+      ],
+      "nova_vs_phrma_count": 2,
+      "chunk_ids_for_audit": [
+        "DOC_003_chunk_0007",
+        "DOC_001_chunk_0025",
+        "DOC_001_chunk_0044",
+        "DOC_002_chunk_0001",
+        "DOC_002_chunk_0000"
+      ],
+      "data_limitations_count": 3,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The annual compensation cap is set at **$75,000 per program year** (rule ID: COMP_001, source: DOC_002_chunk_0001).; This cap applies to all healthcare professionals (HCPs) collectively, rather than being segmented by specialty.; Nova Pharma's policy is stricter than the PhRMA Code, which does not specify an annual cap but allows for various compensation structures.. Judge reasoning: The retrieved content does not provide specific information about a $75,000 annual compensation cap, nor does it mention Nova Pharma's policy being stricter than the PhRMA Code regarding compensation caps.",
+        "Safety net (not schema tool) caught dimension 'hcp_specialty' in question (marker: 'cardiologist'). The rules registry does not segment rules by this dimension; all rules apply uniformly. The agent should have called list_rule_dimensions to recognize this; that it didn't suggests the answer may incorrectly substitute general rules as if they were specific to 'cardiologist'.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": true,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The annual compensation cap is set at **$75,000 per program year** (rule ID: COMP_001, source: DOC_002_chunk_0001).",
+          "This cap applies to all healthcare professionals (HCPs) collectively, rather than being segmented by specialty.",
+          "Nova Pharma's policy is stricter than the PhRMA Code, which does not specify an annual cap but allows for various compensation structures."
+        ],
+        "reasoning": "The retrieved content does not provide specific information about a $75,000 annual compensation cap, nor does it mention Nova Pharma's policy being stricter than the PhRMA Code regarding compensation caps.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "fp_03_quarterly_speaker_fee_limit",
+    "category": "false_premise",
+    "user_input": "What is the quarterly speaker fee limit?",
+    "reference": "The Nova Pharma policy does not define a quarterly speaker fee limit. Speaker fees are governed by: (a) the per-engagement FMV ceiling of $3,500 (rule SPEAKER_001), and (b) the annual speaker fee cap of $75,000 per HCP per calendar year (Section 3.2 of the policy, also captured as COMP_001 in the rules registry). No intermediate quarterly limit is defined.",
+    "ground_truth_source": "absent_dimension:time_scope_quarterly",
+    "expected_behavior": "Agent should explicitly state that no quarterly limit exists. May describe the per-engagement and annual limits as related-but-different scope. The marker safety net does NOT currently include 'quarterly' \u2014 this case relies on the prompt-only scope-verification layer.",
+    "notes": "Tests time-scope conflation on a scope word the safety net doesn't catch. Pure prompt-only test. Smoke testing showed the agent handles this correctly via prompt alone.",
+    "agent_answer": "The policy does not define a specific quarterly speaker fee limit. However, it does set a maximum fee for speaker engagements at $3,500 per engagement (per event or per instance) according to Nova Pharma's internal policy (rule_id: SPEAKER_001). This limit is stricter than the PhRMA Code, which allows for a maximum of $4,000 per engagement.\n\nTo summarize:\n- **Nova Pharma Speaker Fee Limit**: $3,500 per engagement (rule_id: SPEAKER_001, chunk_id: DOC_002_chunk_0001).\n- **PhRMA Speaker Fee Limit**: $4,000 per engagement (not explicitly retrieved but referenced in the comparison).\n\nSince there is no defined quarterly limit, the focus remains on the per-engagement fee.",
+    "retrieved_contexts": [
+      "health care professional\u2019s office or hospital? A. \u0007The Code does not prohibit company employees other than field sales representatives or their immedi",
+      "appropriate for a company to distribute educational brochures without pens or clipboards. These same guidelines apply with regard to the distribution",
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti"
+    ],
+    "rule_ids_matched": [
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003",
+      "MEAL_004",
+      "SPEAKER_001"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      },
+      {
+        "rule_name": "Speaker Fee FMV Ceiling",
+        "phrma_threshold": "4000.0 USD",
+        "nova_threshold": "3500 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "SPEAKER_001"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.1818,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 7182.8,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.033,
+        0.0323,
+        0.0313
+      ],
+      "avg_relevance": 0.0322,
+      "rule_ids_matched": [
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003",
+        "MEAL_004",
+        "SPEAKER_001"
+      ],
+      "nova_vs_phrma_count": 4,
+      "chunk_ids_for_audit": [
+        "DOC_005_chunk_0014",
+        "DOC_005_chunk_0011",
+        "DOC_003_chunk_0007",
+        "DOC_002_chunk_0000",
+        "DOC_002_chunk_0001"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: PhRMA Speaker Fee Limit: $4,000 per engagement (not explicitly retrieved but referenced in the comparison).. Judge reasoning: The claim about the PhRMA Speaker Fee Limit being $4,000 per engagement is not supported by the retrieved content, as it is not explicitly mentioned in the retrieved policy chunks or rules.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "PhRMA Speaker Fee Limit: $4,000 per engagement (not explicitly retrieved but referenced in the comparison)."
+        ],
+        "reasoning": "The claim about the PhRMA Speaker Fee Limit being $4,000 per engagement is not supported by the retrieved content, as it is not explicitly mentioned in the retrieved policy chunks or rules.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "rg_01_annual_meal_cap",
+    "category": "registry_gap",
+    "user_input": "What is Nova Pharma's annual meal cap for HCPs?",
+    "reference": "Per Section 2.2 of the Nova Pharma Internal Policy: 'No HCP may receive meals from Nova Pharma field personnel exceeding $500 in any rolling 12-month period.' Note: this rule exists in the policy PDF but is NOT captured in the rules registry (compliance/rules.json). The agent must retrieve this from PDF text; it cannot answer via lookup_rule alone.",
+    "ground_truth_source": "pdf:nova_pharma_internal_policy_SYNTHETIC.pdf:section_2.2",
+    "expected_behavior": "Ideal: retrieval surfaces DOC_002 chunks containing Section 2.2; agent answers $500/rolling-12-month. Realistic given current retrieval relevance (0.02-0.04): agent fails to retrieve, then EITHER incorrectly says 'no annual meal cap exists' (the current smoke-test behavior) OR honestly admits it can't find the answer. The first is the registry-gap bug; the second is the desired fallback.",
+    "notes": "Canonical test case for the registry-incompleteness bug class. Currently the agent answers wrong (says no annual cap exists when one does). Critical baseline measurement for whether 1.2 retrieval improvements actually fix anything.",
+    "agent_answer": "The policy does not define an annual meal-specific cap for healthcare professionals (HCPs). Instead, it specifies per-meal limits as follows:\n\n- **Breakfast**: $25 per meal (Nova Pharma's limit is stricter than PhRMA's $30 limit) \u2014 [Rule ID: MEAL_001, Chunk ID: DOC_002_chunk_0000]\n- **Lunch**: $50 per meal (Nova Pharma's limit is stricter than PhRMA's $75 limit) \u2014 [Rule ID: MEAL_002, Chunk ID: DOC_002_chunk_0000]\n- **Dinner**: $100 per meal (Nova Pharma's limit is stricter than PhRMA's $125 limit) \u2014 [Rule ID: MEAL_003, Chunk ID: DOC_002_chunk_0000]\n\nAdditionally, Nova Pharma has an annual cap on total HCP compensation, which is set at $75,000 per program year. This cap encompasses all forms of compensation, including meals \u2014 [Rule ID: COMP_001, Chunk ID: DOC_002_chunk_0001].\n\nIn summary, while there is no specific annual meal cap, the per-meal limits and the overall annual compensation cap are critical components of Nova Pharma's compliance policy.",
+    "retrieved_contexts": [
+      "arrangements are potentially beneficial, they also pose a risk of fraud and abuse. In particular, the use of health care professionals for marketing p",
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti",
+      "conferences or professional meetings and virtual meetings conducted via a digital platform (with audio and/or video conferencing capabilities) with or"
+    ],
+    "rule_ids_matched": [
+      "COMP_001",
+      "COMP_003",
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.0,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 10268.6,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.0262,
+        0.0225,
+        0.0221
+      ],
+      "avg_relevance": 0.0236,
+      "rule_ids_matched": [
+        "COMP_001",
+        "COMP_003",
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003"
+      ],
+      "nova_vs_phrma_count": 3,
+      "chunk_ids_for_audit": [
+        "DOC_003_chunk_0017",
+        "DOC_003_chunk_0007",
+        "DOC_005_chunk_0004",
+        "DOC_002_chunk_0001",
+        "DOC_002_chunk_0000"
+      ],
+      "data_limitations_count": 2,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: Chunk ID: DOC_002_chunk_0000; Chunk ID: DOC_002_chunk_0001. Judge reasoning: The answer includes specific chunk IDs that do not appear in the retrieved content, making those claims ungrounded.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "Chunk ID: DOC_002_chunk_0000",
+          "Chunk ID: DOC_002_chunk_0001"
+        ],
+        "reasoning": "The answer includes specific chunk IDs that do not appear in the retrieved content, making those claims ungrounded.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  },
+  {
+    "id": "rg_02_office_visit_frequency_by_hcp_type",
+    "category": "registry_gap",
+    "user_input": "What are Nova Pharma's office visit frequency limits per HCP per year, by HCP type?",
+    "reference": "Per Section 5.1 of the Nova Pharma Internal Policy, field personnel may visit an HCP's office for educational detailing no more than: (a) 12 times per calendar year for primary care physicians; (b) 8 times per calendar year for specialists; (c) 6 times per calendar year for sub-specialists. Note: these tiered limits are NOT in the rules registry. The closest registry rules (FREQ_001-003) cover meals and general interactions, not office-visit detailing.",
+    "ground_truth_source": "pdf:nova_pharma_internal_policy_SYNTHETIC.pdf:section_5.1",
+    "expected_behavior": "Tests retrieval on a specific tiered-numeric question. Agent might retrieve FREQ_xxx rules and substitute those (24 meals/year, 3 interactions/week) \u2014 that would be wrong because the question is about office visits, not meals or interactions. Agent might also honestly say 'I cannot find office-visit specific limits.'",
+    "notes": "Second registry-gap test. Different shape than rg_01 \u2014 this one has tiered numerics (PCP/specialist/sub-specialist), which makes fabrication easier to detect (agent can't credibly produce the exact 12/8/6 numbers from training data; if it does, that's a specific knowledge-leakage finding).",
+    "agent_answer": "The policy does not define specific office visit frequency limits per HCP per year, segmented by HCP type. The general limit for meals is set at a maximum of 24 interactions per HCP per year, as indicated by the rule \"Max Meals Per HCP Per Year\" (rule_id: FREQ_001). This rule applies uniformly across all HCP types, as the policy does not segment by HCP specialty or role.\n\nFor reference, the relevant rule states:\n- **Max Meals Per HCP Per Year**: 24 interactions (annual limit, per HCP) (rule_id: FREQ_001).\n\nAdditionally, the search for specific policy chunks related to office visit frequency yielded no relevant results, indicating that the policy may not explicitly address this aspect. The closest related content pertains to general compliance and marketing practices, but does not provide specific thresholds or limits for office visits.\n\nIn summary, while there is a general limit on the number of interactions (24 per year), there are no specific office visit frequency limits defined by HCP type in the Nova Pharma policy.",
+    "retrieved_contexts": [
+      "as well as their employees and agents, should be aware of the federal anti-kickback statute and the constraints it places on the marketing and promoti",
+      "appropriate for a company to distribute educational brochures without pens or clipboards. These same guidelines apply with regard to the distribution",
+      "arrangements are potentially beneficial, they also pose a risk of fraud and abuse. In particular, the use of health care professionals for marketing p"
+    ],
+    "rule_ids_matched": [
+      "MEAL_001",
+      "MEAL_002",
+      "MEAL_003",
+      "MEAL_004",
+      "FREQ_001"
+    ],
+    "nova_vs_phrma": [
+      {
+        "rule_name": "Meal Limit \u2014 Breakfast",
+        "phrma_threshold": "30.0 USD",
+        "nova_threshold": "25 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_001"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Lunch",
+        "phrma_threshold": "75.0 USD",
+        "nova_threshold": "50 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_002"
+      },
+      {
+        "rule_name": "Meal Limit \u2014 Dinner",
+        "phrma_threshold": "125.0 USD",
+        "nova_threshold": "100 USD",
+        "nova_is_stricter": true,
+        "source_rule_id": "MEAL_003"
+      }
+    ],
+    "ragas_scores": {
+      "faithfulness": 0.7692,
+      "answer_relevancy": null,
+      "context_precision": 0.0,
+      "context_recall": 0.0
+    },
+    "diagnostics": {
+      "confidence": "low",
+      "latency_ms": 11281.6,
+      "chunk_count": 3,
+      "relevance_scores": [
+        0.016,
+        0.0158,
+        0.0151
+      ],
+      "avg_relevance": 0.0156,
+      "rule_ids_matched": [
+        "MEAL_001",
+        "MEAL_002",
+        "MEAL_003",
+        "MEAL_004",
+        "FREQ_001"
+      ],
+      "nova_vs_phrma_count": 3,
+      "chunk_ids_for_audit": [
+        "DOC_003_chunk_0007",
+        "DOC_005_chunk_0011",
+        "DOC_003_chunk_0017",
+        "DOC_002_chunk_0000"
+      ],
+      "data_limitations_count": 3,
+      "data_limitations": [
+        "Groundedness check flagged ungrounded claims: The policy does not define specific office visit frequency limits per HCP per year, segmented by HCP type.; The general limit for meals is set at a maximum of 24 interactions per HCP per year, as indicated by the rule 'Max Meals Per HCP Per Year' (rule_id: FREQ_001).; This rule applies uniformly across all HCP types, as the policy does not segment by HCP specialty or role.. Judge reasoning: The retrieved content does not provide specific information about office visit frequency limits per HCP per year or confirm the application of the 'Max Meals Per HCP Per Year' rule to office visits.",
+        "Policy knowledge base reflects documents as of 2022-2024 snapshot",
+        "No temporal data available \u2014 analysis reflects 2024 snapshot only"
+      ],
+      "safety_net_fired": false,
+      "groundedness_check": {
+        "grounded": false,
+        "ungrounded_claims": [
+          "The policy does not define specific office visit frequency limits per HCP per year, segmented by HCP type.",
+          "The general limit for meals is set at a maximum of 24 interactions per HCP per year, as indicated by the rule 'Max Meals Per HCP Per Year' (rule_id: FREQ_001).",
+          "This rule applies uniformly across all HCP types, as the policy does not segment by HCP specialty or role.",
+          "Additionally, the search for specific policy chunks related to office visit frequency yielded no relevant results, indicating that the policy may not explicitly address this aspect."
+        ],
+        "reasoning": "The retrieved content does not provide specific information about office visit frequency limits per HCP per year or confirm the application of the 'Max Meals Per HCP Per Year' rule to office visits.",
+        "judge_model": "gpt-4o"
+      }
+    }
+  }
+]

@@ -609,6 +609,510 @@ to break the within-vendor calibration drift.
 
 ---
 
+## 2026-04-26 — Registry incompleteness laundered as policy absence
+
+Discovered while skimming PDFs to author retrieval-category dataset
+entries. The Nova Pharma synthetic policy PDF contains rules that the
+rules registry (compliance/rules.json) does NOT have. The most
+significant: Section 2.2 of the synthetic policy says "No HCP may
+receive meals from Nova Pharma field personnel exceeding $500 in any
+rolling 12-month period." There is, in fact, an annual meal cap. It's
+$500.
+
+This contradicts the agent's behavior on fp_01 (the original failing
+case). The fixed agent confidently answers: "The policy does not
+define an annual meal-specific cap for healthcare professionals
+(HCPs)." That answer is wrong. The cap exists. It's in the policy
+corpus. The rule extraction pipeline that produced rules.json missed
+it.
+
+### Other rules in the synthetic PDF that the registry doesn't capture
+
+Found while reading Section by Section:
+
+- FMV rate card by specialty/tier (Section 3.1) — registry has SPEAKER_001
+  with a flat $3,500 ceiling; actual policy has tiered rates by
+  specialty (national/regional/local) and HCP type (PCP/specialist/
+  sub-specialist/NP-PA), ranging $300 to $3,500.
+- Annual consulting cap of $50,000 (Section 4.2) — separate from the
+  $75,000 speaker cap. Registry has neither.
+- Office visit frequency limits by HCP type (Section 5.1) — 12/8/6
+  per year for PCP/specialist/sub-specialist. Registry has FREQ_001-003
+  for meals and interactions but not detailing visits.
+- Combined engagement cap (Section 5.2) — 20 paid engagements + 30
+  total interactions per HCP per year. Registry doesn't have either.
+- CRM 30-day logging requirement (Section 6). Not in registry.
+- Open Payments de minimis thresholds: $10/$100 (Section 6). Not in
+  registry.
+- 7-year document retention (Section 8.2). Not in registry.
+
+### Why this is the most concerning bug class so far
+
+Scope conflation produces wrong answers from real rules. The judge can
+sometimes catch it. The marker safety net catches obvious dimension
+gaps.
+
+Knowledge leakage produces real-knowledge answers presented as if they
+came from the corpus. The judge catches it when the agent admits
+retrieval failure.
+
+Registry incompleteness produces "no such rule exists" answers for
+rules that DO exist. The judge cannot catch this because the agent
+isn't fabricating — it's correctly reporting what it has access to.
+The safety nets don't fire because there's no scope mismatch in the
+question. The schema-exposure tool doesn't help because the question
+isn't about a dimension. The system is confidently wrong in a way
+that has no detection layer.
+
+This is the bug class that should scare a regulator-facing user the
+most. "The policy says you can do X, but the system tells you the
+policy is silent on X" is the failure mode where someone violates a
+rule because they were told it didn't exist.
+
+### What this means for the dataset
+
+fp_01's "expected answer" needs reconsidering. The original framing
+was: "the policy does not define an annual meal-specific cap" — and I
+treated that as the correct refusal. It's not. The correct answer is:
+"Yes, $500 per rolling 12-month period per Section 2.2 of the Nova
+Pharma Internal Policy."
+
+This makes fp_01 a much more interesting dataset entry than I thought.
+It's no longer a "false-premise" entry — the premise is actually
+correct. It's a **registry-coverage gap test case**: the agent should
+get this right via retrieval (PDF text), but currently gets it wrong
+because retrieval is decorative (relevance 0.02-0.04) and the registry
+doesn't have the rule.
+
+Also: this is the strongest possible argument for retrieval improvement
+in 1.2. Until now, "retrieval is decorative" was a curiosity. Now it's
+a correctness problem with documented stakes — questions about real
+policy facts get wrong answers because retrieval can't surface them
+and the registry doesn't have them.
+
+### Calibration note on my earlier model of this system
+
+I had been treating the rules registry as ground truth and the PDFs as
+"additional context the retrieval might surface." That's backwards.
+The PDFs are ground truth (they're what an actual compliance reviewer
+would read). The registry is a partial extraction. The system's
+correctness is bounded by the union of (registry coverage) ∪ (retrieval
+quality) — and right now both are leaky in non-overlapping ways.
+
+This shifts the article's article's argument too. The lessons-learned
+piece can no longer be "I fixed scope conflation and knowledge leakage."
+It has to be "I fixed two bug classes and discovered a third I couldn't
+fix without re-running the rule extraction pipeline." That's a more
+honest end state and a more useful one for readers building similar
+systems.
+
+### What I'm not doing about it now
+
+Not re-running the rule extraction. That's Phase 5 work. The retrieval
+fix planned for 1.2 is also not the right tool — even if retrieval
+relevance went from 0.03 to 0.50, the registry would still be missing
+rules and the system would still treat retrieval as decorative for
+rule-backed questions.
+
+The right fix is twofold:
+- Re-extract the registry with stricter coverage (compare extracted
+  rules against PDF text section by section to find gaps)
+- Change the agent's reasoning to treat retrieval and registry as
+  complementary rather than fallback ("if no rule found, say so" was
+  the original prompt — should be "if no rule found, search PDF
+  thoroughly before claiming the policy is silent")
+
+Both are out of scope for this session. Capture in lessons log,
+document in the dataset's expected_answer fields, surface in the
+article.
+
+### One more thing — naming the bug class
+
+Calling it "registry incompleteness laundered as policy absence." The
+"laundered" framing matters: the system isn't claiming the policy
+doesn't address this topic. It's claiming the policy doesn't define an
+annual meal cap. The user trusts that claim because it's specific. If
+the system said "I don't have information on annual meal limits in my
+knowledge base," the user would seek another source. By laundering
+registry-coverage into policy-absence, the system substitutes its own
+limitations for the corpus's content, with no signal that this
+substitution happened.
+
+This is the most generalizable finding from the whole session. Any RAG
+system that treats a structured extraction as authoritative will do
+this. The only defenses are (a) coverage testing of the structured
+layer against the source documents, and (b) prompting the model to
+distinguish "I didn't find this" from "this doesn't exist." Neither is
+common practice.
+
+---
+
+## 2026-04-26 (later) — Three findings from running the baseline
+
+Built the harness, ran the baseline, ran it again with fixes, ran it a
+third time with paired prompt changes. Three findings worth keeping
+for the article. None of them was the finding I expected to write up
+when I started.
+
+### Finding: dual-source measurement gap
+
+Background. The agent has two information sources: rules.json (via
+lookup_rule) and Qdrant (via search_policy_docs). Most rule-backed
+queries answer entirely from rules.json — the registry has the
+threshold, the agent cites the rule_id, no retrieval needed.
+
+RAGAS Faithfulness measures whether the agent's claims are supported
+by the retrieved_contexts pool. The harness, by default, populates
+retrieved_contexts with Qdrant chunks only — because that's what RAGAS
+was designed for, single-source RAG. So when the agent answered "the
+lunch limit is $50, per rule MEAL_002," RAGAS checked that claim
+against the Qdrant chunks (which were about virtual meetings, FMV
+services, and HCP fraud risk because retrieval is broken), failed to
+find $50 anywhere in them, and scored Faithfulness=0.000.
+
+The first baseline showed rule_backed Faithfulness=0.000 across all 4
+entries. My initial reaction was "the agent is fabricating
+thresholds." Wrong reaction. The agent was correctly grounding in
+rules.json; RAGAS just couldn't see that grounding source.
+
+The fix was to feed rules.json results AND nova_vs_phrma comparisons
+into retrieved_contexts alongside Qdrant chunks, with prefix markers
+([rules_registry], [qdrant:], [nova_vs_phrma]) so RAGAS could
+distinguish them in claim-verification. After the fix, rule_backed
+Faithfulness went 0.000 → 0.668. The agent didn't change. The
+measurement layer changed.
+
+The general lesson: when you wire RAGAS into a multi-source agent,
+RAGAS evaluates whatever you feed it. If you feed it one source out of
+two, you get a structurally biased measurement and don't know it
+unless you read the per-entry trace. I read the trace because rb_01's
+Faithfulness=0.000 was so sharply at odds with the smoke test where
+rb_01 had been clean — the contradiction was the only reason I
+investigated.
+
+For the article: this is the strongest argument I have for "look at
+per-entry results, not aggregate metrics." The aggregate said
+"Faithfulness 0.21 across 16 entries." That number was right. It also
+told me almost nothing useful, because four of those entries were
+artifacts of the wiring. Per-entry inspection surfaced the gap;
+aggregates would have hidden it indefinitely.
+
+### Finding: faithfulness rewards faithful wrong answers
+
+The registry_gap category is questions whose answers exist in PDF text
+but NOT in rules.json. rg_01 ("What is Nova Pharma's annual meal
+cap?") is the canonical case — Section 2.2 of the policy says $500
+per rolling 12-month period, but rules.json doesn't have that rule.
+
+After the dual-source fix, rg_01 Faithfulness scored 0.875 to 0.938
+across runs.
+
+The agent's answer is "the policy does not define an annual meal-
+specific cap." That answer is grounded in rules.json (which truly
+doesn't have the rule). Faithfulness measures grounding. So
+Faithfulness scores high.
+
+The answer is also factually wrong. The policy DOES define an annual
+meal cap — it's in the PDF, in Section 2.2, $500/rolling-12-month.
+The agent failed to retrieve it because retrieval is broken.
+
+So: high Faithfulness on a wrong answer.
+
+This isn't a RAGAS bug. Faithfulness is doing exactly what it claims
+to do — measuring whether claims are supported by available context.
+The conflation is mine: I was reading "high Faithfulness" as "correct
+answer." Those are different things. Faithfulness is "this answer
+matches the agent's information sources." Correctness is "this answer
+matches reality." Those align when the information sources are
+complete. They diverge when the sources have gaps.
+
+Registry incompleteness is exactly the gap that creates this
+divergence. A registry-laundered answer is faithfully grounded in the
+registry; the registry is wrong; Faithfulness can't tell the
+difference.
+
+This is the rg_01 paradox: the metric we trust to catch hallucination
+will reward the most dangerous failure mode in this system. Not
+because the metric is bad but because it answers a question I wasn't
+asking. I was asking "is this answer right?" The metric was answering
+"is this answer consistent with what the agent thinks it knows?"
+
+For the article: this is THE example to lead with when discussing
+metric selection. Faithfulness is the most-cited RAG metric and it's
+the wrong metric for the failure mode that matters most in regulated
+industries. The right metric for registry_gap would be something like
+"answer correctness against external ground truth" — which RAGAS has
+(AnswerCorrectness, requires reference text), but it's expensive to
+author and not commonly used. The cheap metric is wrong; the right
+metric is expensive. That tradeoff isn't talked about enough.
+
+### Finding: prompt instructions have a ceiling
+
+The third Cursor run added two paired prompt instructions: LIST
+SYNTHESIS (for multi-chunk enumeration cases like the OIG fraud
+indicators question) and ABSENCE HANDLING (for unanswerable cases
+like the telehealth question).
+
+ABSENCE HANDLING worked perfectly. un_01 went from Faithfulness 0.500
+(over-extrapolation, agent volunteered "general rules apply to
+telehealth") to Faithfulness 1.000 (clean refusal, agent stopped at
+"the policy does not address this"). Latency dropped from 11s to 6s
+because the agent didn't even retrieve chunks once it recognized the
+topic absence. Behavior changed exactly as instructed.
+
+LIST SYNTHESIS did not work. ret_01 still hit max_iterations and
+returned "Agent stopped due to max iterations." After 20 iterations.
+The instruction told the agent to enumerate from retrieved chunks
+without making additional searches with the same query. The agent
+complied with the letter of the instruction — it didn't repeat
+queries — but slightly varied each query (e.g., "OIG speaker fraud
+indicators" → "OIG anti-kickback speaker risks" → "OIG fraud signals
+speaker programs") and never reached the synthesis step.
+
+The Cursor diagnosis is correct: this is a tool-loop control problem,
+not a prompt-instruction problem. The agent's failure isn't in
+answer-formation (where prompt instructions bind), it's in the
+iteration loop (where they don't). The loop keeps running because
+each query is technically different and the "varying queries" pattern
+isn't covered by the instruction.
+
+The general principle: prompt-layer fixes only bind on prompt-layer
+failures. When the failure is at a different layer — tool-loop
+control, retrieval quality, embedding model selection, the
+AgentExecutor's iteration budget — prompt-layer instructions are not
+the right intervention. They might do nothing (LIST SYNTHESIS) or
+they might do something close to what you wanted but not exactly
+(unclear cases I haven't seen yet but expect to).
+
+This is the sharpest version of "use the right tool for the right
+layer" I've encountered building this system. Reaching for prompt
+instructions as the universal fix is tempting because they're cheap
+and reversible. But cheap-and-reversible is a property of the
+intervention, not a property of the problem. The right fix for
+ret_01 is a hard iteration budget at the AgentExecutor level — fewer
+keystrokes than a prompt instruction, harder to test in isolation,
+but the only intervention that actually addresses the layer where
+the failure lives.
+
+For the article: this is the lesson I most want to land cleanly
+because it's the one most directly transferable to other RAG
+projects. People building these systems reach for prompts because
+prompts feel safe. They aren't safe; they're just visible. A failure
+at the wrong layer with a prompt-shaped fix is a regression waiting
+to happen the next time someone touches the prompt for another
+reason. Hard structural constraints (iteration budgets, validators,
+schema enforcement) bind reliably; prompt instructions bind only when
+the model decides to follow them.
+
+### Closing note on 1.1
+
+Three baselines in 24 hours. Each one taught me something the
+previous one couldn't have. The baseline isn't a measurement, it's a
+diagnostic — it shows you what your system actually does versus what
+you think it does, and the gap between those two is where every
+useful finding lives.
+
+If I had run a single baseline and called it "the measurement," I
+would have published findings 1 and 2 (scope conflation, knowledge
+leakage) and stopped. Findings 3 (registry incompleteness), 4 (dual-
+source measurement gap), 5 (faithfulness paradox), and 6 (prompt
+ceiling) only surfaced because each baseline created the conditions
+for the next one to be informative.
+
+The article should reflect this. Not as "I built an eval and found
+three things" but as "I built an eval, the eval surfaced
+measurement-layer issues, fixing those surfaced architectural issues,
+fixing some of those surfaced layer-mismatch issues. The eval wasn't
+the answer; the eval was the question that kept getting better."
+
+---
+
+## 2026-04-26 (evening) — UI testing surfaced what the harness couldn't
+
+After the third Cursor run reported 1.1's measurements stable, ran a
+4-question UI test against the Streamlit dashboard. The questions were
+chosen to exercise different rendering paths: rb_01 (lunch limit),
+fp_01 (California), ret_01 (OIG fraud indicators), rg_01 (annual meal
+cap). Three findings the harness either didn't capture or captured
+with the wrong shape.
+
+### Finding: groundedness judge has no concept of justified absence
+
+When the agent correctly answers "the policy does not segment meal
+limits by state, including California," the groundedness judge flags
+this as ungrounded. The judge's reasoning, surfaced verbatim in the UI
+data limitations panel: "The retrieved content does not provide
+information about state-specific segmentation or enforcement details
+of meal limits, making these claims ungrounded."
+
+Of course the retrieved content doesn't provide that information.
+The policy doesn't segment by state, so there's no chunk asserting "we
+don't segment by state." The absence is real. The judge requires
+positive grounding for the negative claim, which is structurally
+impossible — you can't ground "X doesn't exist" in retrieved text
+unless retrieved text explicitly says "X doesn't exist," which policy
+documents almost never do.
+
+This means: every correct refusal of a false-premise question gets
+flagged as ungrounded. The metric points the wrong direction on the
+behavior I most want from the agent.
+
+Combined with the rg_01 paradox (faithfulness rewards faithfully wrong
+answers), the picture sharpens:
+
+- Correct answer with retrieval support: faithful ✓ correct ✓
+- Wrong answer grounded in incomplete registry: faithful ✓ correct ✗
+- Correct refusal of false-premise question: faithful ✗ correct ✓
+
+Two of the three failure modes that matter most have faithfulness
+pointing the wrong direction. The metric isn't broken; it's measuring
+something other than what we want.
+
+For the article: this is the second piece of the "metric isn't truth"
+lesson. The first piece (rg_01) shows faithfulness rewarding wrong.
+This piece shows faithfulness penalizing right. Together they make
+the case that faithfulness is the wrong primary metric for this
+system. The right primary metric for compliance Q&A is something like
+correctness against external ground truth — RAGAS calls it
+AnswerCorrectness, requires reference text per question, expensive to
+author. The cheap metric measures the wrong thing; the right metric
+costs money to set up. That tradeoff doesn't get talked about enough.
+
+### Finding: prompt fixes can shift bug class rather than eliminate it
+
+The third Cursor baseline reported ret_01 still hitting max_iterations
+after the LIST SYNTHESIS instruction was added. The UI test showed
+ret_01 actually completing with a synthesized answer — four indicators
+listed, honest disclaimer at the top ("the specific characteristics
+were not detailed in the retrieved documents").
+
+Surface reading: the prompt fix worked. Look closer.
+
+The four indicators (Excessive Compensation, Lack of Educational
+Value, Frequent Repeat Engagements, Inadequate Documentation) don't
+appear in any of the retrieved chunks. The citations have relevance
+0.01-0.02. None of the retrieved text contains "Excessive
+Compensation" or "Frequent Repeat Engagements" as named indicators.
+The OIG document does list 9 such indicators on pages 5-6, but
+retrieval didn't surface those pages.
+
+Where did the four indicators come from? Training data. The agent
+fabricated from gpt-4o-mini's pretrained knowledge of OIG fraud
+patterns and added a hedge that makes the output look responsible.
+
+The original failure mode for ret_01 was: keep iterating until
+max_iterations, never produce output. The fix told the agent to
+synthesize from what retrieval returned. The agent had three options
+when retrieval was empty:
+
+(a) Keep iterating (the original bug)
+(b) Refuse honestly: "retrieved chunks don't address this question"
+(c) Fabricate from training data with a disclaimer
+
+The fix targeted (a) and got (c). What I wanted was (b).
+
+The instruction wasn't wrong, it was incomplete. "Synthesize from
+what you have" needs a precondition: "synthesize when retrieved
+chunks contain enumerable items related to the question; refuse when
+they don't." Layered conditions are harder to write than single-
+purpose instructions. Single-purpose instructions can deflect the bug
+rather than fix it.
+
+The disclaimer pattern ("specific characteristics were not detailed
+in the retrieved documents") is the most insidious part. It makes
+the fabrication look careful — the agent is "being honest" about
+retrieval limitations even while making up the answer. A user who
+sees the hedge probably trusts the answer more, not less, because the
+agent appears to have integrity. The hedge is camouflage.
+
+For the article: this is the lesson about prompt-layer fixes that I
+most want to land. The naive intuition is "prompts are safe because
+they're reversible." This shows the failure mode of that intuition.
+A prompt fix can close the bug it's targeting AND open a different,
+worse bug at a different layer. The new bug is harder to detect
+because the agent's output looks more responsible than before. The
+fix improves the surface metrics (no more max_iterations stop, the
+judge accepts the disclaimer as appropriate caution) while the actual
+behavior gets less trustworthy.
+
+The right fix layered the instruction with a refusal precondition.
+The right diagnosis required reading the chunks against the answer,
+not trusting the disclaimer. Both are work the metrics don't do for
+you.
+
+### Finding: Test 4 reproduced the registry-incompleteness pattern exactly
+
+rg_01 in the UI: "What is Nova Pharma's annual meal cap for HCPs?"
+Answer: "The policy does not define an annual meal-specific cap for
+healthcare professionals (HCPs). Instead, it specifies per-meal
+limits..." Confidence: low. Citations: 0.03 noise.
+
+The rule_thresholds panel shows all answer-relevant thresholds sourced
+to "Nova Pharma" — the meal limits, the $75K annual compensation cap.
+Only the "Near-Cap Warning Threshold" carries a "(source: fallback)"
+tag, and that's a system parameter, not an answer fact. So unlike
+ret_01 where fabrication-with-disclaimer was the failure mode, Test 4
+shows no fabrication at all. The agent grounds entirely in the rules
+registry, reports honestly that the registry doesn't contain an
+annual meal cap rule, and the answer is wrong because the registry
+doesn't have a rule that the policy clearly states (Section 2.2:
+$500/rolling-12-month).
+
+This is the registry-incompleteness bug in its purest form. No
+hedge, no fabrication, no over-extrapolation. Just an honest report
+of what the agent's information sources contain, when those sources
+are incomplete.
+
+The visceral case is stronger here than in any harness output. A
+regulator-facing user reads "the policy does not define an annual
+meal-specific cap" and acts on it. The user has no signal that the
+agent's "policy" is the registry, not the source documents. The
+phrasing erases the distinction. The user takes it as "the policy
+text says no" when what the system actually means is "my structured
+extraction of the policy says no, and I didn't successfully retrieve
+the source text that would have corrected me."
+
+This is the screenshot for the article. The wrong answer, the
+confident phrasing, the low confidence indicator that the user might
+not notice or might not know how to interpret, the noise citations,
+the data limitations panel buried below the fold. Every layer of the
+UI says "trust this" while the system layer underneath says "this is
+incomplete." The UI design and the system reality are pointing
+opposite directions.
+
+### Closing observation across the three findings
+
+The harness measured what the harness was instrumented to measure.
+The UI surfaced different things. Specifically:
+
+The judge-on-absence problem (finding 4) was visible in the
+groundedness flags but easy to dismiss as judge calibration noise —
+until you read the judge's reasoning verbatim in the UI panel and
+see that it's structurally incapable of grounding negative claims.
+
+The fabrication-with-disclaimer problem (finding 5) was hidden by
+the harness because RAGAS Faithfulness on a confidently-disclaimed
+fabrication scores about the same as on a confidently-grounded
+answer. The metric can't read the disclaimer in context. A human
+reading the UI can.
+
+The registry-incompleteness visceral case (finding 6) was already
+quantified by the harness (registry_gap Faithfulness = 0.875–0.938)
+but the metric framed it as "the agent is highly faithful." The UI
+framed it as "the agent is confidently telling the user something
+that isn't true." Same data, opposite valence.
+
+The pattern across all three: the harness surfaces what's
+quantifiable; the UI surfaces what's interpretable. Both are
+necessary. Neither is sufficient. The article should make this
+explicit — eval-driven development without UI inspection misses the
+failures that look right in the metrics. UI inspection without an
+eval misses the failures that don't show up in any single
+interaction. The combination is what produces the diagnostic clarity
+that lets you fix the right thing at the right layer.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
