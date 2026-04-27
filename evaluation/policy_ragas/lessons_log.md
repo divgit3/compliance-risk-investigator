@@ -1113,6 +1113,216 @@ that lets you fix the right thing at the right layer.
 
 ---
 
+## 2026-04-27 — 1.2a closure: embedding fix landed, residuals revealed
+
+Yesterday's hypothesis (ada-002 indexing vs text-embedding-3-small
+querying) confirmed by direct file inspection. `pipelines/embed_policy_docs.py`
+line 44 read `text-embedding-ada-002`. `agents/tools/policy_tools.py`
+line 46 read `text-embedding-3-small`. Same dimension (1536) on both
+sides — Qdrant accepted queries silently — but the vector spaces
+were unrelated, so cosine similarity scores have been geometric noise
+since the index was built. This is why retrieval relevance has
+clustered at 0.02-0.04 across every query for weeks.
+
+The fix was a single-line change on line 44, plus delete and
+re-ingest the policy_docs collection. No schema changes needed
+because dimensions matched.
+
+### What the rebuild did
+
+Aggregate Faithfulness 0.612 → 0.770 (+0.158). Retrieval Context
+Recall 0.000 → 0.267. Registry-gap Context Precision 0.000 → 1.000.
+Two CI gates flipped to passing for the first time (Faithfulness 0.807
+above 0.7; answer_relevancy 0.710 above 0.7). Latency stable.
+
+The before/after picture is exactly the article wants: same agent,
+same prompts, same dataset, same dimensions, single line code change,
+retrieval went from "decorative" to functional. No confound. The
+embedding mismatch was, in retrospect, the largest single bug in the
+system — invisible to all the safety nets, undetectable from any
+single answer, only revealed by aggregate retrieval metrics across a
+diverse query set.
+
+### What rb_03 told us
+
+The annual compensation cap question was the rule-backed outlier in
+yesterday's baseline (Faithfulness 0.17). Today it landed at 0.625
+with Context Recall 1.0. The structural weak point resolved without a
+prompt change or a registry change — it just needed retrieval to
+work. The rb_03 "weak point" wasn't really weak; it was sitting in
+the gap where the agent's claim depended on a registry chunk AND a
+Qdrant chunk, and the Qdrant side was returning noise.
+
+This is a good lesson for the article. When metrics show
+category-internal variance (rb_01-04 mostly fine, rb_03 anomalous),
+the temptation is to characterize the anomaly as its own bug. Often
+it isn't — it's a sentinel for a different bug that happens to
+intersect that one entry's structure most visibly. Fix the upstream
+bug; the sentinel resolves on its own.
+
+### What ret_01 told us
+
+The OIG fraud indicators question (ret_01) was the LIST SYNTHESIS
+test case. Yesterday it hit max_iterations and produced
+"Agent stopped due to max iterations." Today it produced a real
+synthesized answer with Context Precision 1.0 and Context Recall 1.0.
+
+The hypothesis from yesterday's lessons log entry — "prompt
+instructions have a ceiling, and that ceiling is the layer below" —
+turned out to be exactly right. LIST SYNTHESIS didn't bind yesterday
+because retrieval gave it nothing to bind on. With retrieval working,
+the same instruction binds correctly. No prompt change needed.
+
+The fabrication-with-disclaimer pattern from yesterday's UI test was
+also a retrieval artifact. With retrieval surfacing real OIG content,
+the agent has no need to fabricate from training data. The hedge
+disappeared because the agent didn't need to hedge.
+
+This sharpens the prompt-instruction-ceiling finding. The original
+framing was "prompt fixes have a ceiling, structural fixes are
+needed." A more precise framing: prompt instructions encode behavioral
+preferences that bind only when the supporting infrastructure is
+present. LIST SYNTHESIS asks the agent to enumerate from retrieved
+chunks; if retrieved chunks are noise, the instruction has nothing to
+work with. Fix retrieval, the instruction starts working. The
+"ceiling" isn't a ceiling at all — it's a precondition.
+
+### What rg_01 told us — and what it didn't
+
+Yesterday's framing: rg_01 fails because the rules registry doesn't
+have a $500/12mo annual meal cap rule. Fix would be re-extracting the
+registry.
+
+Today's per-entry inspection sharpens the diagnosis. Retrieval now
+surfaces Section 3.2 of the Nova Pharma policy (Annual Speaker Fee
+Cap, $75,000) and rules-registry COMP_001 ($75,000 annual
+compensation cap). Both are annual caps. Neither is THE annual cap
+the question is asking about, which is Section 2.2 (annual MEAL cap,
+$500). The answer remains wrong: "the policy does not define an
+annual meal-specific cap." Faithfulness 0.81 because that wrong
+claim is faithfully grounded in the registry (which doesn't have it)
+and in the retrieved chunks (which don't include Section 2.2).
+
+So the diagnosis evolves. Section 2.2 exists in the policy PDF. With
+the embedding fix, retrieval CAN find content from that PDF. But the
+chunk containing $500/12mo isn't ranking high enough on the query
+"annual meal cap" to make the top retrieved set. Possibilities:
+
+(a) The chunk containing $500/12mo doesn't have strong "annual" or
+"cap" lexical or semantic markers — the rule sits in a chunk titled
+"Meal and Hospitality Limits" with surrounding text about per-meal
+limits, and "annual" might appear only once.
+
+(b) Chunk size (512 words, 64 overlap) splits Section 2.2 across
+multiple chunks, weakening its semantic concentration.
+
+(c) The query "What is Nova Pharma's annual meal cap for HCPs?"
+matches more strongly against "Annual Speaker Fee Cap" and "Annual
+HCP Compensation Cap" than against the actual Section 2.2 text.
+
+Each is testable by pulling the chunks from Qdrant and inspecting.
+Each suggests a different fix: chunking strategy adjustment,
+metadata enrichment, or query rewriting. Probably some combination.
+
+The right framing for the article: rg_01 is a chunking problem, not
+a registry-incompleteness problem. The registry IS incomplete (it
+doesn't have $500/12mo as a rule), but that's not the proximate
+cause of the wrong answer in the current architecture. The
+proximate cause is that retrieval-by-semantic-search doesn't surface
+Section 2.2 for the natural-language query a user would write. Fix
+chunking, you fix rg_01. Fix the registry, you also fix rg_01 — but
+chunking is the smaller intervention and lives at the layer the
+embedding fix has already opened up.
+
+This is a layer-down diagnosis. The original embedding bug hid the
+chunking bug. Yesterday's "registry incompleteness" framing was the
+best diagnosis available given what could be observed. With
+retrieval now functional, a sharper diagnosis is possible. This will
+be addressed in 1.2c, bundled with the source viewer work because
+both touch the embedding pipeline and require re-ingest.
+
+### What ret_05 told us
+
+The seven-elements-of-compliance-program question (ret_05) was the
+second multi-chunk list synthesis test. ret_01 succeeded; ret_05
+hit max_iterations.
+
+Both queries should benefit equally from working retrieval. ret_01
+got Context Precision 1.0, Context Recall 1.0 — retrieval surfaced
+the right OIG document and the agent synthesized. ret_05 got Context
+Precision 0.5, Context Recall 0.0 — retrieval surfaced some related
+content but not the actual seven-element list, and the agent kept
+searching.
+
+This is a real finding about LIST SYNTHESIS's behavior under
+partial-retrieval conditions. When retrieval gives the agent enough
+to synthesize from, the instruction works. When retrieval gives the
+agent partial signal, the agent doesn't know whether to synthesize
+or to keep looking — and the instruction (correctly) tells it not to
+make duplicate queries but doesn't tell it when to stop iterating
+overall.
+
+The right fix is at the AgentExecutor layer: a hard budget on
+search_policy_docs calls, after which the agent must synthesize from
+what it has or refuse. Cursor proposed exactly this fix yesterday and
+I deferred it; the per-entry result here makes the case for actually
+implementing it.
+
+This is a one-line patch to the AgentExecutor configuration. It will
+land in 1.2b alongside citation UI work, where the touch surface is
+all "small agent and UI polish."
+
+### What the metric layer told us
+
+Two retrieval entries (ret_01, fp_01) returned Faithfulness=None
+despite producing real answers with retrieved contexts. This is a
+RAGAS internals issue — claim extraction returning no claims, or
+some other null path inside the metric. Not blocking, but worth
+investigating because aggregate Faithfulness was computed across the
+14 entries where the metric returned a number, not all 16. The
+reported +0.158 improvement may be slightly inflated by the
+exclusion of two entries whose Faithfulness would have been computed
+to some specific value.
+
+Investigating this properly requires reading RAGAS's claim-extraction
+internals. Probably not fixable on our side (we'd need to either
+change RAGAS or change our answer format to make claim extraction
+work better). Will investigate in 1.2e and decide whether to fix,
+filter our reporting, or accept and document.
+
+### Closing observation across the residuals
+
+Each residual surfaced from inspection of per-entry data, not from
+the aggregate. The aggregate said "1.2a worked, +0.158 Faithfulness,
+two CI gates passed." Per-entry inspection said "1.2a worked AND
+revealed three new bugs at three different layers — chunking
+(ingestion layer), tool-loop control (executor layer), and claim
+extraction (metric layer)."
+
+Both are true simultaneously. The aggregate is the right thing to
+report to a stakeholder; the per-entry inspection is the right
+thing to inform the next decision. A baseline that produces
+aggregates without per-entry data is a baseline that closes
+prematurely. The harness must keep both.
+
+The article's structure is now:
+- Smoke test → three findings (scope, leakage, registry gap)
+- Eval rebuild → three findings (dual-source measurement, faithfulness
+  paradox, prompt instruction ceiling — later refined to "precondition")
+- UI testing → three findings (judge-on-absence, fabrication-with-
+  disclaimer, registry-gap visceral case)
+- Embedding fix → three findings (chunking-not-registry, retrieval-
+  enables-prompt-fixes, metric null path)
+
+Twelve findings across four investigations. Each investigation made
+the next one's findings sharper. The article is genuinely a
+"diagnostic methodology" piece more than a "RAG findings" piece —
+the lesson is that no single layer of investigation surfaces all the
+bugs, and the bugs that hide hardest are the ones at the layer
+nobody is looking at yet.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
