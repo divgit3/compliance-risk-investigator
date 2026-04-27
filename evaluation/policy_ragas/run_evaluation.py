@@ -30,7 +30,7 @@ TIMEOUT      = 120  # seconds — policy agent is 5–15s; buffer for cold start
 
 _DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
 _RESULTS_DIR  = Path(__file__).parent / "results"
-_PREV_BASELINE = _RESULTS_DIR / "20260426T115018Z" / "summary.json"
+_PREV_BASELINE = _RESULTS_DIR / "20260427T085821Z" / "summary.json"
 
 STAGE1_QUESTION = "What is the annual HCP spend cap for Nova Pharma?"
 
