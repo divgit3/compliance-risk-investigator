@@ -9,12 +9,64 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import re
+
 import streamlit as st
 
 import httpx
 
 from components.api_client import APIError, get_client
 from config import API_BASE_URL, RISK_TIER_COLORS
+
+# ── Citation quality constants ─────────────────────────────────────────────────
+
+# Citations below this relevance score are displayed with a "weak match" warning.
+# After the 1.2a embedding fix, genuine hits score 0.4–0.8; noise scores ~0.02–0.05.
+_CITATION_WEAK_THRESHOLD = 0.30
+
+
+def _clean_answer(text: str) -> tuple[str, list[str]]:
+    """
+    Transform inline citation markers in agent answer text for UI display.
+
+    Agent output often contains:
+      [Rule ID: MEAL_002, Chunk ID: DOC_002_chunk_0000]
+      [Chunk ID: DOC_002_chunk_0000]
+
+    These are rendered as:
+      - Rule ID  → small superscript badge  <sup>[MEAL 002]</sup>
+      - Chunk ID → suppressed inline; collected for optional debug display
+
+    Also applies standard Streamlit escaping ($→\\$, _→space).
+    Returns (cleaned_html_string, list_of_chunk_ids_found).
+    """
+    chunk_ids: list[str] = []
+
+    def _replace_full(m: re.Match) -> str:
+        rule_id  = (m.group(1) or "").strip()
+        chunk_id = (m.group(2) or "").strip()
+        if chunk_id:
+            chunk_ids.append(chunk_id)
+        if rule_id:
+            return f'<sup style="color:#6B7280;font-size:0.75em;">[{rule_id}]</sup>'
+        return ""
+
+    def _replace_chunk_only(m: re.Match) -> str:
+        chunk_ids.append(m.group(1).strip())
+        return ""
+
+    cleaned = re.sub(
+        r'\[Rule\s+ID:\s*([A-Z_0-9]+)(?:,\s*Chunk\s+ID:\s*([A-Za-z0-9_]+))?\]',
+        _replace_full, text, flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r'\[Chunk\s+ID:\s*([A-Za-z0-9_]+)\]',
+        _replace_chunk_only, cleaned, flags=re.IGNORECASE,
+    )
+    # Standard Streamlit escaping — applied after HTML substitution so that
+    # underscores in rule IDs inside HTML tags are also converted to spaces.
+    cleaned = cleaned.replace("$", "\\$").replace("_", " ")
+    return cleaned, chunk_ids
 
 st.set_page_config(
     page_title="Policy Q&A",
@@ -155,13 +207,15 @@ if history:
     st.markdown(f"**Q: {latest['question']}**")
     st.markdown("")
 
-    # Answer text
+    # Answer text — inline citations transformed: rule IDs as superscript,
+    # chunk IDs suppressed from prose (shown in debug expander below).
     answer_text = latest.get("answer", "")
     if answer_text:
-        answer_clean = (answer_text
-            .replace("$", "\\$")
-            .replace("_", " "))
-        st.markdown(answer_clean)
+        answer_clean, _inline_chunk_ids = _clean_answer(answer_text)
+        st.markdown(answer_clean, unsafe_allow_html=True)
+        if _inline_chunk_ids:
+            with st.expander("Debug: chunk IDs cited inline", expanded=False):
+                st.caption(", ".join(sorted(set(_inline_chunk_ids))))
     else:
         st.info("No answer returned.")
 
@@ -188,19 +242,33 @@ if history:
 
     with col_cite:
         st.markdown("#### Policy citations")
+        # Deduplication is handled at the agent layer (_parse_citations uses a
+        # seen-set keyed on chunk_id), so the list here is already deduplicated.
         citations = latest.get("citations", [])
         if citations:
             for cit in citations:
                 if isinstance(cit, dict):
-                    source = cit.get("source_doc", "")
+                    source  = cit.get("source_doc", "")
                     excerpt = cit.get("excerpt", "")
-                    score   = cit.get("relevance_score", 0)
-                    label   = f"**{source}**" if source else "Policy document"
+                    score   = float(cit.get("relevance_score", 0))
+                    is_weak = 0 < score < _CITATION_WEAK_THRESHOLD
+
+                    label = f"**{source}**" if source else "Policy document"
                     if excerpt:
                         label += f"\n\n_{excerpt[:200]}{'…' if len(excerpt) > 200 else ''}_"
-                    if score:
-                        label += f"\n\nRelevance: {float(score):.2f}"
-                    st.info(label)
+
+                    if is_weak:
+                        # Show weak citations with an explicit warning — score is
+                        # below threshold but not suppressed (transparency over silence).
+                        st.info(
+                            f"⚠ **Weak match** (score {score:.2f} — below "
+                            f"{_CITATION_WEAK_THRESHOLD:.2f} threshold; treat with caution)\n\n"
+                            + label
+                        )
+                    else:
+                        if score:
+                            label += f"\n\nRelevance: {score:.2f}"
+                        st.info(label)
                 else:
                     st.info(str(cit))
         else:
