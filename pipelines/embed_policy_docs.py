@@ -2,7 +2,7 @@
 embed_policy_docs.py
 --------------------
 Downloads policy PDFs from S3, extracts text via PyMuPDF, chunks into
-overlapping windows, embeds via OpenAI text-embedding-ada-002, and upserts
+overlapping windows, embeds via OpenAI text-embedding-3-small, and upserts
 into the Qdrant `policy_docs` collection for RAG-based rule extraction.
 
 Run once before Task 2.0b (business_rules_registry.py).
@@ -41,7 +41,7 @@ S3_POLICY_PREFIX  = "raw/policy_docs/pdfs/"
 QDRANT_HOST       = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT       = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_COLLECTION = "policy_docs"
-EMBEDDING_MODEL   = "text-embedding-ada-002"
+EMBEDDING_MODEL   = "text-embedding-3-small"
 EMBEDDING_DIM     = 1536
 CHUNK_SIZE        = 512   # words per chunk
 CHUNK_OVERLAP     = 64    # words overlap between consecutive chunks
@@ -155,6 +155,18 @@ def chunk_text(
     authority = doc_metadata["authority"]
     relevant_rules = doc_metadata["relevant_rules"]
 
+    # Build section heading lookup: page_num → first heading-like line on that page.
+    # Heuristic: first non-empty line < 80 chars that doesn't end with punctuation.
+    page_heading: dict[int, str] = {}
+    for page in pages:
+        heading = ""
+        for line in page["text"].split("\n"):
+            stripped = line.strip()
+            if stripped and len(stripped) < 80 and not stripped.endswith((".", ",", ";")):
+                heading = stripped
+                break
+        page_heading[page["page_num"]] = heading
+
     # Build (word, page_num) pairs across all pages
     word_page_pairs: list[tuple[str, int]] = []
     for page in pages:
@@ -176,16 +188,19 @@ def chunk_text(
 
         chunk_id = f"{doc_id}_chunk_{chunk_index:04d}"
         chunks.append({
-            "chunk_id":       chunk_id,
-            "doc_id":         doc_id,
-            "doc_type":       doc_type,
-            "authority":      authority,
-            "filename":       filename,
-            "page_num":       start_page,
-            "chunk_index":    chunk_index,
-            "text":           text,
-            "char_count":     len(text),
-            "relevant_rules": relevant_rules,
+            "chunk_id":           chunk_id,
+            "doc_id":             doc_id,
+            "doc_type":           doc_type,
+            "authority":          authority,
+            "filename":           filename,
+            "page_num":           start_page,
+            "section_heading":    page_heading.get(start_page, ""),
+            "chunk_index":        chunk_index,
+            "chunk_start_offset": pos,
+            "chunk_end_offset":   end,
+            "text":               text,
+            "char_count":         len(text),
+            "relevant_rules":     relevant_rules,
         })
         chunk_index += 1
 
@@ -220,6 +235,7 @@ def embed_chunks(chunks: list[dict]) -> list[dict]:
                 response = openai.embeddings.create(
                     model=EMBEDDING_MODEL,
                     input=texts,
+                    dimensions=EMBEDDING_DIM,
                 )
                 break
             except Exception as e:
