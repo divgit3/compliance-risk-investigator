@@ -181,6 +181,18 @@ class PolicyAgent:
                 "    items are from retrieved content and note the list may be incomplete.\n"
                 "Do not make additional search_policy_docs calls with the same or similar\n"
                 "query once results have been returned. Enumerate from what you have.\n\n"
+                "TOOL-CALL BUDGET — search_policy_docs is capped at 3 calls per question:\n"
+                "You may call search_policy_docs at most 3 times per question (one broad\n"
+                "query plus at most 2 refinements). After your 3rd search_policy_docs\n"
+                "call you MUST stop searching and produce your final answer from whatever\n"
+                "chunks you have retrieved so far — even if the list feels incomplete.\n"
+                "Do not make a 4th or further search_policy_docs call under any\n"
+                "circumstances. lookup_rule and list_rule_dimensions are not subject to\n"
+                "this budget and may be called freely.\n"
+                "When the budget is exhausted and retrieved chunks do not contain the\n"
+                "answer: follow ABSENCE HANDLING below — state that the specific content\n"
+                "was not found in the retrieved corpus and stop. Do not synthesize from\n"
+                "training data or add qualifiers like 'typically' or 'generally'.\n\n"
                 "ABSENCE HANDLING — when the topic is not in the corpus:\n"
                 "This is DIFFERENT from DIMENSION CHECK (which handles topics that ARE in\n"
                 "the corpus but not segmented by a qualifier like jurisdiction or specialty).\n"
@@ -195,7 +207,13 @@ class PolicyAgent:
                 "  Do NOT then volunteer that 'general rules likely apply' or describe\n"
                 "  unrelated rules as if they partially answer the question. An inference\n"
                 "  that general policies 'probably extend' to an unaddressed topic is not\n"
-                "  corpus-grounded — omit it.\n\n"
+                "  corpus-grounded — omit it.\n"
+                "  BUDGET INTERACTION: The tool-call budget above says 'produce your\n"
+                "  final answer' after 3 searches. For TOPIC ABSENT cases, 'produce\n"
+                "  your final answer' means exactly one sentence: 'The policy does not\n"
+                "  address [topic].' Do not add a numbered list of what retrieved chunks\n"
+                "  do or do not discuss. The fact that you ran 3 searches and found\n"
+                "  nothing relevant is not part of your answer — just state the absence.\n\n"
                 "After both tools have returned results and you have completed scope\n"
                 "verification, write your final answer. Never repeat a successful tool\n"
                 "call with the same query. Always cite chunk_ids and rule_ids. Never\n"
@@ -773,6 +791,12 @@ If grounded is true, ungrounded_claims should be an empty list."""
                     f"{ungrounded_summary}. Judge reasoning: "
                     f"{groundedness_check['reasoning']}"
                 )
+                # Intentional hard override: ungrounded claims → "low" regardless of
+                # prior safety-net downgrades. A scope-mismatch + ungrounded answer
+                # (two signals) correctly lands at "low". The scope safety nets are
+                # soft (high→medium, guarded); this is the final arbiter.
+                # If "low" fires too often on valid refusals ("no X exists"), fix is
+                # in the groundedness judge prompt (negative-claim handling), not here.
                 confidence = "low"
 
             latency_ms = (time.monotonic() - t0) * 1000
