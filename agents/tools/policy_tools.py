@@ -104,8 +104,8 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
       - "annual honoraria cap speaker engagement limit"
 
     Returns a list of matching chunks with chunk_id, source_doc, relevance_score,
-    and an excerpt (first 150 chars of chunk text). Returns empty results list if
-    no chunks meet the minimum relevance threshold — try a broader query if so.
+    and the full chunk text as excerpt. Returns empty results list if no chunks
+    meet the minimum relevance threshold — try a broader query if so.
     """
     try:
         query = query.strip().strip("'\"")
@@ -135,7 +135,7 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
         for hit in results:
             payload = hit.payload or {}
             raw_text = payload.get("text") or payload.get("content") or ""
-            excerpt  = raw_text[:150].replace("\n", " ").strip()
+            excerpt  = raw_text.replace("\n", " ").strip()
 
             source_doc = (
                 payload.get("filename")

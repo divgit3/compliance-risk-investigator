@@ -21,7 +21,7 @@ class PolicyCitation(BaseModel):
     chunk_id: str
     source_doc: str
     relevance_score: float
-    excerpt: str  # first 150 chars of chunk text
+    excerpt: str  # full chunk text
 
 
 class RuleFlag(BaseModel):
