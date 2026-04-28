@@ -1323,6 +1323,296 @@ nobody is looking at yet.
 
 ---
 
+## 2026-04-28 — 1.2c full arc closure: chunking diagnosis, excerpt fix, three rounds of prompt iteration
+
+1.2c set out to fix rg_01 (the canonical registry-gap case) and the
+context_precision CI gate. It did both, plus more, plus surfaced a
+generalizable finding about the ceiling of prompt-layer fixes that
+the article should hold up as central.
+
+The arc spanned five days of work and four distinct interventions.
+Capturing each here in order, then the closing observation.
+
+### Day 1: chunking investigation — three hypotheses wrong, fourth one right
+
+Spent ~90 minutes investigating why rg_01 retrieved Section 3.2 of
+the Nova Pharma policy (Annual Speaker Fee Cap, $75,000) but missed
+Section 2.2 (Annual Meal Cap, $500/rolling-12-month). Three
+hypotheses entering: (a) chunk lacks "annual"/"cap" markers,
+(b) Section 2.2 split across chunks, (c) competing annual-cap chunks
+rank higher.
+
+All three wrong. Hypothesis D, not on the original list, was the
+actual cause: `policy_tools.py` line 137 truncates excerpts to 150
+characters. Section 2.2 sits at character 1486 of chunk
+DOC_002_chunk_0000. The chunk retrieves at rank 1 with score 0.7098
+— couldn't ask for better placement — but the agent only saw the
+synthetic-document disclaimer header in the 150-char excerpt. The
+$500/rolling-12-month text was always in the index, always in the
+top retrieved chunk, always invisible to the agent.
+
+Lesson worth keeping: when retrieval metrics look right but answers
+look wrong, check what the agent actually sees, not what retrieval
+finds. The pipeline between "chunk identified" and "chunk content
+in agent context" is its own surface where bugs hide.
+
+This is the second instance of "the bug that hid hardest was at the
+layer nobody was looking at yet." The first was the embedding model
+mismatch (1.2a). The pattern is consistent: when the high-leverage
+diagnosis is "we've been measuring something other than what we
+thought," the previous fixes that didn't fully work suddenly make
+sense.
+
+### Day 2: single-line fix, large impact
+
+Changed `excerpt = raw_text[:150]` to `excerpt = raw_text`. Updated
+the docstring. No re-indexing. No prompt change.
+
+Aggregate Context Recall: 0.333 → 0.677 (+0.344). Aggregate Context
+Precision: 0.437 → 0.624 (+0.187). Aggregate Faithfulness: 0.740 →
+0.761 (+0.021). One single-line change, three meaningful aggregate
+improvements.
+
+rg_01 specifically resolved cleanly: the agent now correctly cites
+"$500 per rolling 12-month period" with chunk_id reference.
+Faithfulness 0.923, Grounded True, Context Precision 1.000.
+
+ret_05 also resolved without prompt change. Yesterday's lessons-log
+entry on ret_05 hypothesized that prompt instructions have a ceiling
+and the ceiling was retrieval quality. With excerpts now showing
+real content, the LIST SYNTHESIS instruction bound exactly as
+intended. Same prompt, working retrieval, different behavior.
+
+This refined the "prompt instruction ceiling" finding from yesterday.
+The original framing was "prompt fixes have a ceiling, structural
+fixes are needed below." A more precise framing: prompt instructions
+encode behavioral preferences that bind only when the supporting
+infrastructure is present. The "ceiling" isn't a ceiling — it's a
+precondition. LIST SYNTHESIS asks the agent to enumerate from
+retrieved chunks; if retrieved chunks are empty or noise, the
+instruction has nothing to bind on. Fix retrieval, the instruction
+starts binding.
+
+### Day 3: per-entry inspection surfaces three more findings
+
+Cursor's automated CI report said two gates still failing
+(answer_relevancy, context_precision) and recommended re-chunking at
+256 words. The aggregate metrics looked broadly improved; re-chunking
+seemed defensible.
+
+Pushing back on that recommendation by demanding per-entry inspection
+turned out to be the right call. The CI gate gaps were:
+
+- answer_relevancy 0.675: pulled down by rb_02 contradicting itself
+  in two consecutive sentences. One entry, prompt-layer issue.
+  Re-chunking wouldn't fix it.
+- context_precision 0.454: ranking issue, not chunk-size issue.
+  Re-chunking might worsen it (more chunks, more competition for
+  top positions).
+
+Plus the inspection surfaced a finding that wasn't in the CI report
+at all: rg_01 fully resolved AND ret_05 fabrication ended AND un_01
+still over-narrating after the dual-source fix. None visible from
+aggregates.
+
+Lesson worth keeping: aggregates report the question, per-entry
+data reports the answer. Cursor's CI gate framing pushed toward
+the most visible intervention (re-chunking, structural). Per-entry
+inspection pushed toward the actual interventions (two prompt
+fixes, one architectural problem). The structural intervention
+would have spent 60-90 minutes for no benefit and introduced
+regression risk.
+
+This is article-worthy meta-content: AI coding assistants tend to
+recommend more invasive interventions than the data supports,
+especially when CI gates are failing. The discipline of demanding
+per-entry inspection before structural changes is worth naming.
+
+### Path B: paired prompt fixes, mixed outcome
+
+Two fixes addressing Day 3 findings:
+- TOOL OUTPUT SUPPRESSION: extend ABSENCE HANDLING to suppress
+  uncapped-tool output for TOPIC ABSENT cases (un_01)
+- PHRMA COMPARISON AUTHORITY: when nova_vs_phrma has phrma_equivalent
+  for a rule, defer to it; don't override with chunk-derived
+  inferences (rb_02)
+
+rb_02 fix worked exactly as intended. Contradiction gone.
+Faithfulness 0.909 → 1.000. The instruction did its job for the
+case it was scoped to handle.
+
+un_01 fix didn't bind. Cursor's diagnosis was sharp: the agent
+classifies tangentially-related chunks as "partial retrieval" rather
+than TOPIC ABSENT. The instruction was conditional on a
+classification the agent doesn't make. Same pattern as LIST
+SYNTHESIS not binding without retrieval, just at a different layer.
+Prompt-layer fixes only bind when the agent's internal state matches
+the instruction's preconditions.
+
+rb_03 regressed. The PHRMA COMPARISON AUTHORITY fix worked for rb_02
+(where phrma_equivalent=$4,000 existed) but misfired for rb_03
+(where COMP_001 has no phrma_equivalent). The agent read clause (b)
+of the new instruction as license to say "no phrma_equivalent →
+PhRMA doesn't specify a cap" rather than "no phrma_equivalent →
+make no comparison claim at all." Faithfulness 0.625 → 0.250 because
+RAGAS found the new negative PhRMA claim unverifiable against
+retrieved context.
+
+This is "defensible-but-wrong reading" — the agent didn't violate
+the instruction, it took an inference the instruction didn't
+explicitly forbid. Different bug class from "prompt instruction not
+binding." Worth naming.
+
+### Clause (d): partial fix, demonstrates prompt-layer ceiling
+
+Added clause (d) explicitly prohibiting PhRMA comparison claims when
+phrma_equivalent is absent: "make no PhRMA threshold comparison
+claim about that rule. State Nova Pharma's threshold without
+asserting or inferring whether the PhRMA Code has a comparable
+provision. Do not say 'PhRMA also does not specify', 'consistent
+with PhRMA standards', or similar inferences."
+
+Cursor's harness baseline: rb_03 Faithfulness 0.250 → 0.636. Agent
+answer used softer phrasing: "no equivalent provision in the PhRMA
+Code that specifies a similar cap." RAGAS accepted it. Grounded
+True. Closure declared.
+
+Production sampling told a different story. Same question, fresh
+container, different sampling outcome: "This policy is consistent
+with the PhRMA Code, which also does not specify a different cap
+for total HCP compensation." That's almost the verbatim Path B
+regression phrasing with one word changed ("different"). The agent
+worked around the literal prohibited phrases by adding a
+distinguishing word.
+
+Three rounds of prompt iteration on PhRMA inferences. Each round
+closed a specific failure pattern; each round surfaced an adjacent
+one. The pattern is consistent: prompt instructions partially close
+failures, agent finds adjacent paths the instruction doesn't
+explicitly close.
+
+### The harness-vs-production sampling discrepancy
+
+The Cursor harness sampled the softer ("no equivalent provision")
+phrasing. UI testing with the same fresh container sampled the
+harder ("PhRMA Code, which also does not specify") phrasing. Both
+versions exist in the agent's possible output space. Stochastic
+variance picked one for the harness, picked another for production.
+
+This is its own finding. The 16-entry single-run baseline doesn't
+see the full distribution of agent outputs. We measured one sample
+per entry. Multi-sample baselines would have surfaced the
+distribution and made the partial-fix nature of clause (d) visible
+from metrics alone.
+
+For the article: methodology lesson. Single-run evaluation is
+necessary but not sufficient. To characterize stochastic LLM
+behavior, multi-sample-per-entry runs are needed — or property-based
+testing that asserts behaviors should hold across samples, not just
+on one specific output.
+
+This isn't a bug in our work. It's a property of LLM evaluation that
+shows up most clearly when you've reduced enough other failure modes
+that the stochastic variance becomes the dominant source of
+disagreement between measurements.
+
+### Closing observation across the 1.2c arc
+
+Five interventions, four distinct findings:
+
+1. **Excerpt truncation** — single-line content-pipeline bug that
+   hid the embedding fix's true impact. Day 2 fix had the largest
+   single-step effect of any 1.2 work.
+
+2. **Prompt-instruction precondition principle** — instructions bind
+   when their preconditions are met. LIST SYNTHESIS bound after
+   excerpt fix because retrieved content existed for it to enumerate.
+   ABSENCE HANDLING didn't bind because the agent doesn't classify
+   partial-retrieval cases as TOPIC ABSENT.
+
+3. **Defensible-but-wrong reading** — instructions can be technically
+   followed in ways that produce the failure they were supposed to
+   prevent. rb_03 followed clause (b) of PhRMA AUTHORITY by inferring
+   PhRMA absence from data absence. The instruction didn't forbid
+   that reading.
+
+4. **Stochastic variance ceiling** — once enough failure modes are
+   reduced, sampling variance dominates. Harness saw soft phrasing,
+   production saw hard phrasing, both grounded, both sampled from
+   the same underlying agent. Single-run measurement can't
+   distinguish "fix worked" from "fix worked on the sample we got."
+
+The article structure is:
+
+- Smoke test (Apr 25): three behavioral findings
+- Eval rebuild (Apr 26 morning): three measurement findings
+- UI testing (Apr 26 evening): three interface findings
+- Embedding fix (Apr 27): three layer-down findings
+- Excerpt fix and prompt iteration (Apr 28): four ceiling findings
+
+Sixteen findings across five investigations. Each investigation
+made the next one's findings sharper. The eval wasn't the answer —
+it was the question that kept getting better.
+
+The right way to publish this is not "I built a RAG system, here's
+what I learned." It's "I built an eval to measure what I had built,
+the eval surfaced layer after layer of bugs each one of which hid
+the next, and the deepest finding is that prompt-layer fixes have
+a ceiling that's eventually defined by stochastic variance not by
+better instructions."
+
+### What 1.2c didn't fix (carrying forward)
+
+Three residuals, characterized honestly:
+
+- **rb_03 PhRMA inference (still occurs at some sampling rate):**
+  clause (d) reduced the inference frequency but didn't eliminate
+  it. Right fix is registry completeness (Phase 5) or output-layer
+  post-processing, not more prompt iteration.
+
+- **un_01/un_02 over-narration:** prompt-layer suppression doesn't
+  bind because the agent doesn't classify these as TOPIC ABSENT.
+  Right fix is post-processing safety net or different prompt
+  placement. Carries to 1.2d.
+
+- **rule_backed CI gate margins:** Faithfulness narrowly failing
+  driven by rb_02 RAGAS variance. Not a content issue.
+  AnswerRelevancy stuck around 0.674 driven by rb_02 closing-
+  sentence verbosity. Both calibration concerns, neither blocking.
+
+Plus the new findings from production UI testing:
+
+- Citation threshold needs recalibration (1.2g)
+- Comparison table needs question-relevance filtering (1.2g new item)
+- UI doesn't distinguish registry-grounded from retrieval-grounded
+  answers (1.2g new item)
+
+Plus a methodology note for Phase 5: distribution-aware baseline
+measurement (multi-sample-per-entry) would catch
+prompt-circumvention patterns the single-run harness misses.
+
+### One more thing — what to do about the sampling discrepancy
+
+The harness reported clause (d) closed cleanly. Production sampling
+showed it didn't. If I'd trusted the harness alone, I'd have closed
+1.2c claiming a fix that doesn't fully bind in production.
+
+UI testing caught it. The same UI testing pattern that surfaced
+findings on Apr 26 evening (judge-on-absence, fabrication-with-
+disclaimer, registry-gap visceral case) caught the harness-vs-
+production gap on Apr 28 evening. The pattern across both is:
+metrics report what's quantifiable, UI surfaces what's
+interpretable, the combination produces diagnostic clarity neither
+provides alone.
+
+For the article: the discipline of UI testing against production
+sampling, even when metrics report success, is article-worthy as
+a methodology recommendation. Don't trust the eval. Trust the
+combination of eval + production sampling + reading the actual
+answers.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
