@@ -30,7 +30,7 @@ TIMEOUT      = 120  # seconds — policy agent is 5–15s; buffer for cold start
 
 _DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
 _RESULTS_DIR  = Path(__file__).parent / "results"
-_PREV_BASELINE = _RESULTS_DIR / "20260430T050359Z" / "summary.json"  # 1.2d post-processor
+_PREV_BASELINE = _RESULTS_DIR / "20260430T164421Z" / "summary.json"  # 1.2e issue 3 agent_reasoning
 
 STAGE1_QUESTION = "What is the annual HCP spend cap for Nova Pharma?"
 
@@ -504,6 +504,7 @@ def main() -> None:
         per_entry_data.append({
             "entry":           entry,
             "answer":          agent_response.get("answer", ""),
+            "agent_reasoning": agent_response.get("agent_reasoning", ""),
             "chunks":          agent_response.get("relevant_chunks") or [],
             "rule_thresholds": agent_response.get("rule_thresholds") or [],
             "nova_vs_phrma":   agent_response.get("nova_vs_phrma") or [],
@@ -539,7 +540,7 @@ def main() -> None:
     from langchain_openai import OpenAIEmbeddings as LCOpenAIEmbeddings
 
     _client = _OpenAI(api_key=api_key)
-    _llm    = llm_factory("gpt-4o-mini", client=_client)
+    _llm    = llm_factory("gpt-4o-mini", client=_client, max_tokens=8192)
     # LangchainEmbeddings → evaluate() auto-wraps with LangchainEmbeddingsWrapper,
     # which exposes embed_query (required by answer_relevancy).
     # ragas.embeddings.OpenAIEmbeddings only has embed_text — causes AttributeError.
@@ -571,6 +572,7 @@ def main() -> None:
             "expected_behavior":   entry.get("expected_behavior", ""),
             "notes":               entry.get("notes", ""),
             "agent_answer":        data["answer"],
+            "agent_reasoning":     data["agent_reasoning"],
             "retrieved_contexts":  data["ragas_contexts"],
             "rule_ids_matched":    [
                 r.get("rule_id") for r in data["rule_thresholds"] if r.get("rule_id")
