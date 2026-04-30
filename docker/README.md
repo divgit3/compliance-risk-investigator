@@ -162,6 +162,29 @@ docker-compose restart api
 
 ---
 
+## Rebuilding after agent code changes
+
+When you change any file under `agents/`, `api/`, or `streamlit_app/` the running
+container does **not** pick up the change automatically (code is COPYed at build
+time, not mounted). Rebuild explicitly:
+
+```bash
+# From the repo root
+docker compose -f docker/docker-compose.yml down
+docker compose -f docker/docker-compose.yml build --no-cache api
+docker compose -f docker/docker-compose.yml up -d
+
+# Verify the new image is running
+curl http://localhost:8000/health
+# Expected: {"status":"ok"}
+```
+
+`--no-cache` is required because Docker caches the `COPY . .` layer by timestamp.
+On external/network volumes the timestamp may not change even when file content does,
+causing the cache to serve stale code silently.
+
+---
+
 ## Known limitations
 
 | Limitation | Impact |
