@@ -255,7 +255,7 @@ if history:
 
                     label = f"**{source}**" if source else "Policy document"
                     if excerpt:
-                        label += f"\n\n_{excerpt[:200]}{'…' if len(excerpt) > 200 else ''}_"
+                        label += f"\n\n_{excerpt[:500]}{'…' if len(excerpt) > 500 else ''}_"
 
                     if is_weak:
                         # Show weak citations with an explicit warning — score is
