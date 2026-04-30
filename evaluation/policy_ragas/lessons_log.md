@@ -2390,6 +2390,211 @@ They surface findings that bigger refactors would obscure.
 
 ---
 
+## 2026-04-30 (later still) — ret_02 post-processor scope restriction
+
+The 1.2g pass 1 disambiguation surfaced ret_02 receiving silent
+post-processor truncation across multiple baselines. Today's fix
+addresses Bug B (post-processor input assumption) without addressing
+Bug A (agent scope misclassification). Pragmatic Option 2.5 from
+the design discussion — restrict post-processor activation by
+retrieval relevance, leave agent prompt untouched.
+
+### The fix
+
+Two-layer change with single-parameter coupling:
+
+agents/post_processors/over_narration.py — added optional
+max_retrieval_relevance parameter with early-exit guard at function
+top:
+
+    if max_retrieval_relevance is not None and max_retrieval_relevance >= 0.55:
+        return answer, None
+
+agents/policy_agent.py — moved post-processor call to after citation
+parsing, computed max relevance from citations, passed to function:
+
+    _max_relevance = max(
+        (c.relevance_score for c in citations),
+        default=0.0,
+    )
+    truncated, note = strip_over_narration(
+        agent_answer,
+        max_retrieval_relevance=_max_relevance,
+    )
+
+Discrimination signal: if retrieval found high-relevance content,
+the agent's TOPIC ABSENT classification is likely wrong, so the
+post-processor should not strip the "over-narration" (which is
+probably the actual answer).
+
+### Why 0.55
+
+Threshold chosen based on observed data from prior baselines:
+- un_01 (genuinely absent): max relevance ~0.50 → guard doesn't fire
+- ret_02 (misclassified): max relevance ~0.55-0.67 → guard fires
+- un_02 (genuinely absent + tangential matches): max relevance ~0.58
+  → guard fires (calibration concern)
+
+### Verification baseline 20260430T203450Z
+
+ret_02 — primary objective:
+- over_narration_stripped: True → False ✓
+- max_retrieval_relevance: 0.667 → guard fires
+- agent_answer length: 188 → 1239 chars
+- Faithfulness: 0.000 → 0.769 (+0.769)
+- Grounded: still False (Bug A persists; agent's wrong refusal
+  opening still flagged by judge)
+
+un_01 — unaffected:
+- over_narration_stripped: False (unchanged; pattern detection
+  didn't fire this run, plus max_rel 0.501 below threshold)
+- Faithfulness: 1.000 unchanged
+
+un_02 — calibration casualty as predicted:
+- over_narration_stripped: True → False
+- max_retrieval_relevance: 0.582 → guard fires (above 0.55 threshold)
+- agent_answer length: 180 → 1544 chars
+- Faithfulness: 0.500 → 1.000
+
+### The un_02 metric artifact finding
+
+un_02's Faithfulness jumped 0.500 → 1.000 after the fix, which
+looks like an improvement but isn't. Cursor's analysis was sharp:
+the narrated content is technically faithful to retrieved chunks
+(it cites real OIG/PhRMA content), so RAGAS Faithfulness rates it
+high. But the chunks don't actually answer the user's question
+about Nova Pharma's drug sample rules. AnsRel staying at 0.000
+catches what Faithfulness misses.
+
+This is a sharper version of the variance-vs-signal lesson from
+1.2e: metrics that look like wins can be artifacts of changed
+behavior rather than actual quality improvements. Different metrics
+have different blind spots; you need to triangulate to distinguish
+real signal from artifacts.
+
+For the article: a fix that improves Faithfulness on a question
+where the underlying answer is still wrong illustrates that
+high-faithfulness ≠ high-quality. Faithfulness measures grounding
+to retrieved context; AnsRel measures alignment with the question.
+Both can be misleading individually; the combination is more
+reliable.
+
+### The threshold-tuning trap
+
+Cursor recommended bumping the threshold from 0.55 to 0.60 as a
+follow-on. At 0.60, ret_02 (max_rel 0.667) stays protected and
+un_02 (max_rel 0.582) falls below threshold and gets stripped
+correctly. Looks like a one-line clean-up.
+
+We declined. Reasons captured here for the article:
+
+1. The threshold is calibrated on three data points (ret_02,
+   un_01, un_02). Moving it to clean up one observation might
+   create new misclassifications we can't observe with this
+   dataset.
+
+2. The threshold approach is fundamentally fragile. We're trying
+   to use one number (max retrieval relevance) to distinguish two
+   conditions (genuinely-absent topic vs misclassified-as-absent).
+   These conditions have overlapping relevance distributions. No
+   single threshold can perfectly separate them.
+
+3. Tuning a threshold to fit observed cases on a 16-entry dataset
+   is small-sample optimization. It risks overfitting to specific
+   entries while missing the structural problem.
+
+The structural problem is that the post-processor's design
+assumption ("if agent classifies as TOPIC ABSENT, the narration
+after is unwanted") is wrong when the classification itself is
+wrong. The threshold guard is a heuristic for "is the classification
+likely correct" — but heuristics on small data are unreliable.
+
+The correct fix is upstream: fix Bug A (agent scope confusion).
+The agent shouldn't be misclassifying ret_02 in the first place.
+That's prompt-layer work with all the prompt-layer ceiling concerns
+documented across 1.2c-1.2d. We chose to defer Bug A and ship the
+imperfect Option 2.5 fix.
+
+For the article: pragmatic fixes paper over root causes. This is
+sometimes the right call (limited time, working system) and
+sometimes a debt-accumulation move. We made it consciously.
+
+### What didn't get fixed
+
+Bug A — agent scope misclassification — remains unfixed. ret_02's
+agent_answer still opens with "the policy does not address the
+specific criminal penalties for violating the federal anti-kickback
+statute" even though the answer is in the corpus. The user sees:
+- Wrong refusal opening (Bug A, unaddressed)
+- Followed by 1051 chars of correct anti-kickback content (because
+  post-processor didn't strip)
+
+This is better than the previous state ("wrong refusal alone, no
+content") but it's not correct. A user reading this might be
+confused by the contradiction between "policy does not address"
+and the substantive content that follows.
+
+Carrying as documented limitation. Phase 5 would address Bug A
+through prompt-level scope classification (high-risk per 1.2c
+findings) or system architecture changes (out of scope for
+pre-LWD).
+
+### CI gate margin: rule_backed Faithfulness
+
+The new baseline shows rule_backed Faithfulness 0.717 — above the
+0.7 floor but with reduced margin compared to recent baselines
+(0.815 in 1.2c, 0.812 in 1.2e canonical, 0.782 just before this
+fix). The drop is LLM variance on rb_02 and rb_04, unrelated to
+the ret_02 fix (rule_backed entries don't get post-processed).
+
+Margin of 0.017 is tight. One more variance-driven dip and the
+gate fails. Worth flagging for future runs — if rule_backed
+Faithfulness drops below 0.7 on a future baseline, first move is
+"rerun" rather than "investigate." Variance is a known characteristic
+at this dataset size.
+
+### What ret_02 fix closes
+
+Two-layer architectural intervention with one-parameter coupling.
+Verified at function level (audit + integration check) and harness
+level (per-entry verification on ret_02, un_01, un_02). UI
+verification deferred — the user-facing improvement is visible in
+the longer agent_answer text, no UI change needed.
+
+Three findings worth keeping:
+
+1. **Threshold-on-relevance as discrimination signal** works for
+   the bug it was designed to address (ret_02 misclassified
+   retrieval question). It papers over a calibration concern
+   (un_02 borderline) and doesn't fix the root cause (Bug A,
+   agent classification). Honest pragmatic fix.
+
+2. **Faithfulness can be a metric artifact** when answer behavior
+   changes structurally. un_02 Faithfulness jumped 0.500 → 1.000
+   without the answer actually getting better. Triangulating
+   metrics (Faithfulness + AnsRel) catches what either alone
+   misses.
+
+3. **Small-sample threshold tuning is fragile.** Moving a
+   threshold to clean up one observation risks new
+   misclassifications we can't see with the current dataset.
+   The fix accepted the un_02 trade-off rather than chasing
+   threshold tuning.
+
+### What this work didn't change
+
+The system prompt. The ABSENCE HANDLING block. The PHRMA
+COMPARISON AUTHORITY clauses. ret_02 fix is purely architectural —
+a code-level guard on when an existing safety net activates. Same
+design pattern as 1.2d post-processor itself.
+
+The agent_reasoning telemetry from 1.2e. Whatever ret_02's
+reasoning trace shows about why it misclassified is captured in
+20260430T203450Z's results.json. Investigating that trace is part
+of any future Bug A work.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,

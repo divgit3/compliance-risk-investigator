@@ -1,0 +1,270 @@
+{
+  "generated_at": "2026-04-30T20:34:50.553725+00:00",
+  "total_entries": 16,
+  "categories": {
+    "rule_backed": {
+      "faithfulness": {
+        "mean": 0.7173,
+        "median": 0.6846,
+        "min": 0.5,
+        "max": 1.0,
+        "count": 4
+      },
+      "answer_relevancy": {
+        "mean": 0.6752,
+        "median": 0.6759,
+        "min": 0.536,
+        "max": 0.813,
+        "count": 4
+      },
+      "context_precision": {
+        "mean": 0.4256,
+        "median": 0.3303,
+        "min": 0.2361,
+        "max": 0.8056,
+        "count": 4
+      },
+      "context_recall": {
+        "mean": 0.7917,
+        "median": 0.8334,
+        "min": 0.5,
+        "max": 1.0,
+        "count": 4
+      },
+      "latency_ms": {
+        "mean": 12776.975,
+        "median": 13316.45,
+        "min": 9601.7,
+        "max": 14873.3,
+        "count": 4
+      },
+      "latency_p95_ms": 14873.3,
+      "safety_net_fired_count": 0,
+      "scope_mismatch_count": 0,
+      "over_narration_count": 0,
+      "groundedness_true_count": 4,
+      "groundedness_total_checked": 4,
+      "count": 4
+    },
+    "retrieval": {
+      "faithfulness": {
+        "mean": 0.8811,
+        "median": 0.8182,
+        "min": 0.7692,
+        "max": 1.0,
+        "count": 5
+      },
+      "answer_relevancy": {
+        "mean": 0.5608,
+        "median": 0.9208,
+        "min": 0.0,
+        "max": 0.961,
+        "count": 5
+      },
+      "context_precision": {
+        "mean": 0.9497,
+        "median": 1.0,
+        "min": 0.7483,
+        "max": 1.0,
+        "count": 5
+      },
+      "context_recall": {
+        "mean": 0.8889,
+        "median": 1.0,
+        "min": 0.6667,
+        "max": 1.0,
+        "count": 5
+      },
+      "latency_ms": {
+        "mean": 13640.7,
+        "median": 10649.1,
+        "min": 8493.5,
+        "max": 27961.6,
+        "count": 5
+      },
+      "latency_p95_ms": 27961.6,
+      "safety_net_fired_count": 0,
+      "scope_mismatch_count": 0,
+      "over_narration_count": 0,
+      "groundedness_true_count": 4,
+      "groundedness_total_checked": 5,
+      "count": 5
+    },
+    "unanswerable": {
+      "faithfulness": {
+        "mean": 1.0,
+        "median": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "count": 2
+      },
+      "answer_relevancy": {
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "count": 2
+      },
+      "context_precision": {
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "count": 2
+      },
+      "context_recall": {
+        "mean": 0.3333,
+        "median": 0.3333,
+        "min": 0.0,
+        "max": 0.6667,
+        "count": 2
+      },
+      "latency_ms": {
+        "mean": 18070.35,
+        "median": 18070.35,
+        "min": 14943.6,
+        "max": 21197.1,
+        "count": 2
+      },
+      "latency_p95_ms": 21197.1,
+      "safety_net_fired_count": 0,
+      "scope_mismatch_count": 0,
+      "over_narration_count": 0,
+      "groundedness_true_count": 0,
+      "groundedness_total_checked": 2,
+      "count": 2
+    },
+    "false_premise": {
+      "faithfulness": {
+        "mean": 0.877,
+        "median": 0.9167,
+        "min": 0.7143,
+        "max": 1.0,
+        "count": 3
+      },
+      "answer_relevancy": {
+        "mean": 0.2001,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.6004,
+        "count": 3
+      },
+      "context_precision": {
+        "mean": 0.6156,
+        "median": 0.5136,
+        "min": 0.3333,
+        "max": 1.0,
+        "count": 3
+      },
+      "context_recall": {
+        "mean": 0.6667,
+        "median": 1.0,
+        "min": 0.0,
+        "max": 1.0,
+        "count": 3
+      },
+      "latency_ms": {
+        "mean": 10483.6333,
+        "median": 9522.9,
+        "min": 7275.9,
+        "max": 14652.1,
+        "count": 3
+      },
+      "latency_p95_ms": 14652.1,
+      "safety_net_fired_count": 2,
+      "scope_mismatch_count": 2,
+      "over_narration_count": 0,
+      "groundedness_true_count": 2,
+      "groundedness_total_checked": 3,
+      "count": 3
+    },
+    "registry_gap": {
+      "faithfulness": {
+        "mean": 0.6755,
+        "median": 0.6755,
+        "min": 0.5385,
+        "max": 0.8125,
+        "count": 2
+      },
+      "answer_relevancy": {
+        "mean": 0.795,
+        "median": 0.795,
+        "min": 0.7112,
+        "max": 0.8788,
+        "count": 2
+      },
+      "context_precision": {
+        "mean": 1.0,
+        "median": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "count": 2
+      },
+      "context_recall": {
+        "mean": 0.3333,
+        "median": 0.3333,
+        "min": 0.3333,
+        "max": 0.3333,
+        "count": 2
+      },
+      "latency_ms": {
+        "mean": 7935.05,
+        "median": 7935.05,
+        "min": 7176.8,
+        "max": 8693.3,
+        "count": 2
+      },
+      "latency_p95_ms": 8693.3,
+      "safety_net_fired_count": 0,
+      "scope_mismatch_count": 0,
+      "over_narration_count": 0,
+      "groundedness_true_count": 1,
+      "groundedness_total_checked": 2,
+      "count": 2
+    }
+  },
+  "aggregate": {
+    "faithfulness": {
+      "mean": 0.8286,
+      "median": 0.8182,
+      "min": 0.5,
+      "max": 1.0,
+      "count": 16
+    },
+    "answer_relevancy": {
+      "mean": 0.4809,
+      "median": 0.6284,
+      "min": 0.0,
+      "max": 0.961,
+      "count": 16
+    },
+    "context_precision": {
+      "mean": 0.6436,
+      "median": 0.777,
+      "min": 0.0,
+      "max": 1.0,
+      "count": 16
+    },
+    "context_recall": {
+      "mean": 0.684,
+      "median": 0.7223,
+      "min": 0.0,
+      "max": 1.0,
+      "count": 16
+    },
+    "latency_ms": {
+      "mean": 12673.3188,
+      "median": 11255.05,
+      "min": 7176.8,
+      "max": 27961.6,
+      "count": 16
+    },
+    "latency_p95_ms": 27961.6,
+    "safety_net_fired_count": 2,
+    "scope_mismatch_count": 2,
+    "over_narration_count": 0,
+    "groundedness_true_count": 11,
+    "groundedness_total_checked": 16,
+    "count": 16
+  }
+}
