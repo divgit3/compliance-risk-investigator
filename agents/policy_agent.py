@@ -760,13 +760,6 @@ If grounded is true, ungrounded_claims should be an empty list."""
             llm_output = result.get("output", "")
             reasoning  = self._intermediate_steps_to_str(steps)
 
-            # Post-processor: strip over-narration from TOPIC ABSENT answers.
-            # Prompt-layer TOOL OUTPUT SUPPRESSION did not bind reliably; this is
-            # the deterministic safety net below the LLM layer.
-            _pproc_answer, _narration_note = strip_over_narration(llm_output.strip())
-            if _narration_note is not None:
-                llm_output = _pproc_answer
-
             # Group tool outputs by tool name (a tool may be called multiple times)
             tool_outputs: dict[str, list[dict]] = {
                 "search_policy_docs": [],
@@ -794,6 +787,24 @@ If grounded is true, ungrounded_claims should be an empty list."""
             nova_vs_phrma   = self._parse_nova_vs_phrma(tool_outputs)
             chunk_ids       = self._collect_chunk_ids_for_audit(citations, rule_thresholds)
             confidence      = self._assign_confidence(citations, rule_thresholds)
+
+            # Post-processor: strip over-narration from TOPIC ABSENT answers.
+            # Moved here (after citations parsed) so max_retrieval_relevance is
+            # available. Prompt-layer TOOL OUTPUT SUPPRESSION did not bind reliably;
+            # this is the deterministic safety net below the LLM layer.
+            # Suppressed when max_relevance >= 0.55 to avoid stripping correct
+            # content from misclassified retrieval questions (ret_02 pattern).
+            _max_relevance = max(
+                (c.relevance_score for c in citations),
+                default=0.0,
+            )
+            _pproc_answer, _narration_note = strip_over_narration(
+                llm_output.strip(),
+                max_retrieval_relevance=_max_relevance,
+            )
+            if _narration_note is not None:
+                llm_output = _pproc_answer
+
             limitations     = self._build_limitations(question)
             if _narration_note is not None:
                 limitations.append(_narration_note)

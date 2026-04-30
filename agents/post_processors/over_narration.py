@@ -98,7 +98,10 @@ def _split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def strip_over_narration(answer: str) -> tuple[str, str | None]:
+def strip_over_narration(
+    answer: str,
+    max_retrieval_relevance: float | None = None,
+) -> tuple[str, str | None]:
     """
     Detect and strip over-narration from TOPIC ABSENT answers.
 
@@ -110,7 +113,18 @@ def strip_over_narration(answer: str) -> tuple[str, str | None]:
     Detection fires when ALL of:
         Step A: First sentence matches _REFUSAL_RE
         Step B: Body contains soft transition OR (numbered list AND chunk references)
+
+    Suppressed when max_retrieval_relevance >= 0.55: if retrieved chunks are
+    strongly relevant to the question, the agent's TOPIC ABSENT classification
+    is likely wrong and the "over-narration" is probably the actual answer.
+    When in doubt, don't strip content. Known calibration concern: un_02 sits
+    near this threshold (~0.58 observed) and may be suppressed on some runs.
     """
+    # Guard: high-relevance retrieval means agent probably misclassified as TOPIC
+    # ABSENT. The content it "over-narrated" is the real answer — don't strip it.
+    if max_retrieval_relevance is not None and max_retrieval_relevance >= 0.55:
+        return answer, None
+
     sentences = _split_sentences(answer)
 
     if len(sentences) < 2:
