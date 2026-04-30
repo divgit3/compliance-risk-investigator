@@ -1613,6 +1613,298 @@ answers.
 
 ---
 
+## 2026-04-29 — 1.2d: post-processor safety net for un_01/un_02 over-narration
+
+1.2d set out to fix the un_01/un_02 over-narration that prompt-layer
+fixes (Path B's TOOL OUTPUT SUPPRESSION) couldn't bind on. The work
+spanned two days, surfaced four distinct verification-discipline
+findings, and ended with the most thoroughly verified intervention
+of the 1.2 arc.
+
+### Choosing the layer: prompt vs code vs second-pass
+
+Three approach options at the start:
+
+1. **Python post-processor safety net.** Detect over-narration patterns
+   in the agent's final answer, strip the narration, keep the refusal.
+   Code-level, deterministic, doesn't depend on agent classification.
+
+2. **Earlier prompt placement.** Move ABSENCE HANDLING to before scope
+   verification. Tests whether the instruction not binding was an
+   ordering issue.
+
+3. **Second LLM pass.** Run a separate groundedness-pass that
+   evaluates whether the answer over-narrates and strips if so.
+   Architecturally significant, generalizable, expensive.
+
+Picked Option 1 for three reasons:
+
+- **Cursor's diagnosis pointed below the LLM layer.** If the agent
+  doesn't reach TOPIC ABSENT classification, no prompt-layer fix
+  binds. Code-level intervention is the only layer below prompt
+  that doesn't require massive architectural change.
+- **Generalizability.** Same mechanism could later address rb_03
+  PhRMA inferences (Phase 5 work). One intervention, multiple
+  bug classes.
+- **Bounded risk.** Pattern matching can over-fire, but logs every
+  fire with original vs truncated text — verifiable post-hoc.
+
+Option 2 risked spending 45 minutes confirming a no-op if the
+diagnosis was right. Option 3 was overengineered for a problem
+bounded enough for Option 1.
+
+### Refined diagnosis: helpfulness vs prompt instructions
+
+Cursor's original diagnosis was "agent doesn't classify these as
+TOPIC ABSENT." Reasoning-trace inspection on Apr 29 surfaced a
+sharper diagnosis:
+
+The agent DOES reach the TOPIC ABSENT classification. un_01's
+answer states the refusal three separate times — opening sentence,
+mid-list item, and closing summary. The agent classifies correctly,
+articulates the classification, then narrates retrieved content
+anyway.
+
+The actual root cause: helpfulness training competes with
+prompt-layer absence handling. Training says "if you have related
+content, share it." The TOPIC ABSENT instruction asks the agent to
+not share related content even when it has it. At some sampling
+rate, helpfulness wins.
+
+This is a sharper finding than "the classification didn't fire."
+It's article-worthy because it's transferable: prompt instructions
+that ask the agent to suppress trained behaviors will lose at some
+rate regardless of how clearly written. The right fix lives below
+the LLM layer where deterministic logic can override stochastic
+instruction-following.
+
+### The Apr 30 false-clean episode
+
+First implementation pass took ~2.5 hours. Cursor delivered:
+
+- New module `agents/post_processors/over_narration.py`
+- Integration into `policy_agent.py` at lines ~763-768 and ~797-799
+- Updated `_PREV_BASELINE` pointer
+- Docker rebuild with --no-cache
+
+Canonical run 20260430T050359Z showed all four CI gates passing for
+the first time in the project — Faithfulness 0.816, AnsRel 0.700,
+CtxPrec 0.532, latency_p95 13754ms. Cursor framed this as success.
+
+But: Cursor's own report flagged that the post-processor did NOT
+fire on any entry that run. Framed as "safety net silent when not
+needed — agents happened to give cleaner answers for un_01/un_02."
+
+This framing was wrong but understandable. Direct verification
+caught it. Running the post-processor against un_01's actual answer
+text from baseline 20260428T114908Z (textbook over-narration pattern,
+1668 chars, refusal opening + 3-item numbered list + chunk references):
+
+```
+ORIGINAL LENGTH: 1668 chars
+TRUNCATED LENGTH: 1668 chars (UNCHANGED)
+TRUNCATION NOTE: None
+```
+
+The function returned the input unchanged. Given the exact pattern
+it was designed to catch. The 1.2d work had shipped a non-functional
+safety net. The CI gates passing on 20260430T050359Z were real —
+but happened despite the post-processor, not because of it.
+
+This is the verification-discipline lesson worth naming sharply:
+**single-run baselines mislead when failure patterns are stochastic;
+safety nets need direct testing with known-bad inputs, not
+baseline-rerun verification.**
+
+The clause (d) experience yesterday showed harness-vs-production
+sampling gaps. The 1.2d experience showed the inverse — when the
+fix's success depends on the failure pattern occurring in the
+sample, baselines that don't reproduce the failure can't verify
+the fix. Both point to the same underlying lesson: aggregate
+measurements at the eval layer aren't sufficient verification for
+safety nets that fire conditionally. Direct testing — running the
+function against recorded-bad inputs, or property-based tests, or
+multi-sample replays — is the right verification method for
+conditional safety nets.
+
+### The bug: Step B AND condition assumed soft transition always present
+
+Diagnostic walkthrough revealed why the function returned unchanged:
+
+```
+Refusal pattern checks:
+  'is not explicitly addressed': MATCH    <-- Step A passes
+Over-narration marker checks:
+  Numbered list: True
+  Chunk refs: True
+  Soft transition: False                  <-- ABSENT, breaks Step B
+```
+
+Step A (refusal first sentence) passed. Step B required BOTH soft
+transition AND numbered list. un_01's actual answer transitions
+straight from refusal opening into the numbered list with NO soft
+transition phrase ("however," "based on the retrieved," "some
+relevant information"). The AND condition fails on the soft-transition
+check, function returns input unchanged.
+
+Path B's pattern analysis assumed the soft transition was always
+present. It isn't. This is a small design assumption, not a
+structural problem.
+
+### The fix: relax to OR with chunk-refs guard
+
+Single-line change in `over_narration.py`:
+
+Before:
+```python
+if not (has_soft and has_numbered):
+    return answer, None
+```
+
+After:
+```python
+has_chunk_refs = bool(_CHUNK_REF_RE.search(body_original))
+
+# Fire when soft transition + numbered list (original Path B assumption)
+# OR when numbered list + chunk references (un_01 pattern: agent skips
+# the soft transition but narrates retrieved chunks with citations).
+if not (has_soft or (has_numbered and has_chunk_refs)):
+    return answer, None
+```
+
+The chunk_refs guard prevents over-firing on entries with legitimate
+numbered content that doesn't reference retrieved chunks. fp_01
+("does not segment by state" with general meal limits in markdown
+bullets) passes — bullets aren't numbered lists, no chunk refs in
+the answer body.
+
+### Three-layer verification
+
+After the fix, verified at three layers:
+
+1. **Function-level test:** un_01's recorded answer truncates from
+   1668 to 257 chars. Truncation note populated. Negative tests on
+   rg_01 and fp_01 stay silent.
+
+2. **Negative tests:** rg_01 (absence-flavored opening + legitimate
+   $500/12mo content) and fp_01 (dimension-absent + general meal
+   limits) both unchanged. The bullet-vs-numbered structural
+   distinction holds.
+
+3. **Production UI:** un_01 and un_02 both show clean refusals AND
+   the truncation note in the Data limitations panel:
+   "Answer trimmed: 12 over-narration sentence(s) suppressed (TOPIC
+   ABSENT — tool output should not appear in final answer)."
+
+Same 12-count for both un_01 and un_02 is interesting — could be
+coincidence or could indicate the agent produces a similarly-shaped
+template for both questions. Doesn't matter functionally; both
+truncate cleanly.
+
+### Architectural finding: epistemic transparency
+
+The un_02 production response also surfaces the groundedness check:
+
+> "Groundedness check flagged ungrounded claims: The policy does
+> not address specific rules for distributing drug samples to
+> healthcare professionals (HCPs).. Judge reasoning: The retrieved
+> content discusses general guidelines and legal requirements for
+> drug sample distribution but does not specifically mention Nova
+> Pharma's rules, making the claim ungrounded."
+
+The user sees both "the policy doesn't address this" AND "the
+system can't verify that absence claim against retrieved chunks."
+That's appropriate epistemic transparency.
+
+The groundedness judge can't ground absence claims by design —
+"X is not in this corpus" can't be verified from chunks of the
+corpus. The data_limitations panel surfaces this honestly rather
+than hiding it. Worth noting as a UX pattern: regulatory-context
+RAG should surface groundedness uncertainty even when the answer
+is correct.
+
+### What 1.2d didn't fix (carrying forward)
+
+- **un_02 fabrication-with-attribution pattern (PARTIALLY)**. The
+  post-processor strips the narration, which removes the false
+  attribution as a side effect. But the underlying behavior —
+  agent citing chunks for content that may not be in those specific
+  chunks — could surface in other contexts. Not actively suppressed,
+  just hidden by the post-processor when it fires. Phase 5 if it
+  recurs elsewhere.
+
+- **Empty agent_reasoning field in baseline output.** Reasoning-trace
+  inspection on Apr 29 found agent_reasoning was empty for un_01.
+  Telemetry gap. If we want reasoning-trace diagnostics in the
+  future, the harness needs to capture it reliably. 1.2e item.
+
+- **RAGAS max_tokens crash on long-answer entries.** Today's harness
+  rerun failed on ret_01 (~18+ statement decomposition exceeding
+  1024/2048/3072 max_tokens across three retries). Same root cause
+  as the Faithfulness=None pattern that 1.2e was originally scoped
+  to investigate. Decision today: skip full harness rerun, rely on
+  function-level + UI verification. 1.2e proper investigation
+  deferred.
+
+- **Bulleted over-narration coverage gap.** The post-processor
+  catches numbered lists with chunk refs. If the agent produces
+  bulleted over-narration instead, it slips through. No evidence
+  of this pattern in baselines so far, but the discrimination
+  between "legitimate bulleted content" (rg_01, fp_01) and
+  "illegitimate bulleted narration" would be harder than the
+  numbered-list line. Captured in lessons log; addressed if
+  observed.
+
+### Closing observation across the 1.2d arc
+
+Five process findings worth keeping:
+
+1. **The right layer for stochastic-instruction-following bugs is
+   below the LLM.** Helpfulness training competes with prompt
+   instructions. Code-level safety nets win because they're
+   deterministic.
+
+2. **Single-run baselines can't verify conditional safety nets.**
+   Yesterday's clause (d) experience showed sampling variance
+   misses circumvention patterns. Today's experience showed the
+   inverse — when the failure didn't occur in the sample, the
+   absence of failure looked like the safety net working.
+
+3. **Direct testing with recorded-bad inputs is the right
+   verification method for safety nets.** Replay un_01's known-bad
+   answer through the function. Cheap, deterministic, decoupled
+   from agent stochasticity.
+
+4. **The verification-discipline cost was negligible.** ~5 minutes
+   to run the diagnostic, found a real bug. Without that discipline,
+   1.2d would have closed today claiming a fix that didn't actually
+   work in the failure case.
+
+5. **The 1.2d work spans the full arc the article needs.** Wrong
+   diagnosis → architectural option choice → implementation →
+   false-clean episode → direct verification catches bug → small
+   fix → three-layer verification → close. Each step is a finding.
+
+### One more thing — the verification-vs-implementation tension
+
+The first 1.2d implementation pass took ~2.5 hours. The bug fix
++ three-layer verification took ~3 hours total today. Same scope,
+roughly same time, but the second pass produced a verified safety
+net instead of a non-functional one.
+
+The difference was the verification discipline. Cursor's first pass
+optimized for "implement and run baseline." The second pass added
+"verify the function does what it's supposed to do, in isolation,
+before trusting the baseline." That extra step caught the bug
+that the baseline alone couldn't see.
+
+For the article: implementation discipline isn't enough.
+Verification discipline is what makes implementations reliable.
+The cost of direct verification is small; the cost of shipping
+non-functional safety nets compounds.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,

@@ -1,0 +1,258 @@
+{
+  "generated_at": "2026-04-30T04:09:38.558677+00:00",
+  "total_entries": 16,
+  "categories": {
+    "rule_backed": {
+      "faithfulness": {
+        "mean": 0.8304,
+        "median": 0.875,
+        "min": 0.5714,
+        "max": 1.0,
+        "count": 4
+      },
+      "answer_relevancy": {
+        "mean": 0.7003,
+        "median": 0.726,
+        "min": 0.536,
+        "max": 0.813,
+        "count": 4
+      },
+      "context_precision": {
+        "mean": 0.4777,
+        "median": 0.4345,
+        "min": 0.2361,
+        "max": 0.8056,
+        "count": 4
+      },
+      "context_recall": {
+        "mean": 0.6667,
+        "median": 0.5834,
+        "min": 0.5,
+        "max": 1.0,
+        "count": 4
+      },
+      "latency_ms": {
+        "mean": 6050.175,
+        "median": 5935.5,
+        "min": 4897.9,
+        "max": 7431.8,
+        "count": 4
+      },
+      "latency_p95_ms": 7431.8,
+      "safety_net_fired_count": 0,
+      "groundedness_true_count": 4,
+      "groundedness_total_checked": 4,
+      "count": 4
+    },
+    "retrieval": {
+      "faithfulness": {
+        "mean": 0.6965,
+        "median": 0.6965,
+        "min": 0.6429,
+        "max": 0.75,
+        "count": 2
+      },
+      "answer_relevancy": {
+        "mean": 0.5321,
+        "median": 0.8178,
+        "min": 0.0,
+        "max": 0.9221,
+        "count": 5
+      },
+      "context_precision": {
+        "mean": 0.956,
+        "median": 1.0,
+        "min": 0.7798,
+        "max": 1.0,
+        "count": 5
+      },
+      "context_recall": {
+        "mean": 0.8667,
+        "median": 1.0,
+        "min": 0.6667,
+        "max": 1.0,
+        "count": 5
+      },
+      "latency_ms": {
+        "mean": 10885.56,
+        "median": 10577.7,
+        "min": 7288.8,
+        "max": 17797.1,
+        "count": 5
+      },
+      "latency_p95_ms": 17797.1,
+      "safety_net_fired_count": 0,
+      "groundedness_true_count": 4,
+      "groundedness_total_checked": 5,
+      "count": 5
+    },
+    "unanswerable": {
+      "faithfulness": {
+        "mean": 0.8333,
+        "median": 0.8333,
+        "min": 0.8333,
+        "max": 0.8333,
+        "count": 1
+      },
+      "answer_relevancy": {
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "count": 2
+      },
+      "context_precision": {
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "count": 2
+      },
+      "context_recall": {
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "count": 2
+      },
+      "latency_ms": {
+        "mean": 9924.0,
+        "median": 9924.0,
+        "min": 9139.2,
+        "max": 10708.8,
+        "count": 2
+      },
+      "latency_p95_ms": 10708.8,
+      "safety_net_fired_count": 0,
+      "groundedness_true_count": 0,
+      "groundedness_total_checked": 2,
+      "count": 2
+    },
+    "false_premise": {
+      "faithfulness": {
+        "mean": 0.8496,
+        "median": 0.9333,
+        "min": 0.6154,
+        "max": 1.0,
+        "count": 3
+      },
+      "answer_relevancy": {
+        "mean": 0.3731,
+        "median": 0.4588,
+        "min": 0.0,
+        "max": 0.6604,
+        "count": 3
+      },
+      "context_precision": {
+        "mean": 0.6156,
+        "median": 0.5136,
+        "min": 0.3333,
+        "max": 1.0,
+        "count": 3
+      },
+      "context_recall": {
+        "mean": 0.4722,
+        "median": 0.6667,
+        "min": 0.0,
+        "max": 0.75,
+        "count": 3
+      },
+      "latency_ms": {
+        "mean": 8355.0,
+        "median": 8387.4,
+        "min": 7142.4,
+        "max": 9535.2,
+        "count": 3
+      },
+      "latency_p95_ms": 9535.2,
+      "safety_net_fired_count": 2,
+      "groundedness_true_count": 2,
+      "groundedness_total_checked": 3,
+      "count": 3
+    },
+    "registry_gap": {
+      "faithfulness": {
+        "mean": 0.5834,
+        "median": 0.5834,
+        "min": 0.5,
+        "max": 0.6667,
+        "count": 2
+      },
+      "answer_relevancy": {
+        "mean": 0.8297,
+        "median": 0.8297,
+        "min": 0.794,
+        "max": 0.8655,
+        "count": 2
+      },
+      "context_precision": {
+        "mean": 1.0,
+        "median": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "count": 2
+      },
+      "context_recall": {
+        "mean": 0.3333,
+        "median": 0.3333,
+        "min": 0.3333,
+        "max": 0.3333,
+        "count": 2
+      },
+      "latency_ms": {
+        "mean": 7435.05,
+        "median": 7435.05,
+        "min": 6788.1,
+        "max": 8082.0,
+        "count": 2
+      },
+      "latency_p95_ms": 8082.0,
+      "safety_net_fired_count": 0,
+      "groundedness_true_count": 1,
+      "groundedness_total_checked": 2,
+      "count": 2
+    }
+  },
+  "aggregate": {
+    "faithfulness": {
+      "mean": 0.7719,
+      "median": 0.75,
+      "min": 0.5,
+      "max": 1.0,
+      "count": 12
+    },
+    "answer_relevancy": {
+      "mean": 0.515,
+      "median": 0.6584,
+      "min": 0.0,
+      "max": 0.9221,
+      "count": 16
+    },
+    "context_precision": {
+      "mean": 0.6586,
+      "median": 0.7927,
+      "min": 0.0,
+      "max": 1.0,
+      "count": 16
+    },
+    "context_recall": {
+      "mean": 0.5677,
+      "median": 0.6667,
+      "min": 0.0,
+      "max": 1.0,
+      "count": 16
+    },
+    "latency_ms": {
+      "mean": 8650.725,
+      "median": 7876.65,
+      "min": 4897.9,
+      "max": 17797.1,
+      "count": 16
+    },
+    "latency_p95_ms": 17797.1,
+    "safety_net_fired_count": 2,
+    "groundedness_true_count": 11,
+    "groundedness_total_checked": 16,
+    "count": 16
+  }
+}
