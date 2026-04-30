@@ -1905,6 +1905,272 @@ non-functional safety nets compounds.
 
 ---
 
+## 2026-04-30 — 1.2e: harness telemetry fixes, variance characterization, naming collision
+
+1.2e bundled three telemetry concerns: RAGAS Faithfulness=None on
+long-answer entries (issue 1), RAGAS max_tokens crash on the same
+entries (issue 2), and empty agent_reasoning field across all
+baselines (issue 3). All three closed cleanly with small additive
+changes. The interesting findings are downstream — the variance
+characterization that emerged from running three baselines and the
+naming collision that almost caused a misread of verification.
+
+### Issues 1 and 2: same root cause, single-line fix
+
+The Faithfulness=None historical pattern (ret_01, ret_03, ret_05)
+turned out to be the same bug as today's max_tokens crash. The
+RAGAS judge LLM was decomposing long answers into ~18+ statements
+for verification, generating structured JSON output that exceeded
+the configured max_tokens budget. When the budget was the silent
+default (~1024), RAGAS retried 3x at 1024/2048/3072 tokens and
+either gave up (writing None) or crashed (today's experience).
+
+Cursor's audit identified one llm_factory call at line 542 of
+run_evaluation.py with no max_tokens parameter. Single-line change:
+
+    _llm = llm_factory("gpt-4o-mini", client=_client, max_tokens=8192)
+
+Result: ret_01 Faithfulness 1.000, ret_03 Faithfulness 1.000,
+ret_05 Faithfulness 0.952 — three entries that always wrote None
+now produce real scores. Zero InstructorRetryException warnings.
+The historical Faithfulness=None pattern was never about the
+agent's answers being unverifiable; it was about the judge's
+output being too long to fit in the configured budget.
+
+This is the cleanest single-line fix in the entire 1.2 arc. Months
+of "we don't know how those entries actually score" replaced with
+"here are the numbers" by changing one parameter.
+
+### Issue 3: telemetry gap that was almost trivial
+
+agent_reasoning was empty for every entry in every baseline going
+back to Apr 25. Yesterday's reasoning-trace inspection (during
+1.2d's un_01 diagnosis) found the gap. The fix turned out to be
+two additive lines in run_evaluation.py extracting the field from
+agent_response into the result record. Audit confirmed the agent
+endpoint already returned reasoning; the harness just wasn't
+reading it.
+
+### The guardrail trip: variance vs side-effect
+
+Cursor's first post-fix run (20260430T164421Z) tripped the 0.05
+behavioral-side-effect guardrail on AnsRel (-0.075) and CtxRec
+(-0.052) vs the prior baseline (20260430T161450Z, the issue 1+2
+canonical). Cursor reported "this is variance, the change is
+purely additive telemetry capture and cannot affect what the agent
+returns or what RAGAS scores."
+
+I went back and forth on whether to accept that assessment. Three
+moves worth replaying:
+
+First move: I argued for Option A — close on the strength of the
+diff inspection alone. The diff was two additive lines plus a
+baseline pointer bump. Mathematically can't affect behavior.
+
+Second move: pushback on Option A. The lesson from yesterday's
+1.2d work was specifically about not trusting single-run
+measurements for stochastic systems. By recommending Option A I
+was contradicting that lesson while drafting the article that
+captured it.
+
+Third move: switched to Option B (run a second baseline) but RAGAS
+hung mid-run because OPENAI_API_KEY wasn't loaded in the terminal
+session. After fixing the env, ran the second baseline cleanly.
+
+Run 2 (20260430T174050Z) landed at:
+- Faithfulness 0.756 vs run 1's 0.756 — identical
+- AnsRel 0.481 vs run 1's 0.492 — within 0.011
+- CtxPrec 0.672 vs run 1's 0.673 — within 0.001
+- CtxRec 0.661 vs run 1's 0.656 — within 0.005
+
+Run 1 and run 2 are essentially the same baseline. The earlier
+20260430T161450Z run was the high-variance outlier. Variance
+confirmed empirically.
+
+The lesson generalizes: when guardrails trip on changes that
+mathematically cannot affect behavior, the trip is variance.
+But you don't know the change is mathematically harmless until
+you've inspected the diff. And you don't know the variance band
+is wide enough to explain the trip until you've sampled it.
+Both checks together convict the variance assessment.
+
+For the article: stochastic LLM-judged metrics on small
+(16-entry) samples have a variance band of ~0.05-0.10 on
+aggregate metrics, ~0.40+ on individual category metrics
+(false_premise AnsRel swung 0.648 → 0.200 between runs on the
+same code). Single-run baselines at this magnitude are not
+reliable signals.
+
+### The naming collision: safety_net_fired flag
+
+After the variance investigation closed, I expected to write the
+1.2e lessons log and move on. Then I checked whether the
+post-processor was firing on baseline runs (yesterday's UI test
+showed it firing in production; we wanted baseline confirmation).
+
+The 20260430T174050Z summary said `safety_net_fired=True` for
+fp_01 and fp_02 — false_premise entries we hadn't expected to
+trigger the post-processor. Direct testing showed the post-
+processor function correctly returns the input unchanged for
+fp_01 (length 1130 → 1130, note=None). The function was innocent.
+
+But the flag said it fired. Where was the flag actually being
+set?
+
+grep across the codebase: `safety_net_fired` exists only in
+run_evaluation.py — six references all in the harness, none in
+agents/policy_agent.py or agents/post_processors/over_narration.py.
+The flag is harness-computed, not post-processor-derived.
+
+Reading run_evaluation.py:138-140:
+
+    safety_net_fired = any(
+        "safety net" in lim.lower()
+        or ("scope" in lim.lower() and "retrieved" in lim.lower())
+        for lim in limitations
+    )
+
+The flag fires when data_limitations contains either "safety net"
+text or "scope" + "retrieved" together. Per the comment, it was
+originally designed to track scope-mismatch warnings from
+`_detect_scope_mismatch` and `_detect_unsupported_scope_dimension`
+in policy_agent.py. fp_01 and fp_02 trigger the scope-mismatch
+detection because they ask about dimensions (state, specialty)
+the policy doesn't segment by — that's been firing since Apr 25,
+in every baseline.
+
+The post-processor's truncation note ("Answer trimmed: N
+over-narration sentences suppressed") does NOT contain "safety
+net" or "scope" + "retrieved", so it doesn't trigger this flag.
+
+What this means: **the post-processor activity is invisible to
+the harness's safety_net_fired tracking**. We confirmed it fires
+in production via UI screenshots yesterday. We have no harness
+telemetry tracking it. The flag we'd been reading as "post-
+processor fired" was actually counting a different mechanism
+entirely.
+
+Two compounding factors made this almost-misread:
+
+1. The flag name suggests "any safety net mechanism" but the
+   implementation only catches scope-mismatch.
+2. The historical baselines (every one back to Apr 25) show
+   safety_net_fired_count=2 in false_premise category. We'd been
+   reading those as "fp_01 and fp_02 trigger safety nets" without
+   ever questioning what specific safety net.
+
+The post-processor we built yesterday is genuinely silent in
+baseline metrics. The only place its activity is visible is
+production UI data_limitations panel.
+
+For 1.2g: disambiguate the flag. Either rename to
+`scope_mismatch_detected` (precise) or extend the detection logic
+to also catch the post-processor's truncation note (broad). Either
+is a small fix that prevents future misreads.
+
+### Three baselines today, three readings
+
+Today's three runs surface the variance band cleanly:
+
+| Run | Time | Faith | AnsRel | CtxPrec | CtxRec |
+|---|---|---|---|---|---|
+| 161450Z | morning | 0.779 | 0.567 | 0.696 | 0.708 |
+| 164421Z | post-issue 3, run 1 | 0.756 | 0.492 | 0.673 | 0.656 |
+| 174050Z | post-issue 3, run 2 | 0.756 | 0.481 | 0.672 | 0.661 |
+
+Three runs, same code post-164421Z, same dataset, same prompt.
+AnsRel range: 0.567 - 0.481 = 0.086. CtxRec range: 0.708 - 0.656
+= 0.052. These are not regressions; they're sampling variance.
+
+The article wants this finding sharp: even with deterministic agent
+configuration and frozen prompt, RAGAS metrics fluctuate 0.05-0.10
+on aggregate and 0.40+ on individual categories. Single-run
+baselines mislead. Multi-sample-per-entry baselines or larger
+golden datasets would tighten the variance band, but neither was
+in 1.2e scope.
+
+### What 1.2e closes
+
+Issue 1+2 (max_tokens): closed. ret_01, ret_03, ret_05 now produce
+real Faithfulness scores. Single-line config change.
+
+Issue 3 (agent_reasoning): closed. All 16 entries have populated
+reasoning traces. Two-line additive change.
+
+Variance assessment: empirically confirmed. Run 2 and run 3 within
+0.011 of each other. The earlier morning run was the higher-variance
+outlier. The 0.05 guardrail on telemetry changes is too tight given
+the natural variance band of these metrics; future guardrails for
+non-behavioral changes should be set at 0.10 or wider.
+
+Naming collision: documented for 1.2g disambiguation. Post-processor
+activity is invisible to harness telemetry; only production UI
+shows it.
+
+### What 1.2e didn't fix (carrying forward)
+
+- **Post-processor activity not tracked in harness telemetry.**
+  1.2g item — disambiguate `safety_net_fired` flag to either
+  rename it or extend detection to catch the post-processor's
+  truncation note.
+
+- **rule_backed CtxPrec gate persistently fails** (0.467 in run 1,
+  0.410 in run 2, 0.467 across runs). Driven by rb_01 and rb_02
+  retrieval ranking — chunks that don't precisely match the rule
+  being asked about. Pre-existing issue, not 1.2e's responsibility.
+  Phase 5 retrieval refinement.
+
+- **un_02 fabrication-with-attribution.** Carried from yesterday.
+  Post-processor strips it as a side effect when un_02 over-
+  narrates, but the underlying behavior persists in scenarios
+  where the post-processor doesn't fire. Phase 5 if recurs in
+  other contexts.
+
+### Closing observation: when verification discipline overshoots
+
+The 1.2e closure surfaces a meta-question: when does verification
+cost exceed verification value?
+
+Three verification investments today:
+
+1. Diff inspection on the issue 3 telemetry change — cheap (~30
+   seconds), conclusive (proved the change cannot affect behavior).
+
+2. Second baseline run to confirm variance — cost ~25 minutes
+   (including the first hung-on-env-issue attempt and the
+   recovery), value moderate (confirmed assessment but didn't
+   change the conclusion).
+
+3. Investigation of the safety_net_fired naming collision — cost
+   ~20 minutes, value high (caught a long-standing telemetry gap
+   that would have produced repeated misreads of baselines).
+
+Investment #1 was clearly worth it. #3 was clearly worth it. #2
+is debatable — the diff inspection alone would have closed 1.2e
+honestly. The second baseline confirmed but didn't change the
+verdict.
+
+Verification discipline isn't free. The cost is time and energy.
+The right level of verification matches the cost of being wrong.
+For #1, the cost of being wrong was zero (diff inspection is a
+math proof). For #3, the cost of being wrong was potentially
+months of misread baselines. For #2, the cost of being wrong was
+~5% probability of an actual behavioral side-effect, which the
+diff already ruled out.
+
+This isn't an argument against verification. It's an argument for
+calibrating verification depth to the situation. Today I oversampled
+on #2 and undersampled on #3 (didn't notice the naming collision
+until after the second baseline). Next time the right move is
+sequential verification — cheapest checks first, then escalate
+only if cheaper checks leave residual uncertainty.
+
+For the article: the verification-discipline lesson is real, but
+"verify everything" isn't the takeaway. "Verify cheaply first,
+escalate based on residual uncertainty" is sharper.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
