@@ -30,7 +30,7 @@ TIMEOUT      = 120  # seconds — policy agent is 5–15s; buffer for cold start
 
 _DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
 _RESULTS_DIR  = Path(__file__).parent / "results"
-_PREV_BASELINE = _RESULTS_DIR / "20260430T164421Z" / "summary.json"  # 1.2e issue 3 agent_reasoning
+_PREV_BASELINE = _RESULTS_DIR / "20260430T191343Z" / "summary.json"  # 1.2g pass 1 flag disambiguation
 
 STAGE1_QUESTION = "What is the annual HCP spend cap for Nova Pharma?"
 
@@ -132,14 +132,19 @@ def extract_diagnostics(agent_response: dict, latency_ms: float) -> dict:
 
     relevance_scores = [c.get("relevance_score", 0.0) for c in chunks]
 
-    # Safety net fired if scope-mismatch OR dimension-warning was prepended.
-    # These are the two warning formats from _detect_scope_mismatch and
+    # Scope-mismatch safety net: _detect_scope_mismatch and
     # _detect_unsupported_scope_dimension in policy_agent.py.
-    safety_net_fired = any(
+    scope_mismatch_detected = any(
         "safety net" in lim.lower()
         or ("scope" in lim.lower() and "retrieved" in lim.lower())
         for lim in limitations
     )
+    # Over-narration post-processor: over_narration.py strip_over_narration().
+    over_narration_stripped = any(
+        "answer trimmed" in lim.lower() or "over-narration" in lim.lower()
+        for lim in limitations
+    )
+    safety_net_fired = scope_mismatch_detected or over_narration_stripped
 
     return {
         "confidence":               agent_response.get("confidence", ""),
@@ -156,6 +161,8 @@ def extract_diagnostics(agent_response: dict, latency_ms: float) -> dict:
         "chunk_ids_for_audit":      agent_response.get("chunk_ids_for_audit") or [],
         "data_limitations_count":   len(limitations),
         "data_limitations":         limitations,
+        "scope_mismatch_detected":  scope_mismatch_detected,
+        "over_narration_stripped":  over_narration_stripped,
         "safety_net_fired":         safety_net_fired,
         "groundedness_check":       gc,
     }
@@ -209,6 +216,12 @@ def _category_block(entries: list[dict]) -> dict:
     out["safety_net_fired_count"] = sum(
         1 for e in entries if e["diagnostics"]["safety_net_fired"]
     )
+    out["scope_mismatch_count"] = sum(
+        1 for e in entries if e["diagnostics"].get("scope_mismatch_detected")
+    )
+    out["over_narration_count"] = sum(
+        1 for e in entries if e["diagnostics"].get("over_narration_stripped")
+    )
     grounded_vals = [
         e["diagnostics"]["groundedness_check"]["grounded"]
         for e in entries
@@ -246,7 +259,14 @@ def build_notable_observations(results: list[dict]) -> list[dict]:
         if _is_finite(faith) and faith < 0.5:
             reasons.append(f"RAGAS Faithfulness={faith:.3f} < 0.5")
         if r["diagnostics"].get("safety_net_fired"):
-            reasons.append("safety net fired (prepended to data_limitations)")
+            diag = r["diagnostics"]
+            parts = []
+            if diag.get("scope_mismatch_detected"):
+                parts.append("scope mismatch")
+            if diag.get("over_narration_stripped"):
+                parts.append("over-narration stripped")
+            what = " + ".join(parts) if parts else "safety net"
+            reasons.append(f"safety net fired ({what})")
         if reasons:
             notable.append({
                 "id":         r["id"],

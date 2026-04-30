@@ -2171,6 +2171,225 @@ escalate based on residual uncertainty" is sharper.
 
 ---
 
+## 2026-04-30 (later) — 1.2g pass 1: three small fixes that surfaced a real bug
+
+1.2g pass 1 was scoped as three quick UI/telemetry fixes after
+1.2e closed. Citation excerpt display threshold, container rebuild
+runbook, safety_net_fired disambiguation. Bounded, low-risk, ~60 min
+Cursor session.
+
+The first two landed cleanly. The third — the disambiguation —
+revealed a real bug we'd been carrying invisibly across multiple
+baselines.
+
+### Fix 1: citation excerpt display threshold
+
+streamlit_app/pages/5_Policy_QA.py:258 — Python slice truncating
+chunk excerpts at 200 characters before display. The 1.2c excerpt
+fix surfaced full chunk text to the agent, but the Streamlit UI
+was independently truncating for render. Single character change:
+
+    excerpt[:200] -> excerpt[:500]
+
+Streamlit container needs rebuild for the change to surface. Fix
+is genuinely small but operationally requires the container
+freshness discipline that fix 2 documents.
+
+### Fix 2: container rebuild runbook
+
+docker/README.md gained a 14-line "Rebuilding after agent code
+changes" section. Three-command sequence (down / build --no-cache
+api / up -d), health check verification, --no-cache rationale.
+
+This addresses the operational lesson from 1.2c-1.2e: container
+freshness was the difference between "fix landed in production"
+and "fix only landed in code" multiple times. Without a runbook,
+future contributors hit the same trap.
+
+### Fix 3: safety_net_fired disambiguation — and what it surfaced
+
+This was supposed to be a small naming/precision fix. The flag in
+run_evaluation.py:138 was originally designed to catch scope-mismatch
+warnings (false_premise category triggers), but during 1.2d/1.2e
+work I'd been reading it as if it tracked post-processor activity.
+The mismatch was almost-misread during 1.2e closure.
+
+Cursor's fix split the single flag into three:
+
+    scope_mismatch_detected = any(
+        "safety net" in lim.lower()
+        or ("scope" in lim.lower() and "retrieved" in lim.lower())
+        for lim in limitations
+    )
+    over_narration_stripped = any(
+        "answer trimmed" in lim.lower()
+        or "over-narration" in lim.lower()
+        for lim in limitations
+    )
+    safety_net_fired = scope_mismatch_detected or over_narration_stripped
+
+Verification baseline (20260430T191343Z) showed the disambiguation
+working as intended:
+
+| Category | safety_net_fired | scope_mismatch | over_narration |
+|----------|------------------|----------------|----------------|
+| rule_backed | 0 | 0 | 0 |
+| retrieval | 1 | 0 | **1 (ret_02)** |
+| unanswerable | 1 | 0 | **1 (un_02)** |
+| false_premise | 2 | 2 | 0 |
+| registry_gap | 0 | 0 | 0 |
+| ALL | 4 | 2 | 2 |
+
+scope_mismatch_count=2 for false_premise matches every historical
+baseline back to Apr 25. ✓
+
+over_narration_count=2 captures ret_02 and un_02 — events that
+were firing in 1.2d/1.2e but invisible in the counts.
+
+Then I noticed the ret_02 row.
+
+### The ret_02 finding
+
+ret_02 question: "What are the criminal penalties for violating
+the federal anti-kickback statute?"
+
+This is a retrieval-category question. The OIG corpus contains
+the criminal penalties content. Retrieval should find it; the
+agent should answer with the actual penalties.
+
+Direct inspection of the new baseline showed:
+
+agent_answer (188 chars): "The policy does not address the specific
+criminal penalties for violating the federal anti-kickback statute.
+If you have further questions or need additional information, feel
+free to ask!"
+
+data_limitations included:
+- "Groundedness check flagged ungrounded claims: ... The retrieved
+  content explicitly states the criminal penalties for violating..."
+  (judge correctly noting the retrieval has the answer)
+- "Answer trimmed: 6 over-narration sentence(s) suppressed"
+  (post-processor fired and stripped 6 sentences)
+
+Reconstructing what happened:
+
+1. Agent retrieved chunks containing criminal penalties content
+   (relevance scores adequate)
+2. Agent classified question as TOPIC ABSENT — likely because the
+   prompt biases toward "Nova Pharma's policy" framing and the
+   penalties aren't in Nova Pharma's internal policy specifically
+3. Agent narrated the OIG content in a numbered list anyway
+   (refusal opening + over-narration pattern, exactly what the
+   post-processor was designed to catch for un_xx)
+4. Post-processor fired correctly per its rules — refusal opening,
+   over-narration markers, chunk references all detected
+5. Post-processor stripped the 6 sentences containing the actual
+   penalties content
+6. User receives a confidently-stated wrong answer: "the policy
+   does not address" with no further detail
+
+The post-processor's rules fired correctly. The classification
+upstream (agent: TOPIC ABSENT) was wrong. The post-processor
+amplified the error rather than catching it.
+
+### Two compounding bugs
+
+**Bug A — agent scope confusion.** The agent treats every question
+as if it's implicitly about Nova Pharma's internal policy. ret_02
+asked about federal law. The agent answered "for the question it
+imagined" rather than "for the question that was asked."
+
+**Bug B — post-processor's input assumption.** Post-processor was
+designed assuming "if agent classifies as TOPIC ABSENT, narration
+after refusal is unwanted noise." That assumption holds for
+genuinely absent topics (un_01, un_02). It breaks when the
+classification is wrong. The post-processor's discrimination is
+"is this a TOPIC ABSENT case?" The discrimination it actually
+needs is "is this a TOPIC ABSENT case where the agent classified
+correctly?"
+
+### Why three-layer verification couldn't catch this
+
+1.2d's verification discipline was function-level + UI + harness.
+All three layers verified the post-processor catches over-narration
+cleanly. None of them could catch this failure mode because they
+all assumed the agent's TOPIC ABSENT classification was reliable.
+
+When the classification is wrong, verification of the post-
+processor's behavior on that classification is verifying the
+wrong thing. The post-processor stripped 6 sentences — that's
+"correct" behavior given its inputs. Just the wrong outcome.
+
+For the article: this is the sharpest version of "verification
+is bounded by your input assumptions" the project has produced.
+Three-layer verification of a safety net is necessary but not
+sufficient. The system's correctness depends on each layer's
+inputs being correct, all the way back to the upstream
+classification.
+
+### Historical pattern: this has been happening for weeks
+
+Looking back at Grounded=False history, ret_02 has shown
+ungrounded refusals across multiple baselines. We'd been reading
+"Grounded=False on ret_02" as "judge can't verify ret_02's
+absence claim" without checking whether the absence claim was
+actually wrong. The judge was right; we were wrong about why.
+
+The disambiguation fix is what made the post-processor's role
+visible. Before today, post-processor activity on ret_02 was
+silent in the harness telemetry. The flag we'd been reading as
+"safety net fired" was only catching scope-mismatch (fp_01,
+fp_02). Post-processor firing on ret_02 was invisible.
+
+This is article-relevant in a different way: telemetry gaps hide
+ongoing bugs. The flag's naming created a false sense that we
+were tracking post-processor activity. We weren't. For weeks.
+
+### What pass 1 closes with
+
+Three findings, one substantial:
+
+1. Citation excerpt threshold raised 200 → 500 chars (small UX win)
+2. Container rebuild runbook documented (operational hygiene)
+3. **safety_net_fired disambiguation surfaced ret_02 receiving
+   post-processor truncation that strips correct content from a
+   misclassified retrieval question.** Post-processor fired
+   correctly per its rules; the upstream agent classification was
+   wrong. The post-processor amplified the error rather than
+   catching it.
+
+### What pass 1 didn't fix (scoped for next)
+
+ret_02 fix scheduled for the next session. Two-layer architectural
+question to decide: agent-side scope-classification (root cause,
+prompt-layer ceiling risk) vs post-processor scope-restriction
+(pragmatic, doesn't fix wrong refusal opening). After the design
+discussion, going with Option 2.5 — post-processor scope
+restriction first, agent-side fix decided based on outcome.
+
+The post-processor scope restriction will be: skip firing when
+retrieval relevance is high OR question category is retrieval.
+The agent's wrong refusal opening will remain visible to users in
+the short term, but the user will at least see the actual content
+the agent retrieved instead of a stripped refusal.
+
+### Closing observation: pass 1 was supposed to be small
+
+Pass 1 was scoped as three quick UI/telemetry fixes. That's what
+it delivered. The ret_02 finding is a side effect of the
+disambiguation fix making invisible activity visible — exactly
+what disambiguation is supposed to do.
+
+The lesson worth keeping: telemetry precision pays off in
+unexpected ways. We weren't looking for a bug. The disambiguation
+made the bug visible. The same finding could have been buried in
+a bigger pass that bundled everything together.
+
+For the article: small bounded telemetry fixes are high-leverage.
+They surface findings that bigger refactors would obscure.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
