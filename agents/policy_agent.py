@@ -23,6 +23,8 @@ from typing import Optional
 
 import mlflow
 from langchain.prompts import PromptTemplate
+
+from agents.post_processors.over_narration import strip_over_narration
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_openai import ChatOpenAI
 
@@ -758,6 +760,13 @@ If grounded is true, ungrounded_claims should be an empty list."""
             llm_output = result.get("output", "")
             reasoning  = self._intermediate_steps_to_str(steps)
 
+            # Post-processor: strip over-narration from TOPIC ABSENT answers.
+            # Prompt-layer TOOL OUTPUT SUPPRESSION did not bind reliably; this is
+            # the deterministic safety net below the LLM layer.
+            _pproc_answer, _narration_note = strip_over_narration(llm_output.strip())
+            if _narration_note is not None:
+                llm_output = _pproc_answer
+
             # Group tool outputs by tool name (a tool may be called multiple times)
             tool_outputs: dict[str, list[dict]] = {
                 "search_policy_docs": [],
@@ -786,6 +795,8 @@ If grounded is true, ungrounded_claims should be an empty list."""
             chunk_ids       = self._collect_chunk_ids_for_audit(citations, rule_thresholds)
             confidence      = self._assign_confidence(citations, rule_thresholds)
             limitations     = self._build_limitations(question)
+            if _narration_note is not None:
+                limitations.append(_narration_note)
 
             # Scope-mismatch safety net (defense in depth vs prompt-only fix).
             # Even if the prompt change above doesn't fully prevent scope conflation,
