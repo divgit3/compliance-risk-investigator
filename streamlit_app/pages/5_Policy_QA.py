@@ -20,9 +20,13 @@ from config import API_BASE_URL, RISK_TIER_COLORS
 
 # ── Citation quality constants ─────────────────────────────────────────────────
 
-# Citations below this relevance score are displayed with a "weak match" warning.
+# Citations below _CITATION_WEAK_THRESHOLD are hidden (noise floor).
+# Citations in [_CITATION_WEAK_THRESHOLD, _CITATION_STRONG_THRESHOLD) display with
+# a "weak match" warning — above the noise floor but below confident retrieval.
+# Citations >= _CITATION_STRONG_THRESHOLD display normally.
 # After the 1.2a embedding fix, genuine hits score 0.4–0.8; noise scores ~0.02–0.05.
-_CITATION_WEAK_THRESHOLD = 0.30
+_CITATION_WEAK_THRESHOLD   = 0.30
+_CITATION_STRONG_THRESHOLD = 0.50
 
 
 def _clean_answer(text: str) -> tuple[str, list[str]]:
@@ -216,6 +220,26 @@ if history:
         if _inline_chunk_ids:
             with st.expander("Debug: chunk IDs cited inline", expanded=False):
                 st.caption(", ".join(sorted(set(_inline_chunk_ids))))
+
+        # Grounding indicator — informational line showing which sources contributed.
+        _rule_ids = [
+            r.get("rule_id", "")
+            for r in latest.get("rule_thresholds", [])
+            if r.get("rule_id")
+        ]
+        _n_chunks = len(latest.get("citations", []))
+        if _rule_ids and _n_chunks:
+            _grounding = (
+                f"Grounded in: rules registry [{', '.join(_rule_ids)}]"
+                f" + retrieval ({_n_chunks} chunk{'s' if _n_chunks != 1 else ''})"
+            )
+        elif _rule_ids:
+            _grounding = f"Grounded in: rules registry [{', '.join(_rule_ids)}]"
+        elif _n_chunks:
+            _grounding = f"Grounded in: retrieval ({_n_chunks} chunk{'s' if _n_chunks != 1 else ''})"
+        else:
+            _grounding = "Grounded in: no specific source"
+        st.caption(_grounding)
     else:
         st.info("No answer returned.")
 
@@ -246,31 +270,36 @@ if history:
         # seen-set keyed on chunk_id), so the list here is already deduplicated.
         citations = latest.get("citations", [])
         if citations:
+            _any_shown = False
             for cit in citations:
                 if isinstance(cit, dict):
                     source  = cit.get("source_doc", "")
                     excerpt = cit.get("excerpt", "")
                     score   = float(cit.get("relevance_score", 0))
-                    is_weak = 0 < score < _CITATION_WEAK_THRESHOLD
 
+                    if score < _CITATION_WEAK_THRESHOLD:
+                        continue  # below noise floor — hide
+
+                    _any_shown = True
                     label = f"**{source}**" if source else "Policy document"
                     if excerpt:
                         label += f"\n\n_{excerpt[:500]}{'…' if len(excerpt) > 500 else ''}_"
 
-                    if is_weak:
-                        # Show weak citations with an explicit warning — score is
-                        # below threshold but not suppressed (transparency over silence).
+                    if score < _CITATION_STRONG_THRESHOLD:
+                        # Weak match: above noise floor but below confident retrieval.
                         st.info(
-                            f"⚠ **Weak match** (score {score:.2f} — below "
-                            f"{_CITATION_WEAK_THRESHOLD:.2f} threshold; treat with caution)\n\n"
-                            + label
+                            f"⚠ **Weak match** (score {score:.2f} — low relevance;"
+                            f" treat with caution)\n\n" + label
                         )
                     else:
-                        if score:
-                            label += f"\n\nRelevance: {score:.2f}"
+                        # Strong match: confident retrieval.
+                        label += f"\n\nRelevance: {score:.2f}"
                         st.info(label)
                 else:
+                    _any_shown = True
                     st.info(str(cit))
+            if not _any_shown:
+                st.caption("No citations above relevance threshold for this query.")
         else:
             st.caption("No citations returned for this query.")
 
@@ -290,19 +319,28 @@ if history:
     with col_compare:
         st.markdown("#### Nova Pharma vs PhRMA")
         nova_vs_phrma = latest.get("nova_vs_phrma", [])
-        if nova_vs_phrma:
-            rows = []
-            for item in nova_vs_phrma:
-                if isinstance(item, dict):
-                    rows.append({
-                        "Rule":        item.get("rule_name", ""),
-                        "Nova Pharma": item.get("nova_threshold", ""),
-                        "PhRMA":       item.get("phrma_threshold") or "See PhRMA Code",
-                    })
-            if rows:
-                st.table(rows)
-            else:
-                st.info("Comparison not available for this query")
+        # Filter to rules the agent actually used (rule_ids_matched derived from
+        # rule_thresholds, which carries the same set of rule_ids the agent looked up).
+        _rule_ids_matched = {
+            r.get("rule_id")
+            for r in latest.get("rule_thresholds", [])
+            if r.get("rule_id")
+        }
+        _filtered_comparisons = [
+            item for item in nova_vs_phrma
+            if isinstance(item, dict) and item.get("source_rule_id") in _rule_ids_matched
+        ] if nova_vs_phrma and _rule_ids_matched else []
+
+        if _filtered_comparisons:
+            rows = [
+                {
+                    "Rule":        item.get("rule_name", ""),
+                    "Nova Pharma": item.get("nova_threshold", ""),
+                    "PhRMA":       item.get("phrma_threshold") or "See PhRMA Code",
+                }
+                for item in _filtered_comparisons
+            ]
+            st.table(rows)
         else:
             st.info("Comparison not available for this query")
 
