@@ -2595,6 +2595,255 @@ of any future Bug A work.
 
 ---
 
+## 2026-05-01 — 1.2g pass 2: four UX items, one investigation, one
+   transparency win
+
+Pass 2 was scoped as four bounded items after pass 1 closed yesterday.
+Each had a UX decision made before the Cursor prompt, encoded in the
+prompt itself rather than left for Cursor to choose. The session
+delivered all four cleanly, plus one investigation finding worth
+keeping.
+
+### Item 1: Citation weak-match visual indicator
+
+Pre-pass-2 state: streamlit_app/pages/5_Policy_QA.py used a single
+threshold _CITATION_WEAK_THRESHOLD = 0.30 to hide low-relevance
+citations. After the 1.2a embedding fix, retrieval scores landed in
+the 0.40-0.55 range — chunks above the floor but often substantively
+wrong for the question.
+
+Decision: keep the 0.30 hide-threshold, add a 0.50 strong-threshold,
+distinguish weak matches visually.
+
+Three categories:
+- relevance >= 0.50 — display normally
+- 0.30 <= relevance < 0.50 — display with "⚠ Weak match" label
+- relevance < 0.30 — hidden (unchanged)
+
+Cursor's audit found something worth keeping: the OLD logic was
+inverted from the intent. is_weak was being computed as
+0 < score < 0.30 — meaning the warning was appearing on citations
+that should have been hidden, while the genuinely-weak-but-visible
+band (0.30-0.50) had no warning. The fix corrected both behaviors
+simultaneously.
+
+This is the kind of pre-existing quiet bug that surfaces only when
+you re-examine code with fresh intent. The "weak match" concept
+existed in the codebase but was applied to the wrong band. Anyone
+reading commit history before today would see weak-match warnings
+appearing inconsistently and assume the threshold was just poorly
+calibrated. The actual bug was semantic — the wrong condition was
+controlling the indicator.
+
+For the article: re-examination of code with a specific UX question
+in mind ("when should we warn about weak matches?") surfaces semantic
+bugs that existed quietly. The 0.30 threshold itself was correct;
+how the threshold was used was inverted.
+
+### Item 2: Query phrasing sensitivity investigation
+
+Pre-pass-2 knowledge: yesterday's UI tests showed paraphrased queries
+sometimes produced different answers. "Annual meal cap for HCP"
+produced wrong answer; "Nova Pharma's annual meal cap for HCPs?"
+produced correct answer. We didn't know how systematic this was.
+
+Decision: brief sampling first, escalate to full investigation if
+signal warrants, no time cap.
+
+Cursor ran 9 queries (3 entries × 3 paraphrases each):
+
+**rb_02 (speaker FMV):** Zero sensitivity. All 4 paraphrases
+returned the correct $3,500/SPEAKER_001 answer. Why: lookup_rule
+provides answer-level stability independent of retrieval phrasing
+variation. The structured rules registry insulates rule_backed
+answers from phrasing noise.
+
+**rg_01 (annual meal cap):** Moderate sensitivity, but at the
+*confidence* level, not the *answer* level. Dropping "Nova Pharma"
+prefix caused rule lookup to fail → confidence dropped to "low"
+even when answer text was correct. Imperative framing ("Explain
+how much...") produced PARTIAL answers (per-meal limits without
+the absence clarification).
+
+**ret_02 (anti-kickback penalties):** Zero sensitivity attributable
+to phrasing. All 4 paraphrases produced the same TOPIC ABSENT +
+over-narration pattern. The 0.55 guard from the ret_02 fix yesterday
+papers over the symptom; the agent's underlying scope misclassification
+(Bug A) is the real issue and is independent of phrasing.
+
+Three findings worth keeping:
+
+**Finding 1: registry-grounded answers are robust to phrasing.**
+The structured rules registry decouples "did the agent find the
+right rule?" from "was the question phrased perfectly?" When
+lookup_rule succeeds, the answer is stable across paraphrases.
+
+**Finding 2: framing affects confidence calibration more than
+answer text.** rg_01's answer text was correct across paraphrases,
+but the agent's confidence dropped when "Nova Pharma" wasn't
+prefixed. The agent uses framing cues to gauge its own certainty.
+Users see confidence-low answers and may distrust correct content.
+
+**Finding 3: imperative framing produces less complete answers than
+question framing.** "Explain how much..." vs "What is...?" produced
+materially different output structures (PARTIAL vs full). The agent
+treats framing as a signal about expected response shape.
+
+For the article: query sensitivity has multiple dimensions. Answer
+text robustness, confidence calibration robustness, and response
+shape robustness are different properties. A system can be robust
+on one dimension and fragile on another. Reporting "the system
+handles paraphrasing fine" without distinguishing these dimensions
+papers over real fragility.
+
+Cursor recommended bumping the over-narration guard threshold from
+0.55 to 0.60 as a one-line follow-on (suggested as a "1.2h" task)
+based on the ret_02 finding. We declined for the same reasons as
+yesterday: small-sample threshold optimization risks unobserved
+regressions. The investigation reinforced the bump's plausibility
+(ret_02 phrasing-invariant in its current state) but didn't change
+the base concern. Carrying as backlog item, not scheduling as 1.2h.
+
+### Item 3: Comparison table relevance filter
+
+Pre-pass-2 state: the Nova Pharma vs PhRMA panel showed all
+nova_vs_phrma rows regardless of question. rb_03 (annual cap) showed
+meal limits in the comparison table even though meals weren't
+relevant.
+
+Decision: filter to comparisons where source_rule_id appears in
+rule_thresholds. Show "Comparison not available for this query"
+when the filtered set is empty.
+
+Cursor's implementation note surfaced an honest limitation:
+nova_vs_phrma entries are derived from the same lookup_rule calls
+that populate rule_thresholds. Their source_rule_id values are
+always a subset of rule_thresholds. So the filter doesn't actually
+remove rows for questions where the agent retrieved those rules —
+it primarily ensures "Comparison not available" displays in
+TOPIC ABSENT cases (un_xx).
+
+The pre-existing visible problem from yesterday — "rb_03 shows
+meal limits alongside compensation cap" — wasn't fixed by Item 3.
+That problem is upstream agent behavior: the agent calls lookup_rule
+for meal rules even when the question is about compensation. The
+filter works correctly per spec; the spec didn't address the
+upstream problem.
+
+This is the right call. Trying to fix agent over-retrieval through
+UI filtering would either:
+- Hide rules the agent legitimately considered (loss of transparency)
+- Require UI to second-guess the agent's reasoning (architectural
+  inversion — UI shouldn't know better than agent)
+
+Filtering on rule_thresholds is the correct seam: "show comparisons
+the agent referenced." If the agent referenced too many, that's
+agent work, not UI work.
+
+For the article: not every UI symptom has a UI fix. Filtering UI
+output is the right intervention when the data flow has stale
+remnants from previous queries. It's the wrong intervention when
+the underlying data is over-broad for the current query. Knowing
+which case you're in matters for choosing the layer to fix.
+
+### Item 4: Citation grounding indicator
+
+Pre-pass-2 state: users couldn't tell whether the answer was
+grounded in rules registry vs retrieval chunks. Both looked equally
+authoritative.
+
+Decision: informational "Grounded in:" line below the answer.
+Format:
+- Both sources: "Grounded in: rules registry [COMP_001, MEAL_001]
+  + retrieval (3 chunks)"
+- Registry only: "Grounded in: rules registry [RULE_IDs]"
+- Retrieval only: "Grounded in: retrieval (N chunks)"
+- Neither: "Grounded in: no specific source"
+
+Implementation landed cleanly via st.caption() positioned between
+the answer text and the confidence bar.
+
+The unexpected transparency win: Item 4's grounding line surfaces
+Item 3's underlying limitation in a user-visible way. Image 5's
+screenshot for the rb_03 question (annual compensation cap) shows:
+
+    Grounded in: rules registry [COMP_001, COMP_003, COMP_002,
+    MEAL_001, MEAL_002] + retrieval (3 chunks)
+
+The COMP rules are appropriate for the compensation cap question.
+The MEAL rules aren't. Before Item 4, this over-retrieval was
+invisible. After Item 4, it's transparent — users can see the
+agent retrieved more rules than the question warranted, even
+though the answer text doesn't mention meal limits.
+
+This is a side effect of the transparency fix: making one thing
+visible (which sources contributed) also makes adjacent things
+visible (when those sources are noisy). The grounding line
+incidentally diagnoses the agent over-retrieval issue without
+requiring any agent-side change.
+
+For the article: transparency UI elements diagnose upstream
+problems. Adding visibility to one layer surfaces issues in
+adjacent layers. The grounding line wasn't designed to expose
+agent over-retrieval, but it does, and that's valuable.
+
+### What pass 2 closes
+
+Three UI changes landed cleanly with appropriate visual treatment:
+
+1. Weak-match indicator (semantic correction of pre-existing
+   inverted logic, not just a new feature)
+2. Comparison table filter (works correctly per spec; documented
+   limitation around upstream agent behavior)
+3. Grounding indicator (informational, well-positioned, surfaces
+   adjacent transparency issues as side effect)
+
+One investigation document delivered:
+- evaluation/policy_ragas/findings/query_phrasing_sensitivity.md
+  with 9-query sampling and three findings
+
+Three findings carrying forward:
+
+- **Agent over-retrieval (Bug C):** Agent calls lookup_rule for
+  rules outside the question's scope (meal rules for compensation
+  questions). Visible now via grounding indicator. Same pattern
+  as Bug A (agent scope confusion); same prompt-layer fix risks.
+
+- **Confidence calibration sensitive to framing:** rg_01 paraphrase
+  testing showed confidence drops when "Nova Pharma" prefix is
+  dropped, even when answer is correct. Agent uses framing cues for
+  confidence. Worth understanding for the article; not blocking.
+
+- **Threshold bump 0.55 → 0.60 deferred:** Cursor's suggested 1.2h
+  task. Small-sample threshold optimization risk unchanged from
+  yesterday's reasoning. Backlog item, not scheduled work.
+
+### Closing observation: pass 2's design discussion paid off
+
+Yesterday morning's design discussion before writing the Cursor
+prompt was the difference between this clean closure and the
+pattern from earlier sessions. Each item had its UX decision made
+explicitly:
+- Item 1: B (weak-match indicator) over A (hard cutoff) or C (hybrid)
+- Item 2: C with escalation (sampling + escalate) over A (full) or
+  B (defer)
+- Item 3: A (filter) over B (de-emphasize) or C (top 3 + expander)
+- Item 4: D (informational line) over C (dual viz, originally chosen)
+
+The Item 4 downgrade from C to D was particularly important. C
+would have required architectural decisions about contribution
+metadata in the agent response. D delivered the same user value
+in a fraction of the work. We made that decision deliberately
+before writing the prompt; if we hadn't, Cursor would have built
+something larger than needed.
+
+For the article: design discussions before code save more time
+than they cost, especially when multiple items have UX decision
+points. The cost is 30-60 minutes of structured thinking. The
+benefit is avoiding 1-2 hour scope expansions per item.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
