@@ -272,11 +272,12 @@ if history:
         citations = latest.get("citations", [])
         if citations:
             _any_shown = False
-            for cit in citations:
+            for _cit_idx, cit in enumerate(citations):
                 if isinstance(cit, dict):
-                    source  = cit.get("source_doc", "")
-                    excerpt = cit.get("excerpt", "")
-                    score   = float(cit.get("relevance_score", 0))
+                    source   = cit.get("source_doc", "")
+                    excerpt  = cit.get("excerpt", "")
+                    score    = float(cit.get("relevance_score", 0))
+                    chunk_id = cit.get("chunk_id", str(_cit_idx))
 
                     if score < _CITATION_WEAK_THRESHOLD:
                         continue  # below noise floor — hide
@@ -297,13 +298,96 @@ if history:
                         label += f"\n\nRelevance: {score:.2f}"
                         st.info(label)
 
-                    # Inline source page viewer
-                    page_num = cit.get("page_num")
-                    if page_num is not None and source:
-                        with st.expander(f"View source · p. {page_num}", expanded=False):
-                            img_bytes = render_pdf_page(source, page_num)
-                            if img_bytes:
-                                st.image(img_bytes, use_container_width=True)
+                    # Inline source page viewer with highlighting + multi-page navigation
+                    _original_page = cit.get("page_num")
+                    if _original_page is not None and source:
+                        _vkey = f"viewer_page_{_cit_idx}_{chunk_id}"
+                        _ekey = f"viewer_expanded_{_cit_idx}_{chunk_id}"
+                        if _vkey not in st.session_state:
+                            st.session_state[_vkey] = _original_page
+                        if _ekey not in st.session_state:
+                            st.session_state[_ekey] = False
+                        _cur_page = st.session_state[_vkey]
+
+                        with st.expander(
+                            f"View source · p. {_cur_page}",
+                            expanded=st.session_state[_ekey],
+                        ):
+                            # Immediately reset expanded flag so future reruns (from
+                            # unrelated interactions) don't force this expander open.
+                            # Navigation buttons set it True again before rerun.
+                            st.session_state[_ekey] = False
+
+                            # Determine chunk_text for highlighting:
+                            # - Original page: search the chunk prefix (start of chunk)
+                            # - Continuation page: search the tail half of the chunk text,
+                            #   since the first half was already on the previous page.
+                            #   Guard: only apply tail-search if chunk is long enough
+                            #   that splitting is meaningful (> 200 chars).
+                            _on_original = (_cur_page == _original_page)
+                            if excerpt and not _on_original and len(excerpt) > 200:
+                                _chunk_text = excerpt[len(excerpt) // 2:]
+                            else:
+                                _chunk_text = excerpt or None
+
+                            _result = render_pdf_page(
+                                source, _cur_page, chunk_text=_chunk_text
+                            )
+                            if _result is not None:
+                                _img_bytes, _meta = _result
+                                st.image(_img_bytes, use_container_width=True)
+
+                                # Caption based on highlight outcome and page position
+                                _hs = _meta["highlight_status"]
+                                _doc_label = source.replace(".pdf", "").replace("_", " ")
+                                if _on_original:
+                                    if _hs == "full":
+                                        _caption = f"Page {_cur_page} of {_doc_label}"
+                                    elif _hs == "none":
+                                        _caption = (
+                                            f"Page {_cur_page} of {_doc_label}"
+                                            " · unable to highlight chunk"
+                                        )
+                                    else:
+                                        _caption = (
+                                            f"Page {_cur_page} of {_doc_label}"
+                                            " · highlighted partial match"
+                                        )
+                                else:
+                                    # Continuation page — tell the user what they're looking at
+                                    if _hs == "none":
+                                        _caption = (
+                                            f"Page {_cur_page} of {_doc_label}"
+                                            " · chunk continues here (no exact text match)"
+                                        )
+                                    else:
+                                        _caption = (
+                                            f"Page {_cur_page} of {_doc_label}"
+                                            f" · continuation of chunk from page {_original_page}"
+                                        )
+                                st.caption(_caption)
+
+                                # Forward navigation: only on the original page.
+                                # Cap at original_page + 1 to prevent unbounded navigation
+                                # past where the chunk ends.
+                                if _meta.get("chunk_continues") and _on_original:
+                                    if st.button(
+                                        f"Continued on page {_cur_page + 1} →",
+                                        key=f"nav_fwd_{_vkey}",
+                                    ):
+                                        st.session_state[_vkey] = _cur_page + 1
+                                        st.session_state[_ekey] = True
+                                        st.rerun()
+
+                                # Back navigation: return to original citation page
+                                if _cur_page != _original_page:
+                                    if st.button(
+                                        f"← Back to page {_original_page}",
+                                        key=f"nav_back_{_vkey}",
+                                    ):
+                                        st.session_state[_vkey] = _original_page
+                                        st.session_state[_ekey] = True
+                                        st.rerun()
                             else:
                                 st.caption("Source page not available.")
                 else:
