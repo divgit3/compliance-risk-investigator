@@ -17,6 +17,7 @@ import httpx
 
 from components.api_client import APIError, get_client
 from config import API_BASE_URL, RISK_TIER_COLORS
+from utils.pdf_renderer import render_pdf_page
 
 # ── Citation quality constants ─────────────────────────────────────────────────
 
@@ -295,6 +296,16 @@ if history:
                         # Strong match: confident retrieval.
                         label += f"\n\nRelevance: {score:.2f}"
                         st.info(label)
+
+                    # Inline source page viewer
+                    page_num = cit.get("page_num")
+                    if page_num is not None and source:
+                        with st.expander(f"View source · p. {page_num}", expanded=False):
+                            img_bytes = render_pdf_page(source, page_num)
+                            if img_bytes:
+                                st.image(img_bytes, use_container_width=True)
+                            else:
+                                st.caption("Source page not available.")
                 else:
                     _any_shown = True
                     st.info(str(cit))
