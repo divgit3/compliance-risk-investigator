@@ -319,6 +319,7 @@ class PolicyAgent:
                     source_doc=r.get("source_doc", "unknown"),
                     relevance_score=float(r.get("relevance_score", 0.0)),
                     excerpt=r.get("excerpt", ""),
+                    page_num=r.get("page_num"),
                 ))
         return citations
 

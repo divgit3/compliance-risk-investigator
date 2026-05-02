@@ -22,6 +22,7 @@ class PolicyCitation(BaseModel):
     source_doc: str
     relevance_score: float
     excerpt: str  # full chunk text
+    page_num: Optional[int] = None
 
 
 class RuleFlag(BaseModel):
