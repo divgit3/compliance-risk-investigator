@@ -3077,6 +3077,239 @@ naming explicitly as a methodology finding, not just an anecdote.
 
 ---
 
+## 2026-05-02 (afternoon) — 1.2f session 2: highlighting and multi-page navigation
+
+Session 2 added chunk-level highlighting and multi-page navigation
+to the inline source viewer. The highlighting for single-page chunks
+landed cleanly. Multi-page handling is shipped imperfect — the
+heuristics work for some chunk distributions and fail for others.
+Documented as a known limitation rather than reverted.
+
+This is the longest, most iterative single feature in the project.
+Worth capturing the iteration arc honestly.
+
+### What landed
+
+**Chunk-level highlighting on the start page.**
+
+PyMuPDF's `add_highlight_annot` draws yellow rectangles around the
+chunk text on the rendered page. Cascading fallback handles cases
+where the full chunk text doesn't match exactly: try full chunk →
+200 chars → 100 chars → 60 chars. First successful match wins.
+
+The fallback returns only the first occurrence on the page (not
+all occurrences) to prevent scattered highlights from common
+phrases matching multiple times. This was a non-obvious bug —
+fix landed as `found if candidate_len == total_len else found[:1]`.
+
+**Multi-page navigation: "Continued on page N+1 →" button.**
+
+When the chunk doesn't fully match on the start page (heuristic:
+fewer rectangles than expected for chunk length, or no match at
+all on long chunks), a "Continued on page N+1 →" button appears.
+Click navigates to page N+1.
+
+**Cap at original_page + 1.**
+
+Forward navigation stops at one page beyond the chunk's start.
+Earlier iteration shipped without this cap — users could navigate
+indefinitely past where chunks actually ended. The cap keeps
+navigation bounded to the practical case (most multi-page chunks
+span exactly 2 pages).
+
+**Tail-search on continuation pages.**
+
+When user navigates to N+1, the search uses `chunk_text[len//2:]`
+(second half of chunk) instead of the full chunk. This works
+when chunks distribute roughly 50/50 across pages. For chunks
+that don't (e.g., 80/20 distribution), the tail-search returns
+nothing and the continuation page renders without highlights.
+
+**Expander stays open through navigation.**
+
+Streamlit reruns collapse expanders by default. `st.session_state`
+tracks expander state explicitly, set True after navigation
+buttons trigger reruns. User can navigate without re-clicking
+"View source."
+
+### The iteration arc — five passes in one day
+
+1. **Session 2 design discussion (Q4):** Multi-page handling
+   chosen as Approach 2 (scrollable). Original kickoff scoped it
+   as v1 single-page only. Decision was made with less design
+   thinking than warranted.
+
+2. **Session 2 implementation:** Heuristic-based multi-page
+   detection. "Continued on" button. Initial verification
+   passed; one screenshot showed heavy highlighting (whole page
+   yellow) that I flagged as concerning.
+
+3. **Cap fix:** User testing revealed unbounded forward navigation
+   (clicking "Continued on" on N+1 navigated to N+2 etc.). Cap
+   added at `original_page + 1`.
+
+4. **Issue surfacing:** Real-world testing surfaced four issues:
+   over-highlighting on start page, no highlights on N+1, expander
+   collapse, section title scatter.
+
+5. **Fix-arc Cursor session:** Audit-first approach identified
+   actual root causes (different from my assumed causes for issues
+   1 and 4). Each issue addressed at the right layer. Verified on
+   one chunk; passed all five test cases.
+
+6. **Spot-check verification:** User tested a different chunk than
+   Cursor verified. Found "title/header highlighted on a page,
+   nothing highlighted on continuation page" — same class of
+   issues that the fix-arc was supposed to address, recurring on
+   different chunks.
+
+### The audit-first finding that paid off
+
+The fix-arc Cursor session almost fixed the wrong thing. My
+prompt assumed the cascading fallback was accumulating rectangles
+across levels (full chunk → 200 chars → 100 chars → 60 chars all
+contributing rectangles).
+
+Cursor's audit corrected this: the cascade had `break` correctly,
+each level returned independently. The actual bug was within a
+single level: when `search_for(chunk_text[:60])` matched, it
+returned ALL occurrences on the page. Common 60-char prefixes can
+match 5-10 times on dense policy pages, producing scatter.
+
+Without the audit-first instruction, we'd have "fixed" the cascade
+behavior (already correct) and the bug would have persisted.
+
+For the article: assumed root causes don't always survive audit.
+Including audit-first in Cursor prompts has caught bugs we'd have
+otherwise wasted iteration on.
+
+### The decision to ship imperfect
+
+After the spot-check verification revealed multi-page heuristics
+still failing on some chunks, the choice was:
+
+- **Option A:** Accept current state with documented limitations
+- **Option B:** Revert multi-page entirely, single-page only
+- **Option C:** Stop today, redesign with upstream pipeline changes
+  (chunk bbox metadata) tomorrow
+
+I had been leaning toward B (revert) because the iteration pattern
+suggested heuristic tuning was hitting fundamental limits. The
+search-based approach has lossy boundaries: PDF text extraction
+during chunking and PyMuPDF text extraction at search time produce
+slightly different strings (whitespace normalization, character
+encoding differences, hyphenation handling). No amount of
+substring-matching heuristics fully bridges this.
+
+User chose A — ship imperfect, document limitations, move on.
+
+This is a legitimate engineering trade-off. "Better than nothing,
+document where it fails, defer proper fix to future session" is a
+defensible call when:
+- The single-page case works reliably (verified)
+- The multi-page failures degrade gracefully (no highlight is
+  better than wrong highlight, except when section headers get
+  highlighted instead of body text)
+- Continued iteration has diminishing returns
+- A proper fix requires architectural changes (upstream chunk
+  bbox metadata) that warrant their own session
+
+For the article: "we don't compromise on quality" doesn't mean
+"never ship anything imperfect." It means "make the trade-offs
+deliberately, document them honestly, and don't pretend the
+imperfect state is the perfect state." This shipped imperfect.
+The lessons log says so plainly.
+
+### What's documented as limitation, not feature
+
+**Multi-page chunks where the start-page text matches a section
+header earlier on the page get header-only highlights.** The
+`found[:1]` fix takes the first occurrence on the page, which
+might be a section header instead of the chunk's body content.
+Affects a subset of chunks, not all.
+
+**Multi-page chunks with non-50/50 distribution across pages
+have empty continuation pages.** The tail-search heuristic uses
+`chunk_text[len//2:]`. Chunks distributed 80/20 or 70/30 have
+their "second half" still mostly on page N, so search on N+1
+finds nothing.
+
+**Chunks spanning 3+ pages can't be fully viewed.** Cap at
+`original_page + 1` was added to prevent unbounded forward
+navigation. Side effect: chunks that legitimately span 3+ pages
+are only partially viewable.
+
+### Why the proper fix is upstream
+
+The search-based approach is fundamentally fragile because we're
+searching for chunk text in a PDF whose text extraction is lossy
+relative to the chunking pipeline's extraction. The fix would be
+to store chunk bounding box coordinates during chunking — `bbox:
+{x0, y0, x1, y1, page_num}` per chunk per page span — and use
+those coordinates directly for highlighting. No search needed.
+
+This requires:
+- Modifying the chunking pipeline (likely
+  `pipelines/embed_policy_docs.py`) to capture bbox per chunk
+- Changing PolicyCitation schema to expose bbox
+- Re-embedding all chunks (or migrating Qdrant payloads)
+- Updating pdf_renderer.py to draw rectangles from bbox coords
+  instead of search_for results
+
+That's a chunking pipeline change, not a UI fix. Future session
+work, not session 2 fix-arc work.
+
+### What pass 2.5 should consider
+
+The original session 2.5 plan was excerpt removal — strip the
+chunk text excerpt above the relevance metric since the highlighted
+PDF rendering shows the same content in context.
+
+Given the multi-page limitations now documented, the excerpt
+remains useful as a fallback when highlighting fails. For chunks
+where:
+- The start-page highlight is just a section header
+- The continuation page is empty
+
+The excerpt is the user's only access to the chunk content.
+Removing it would compound the user-facing inconsistency.
+
+Recommendation: skip session 2.5 entirely. Keep the excerpt. The
+"redundancy" framing was correct for cleanly-highlighted single-
+page chunks but wrong for the multi-page limitation cases.
+
+### Closing observation: scope expansion vs scope discipline
+
+The original kickoff Decision 4 said "v1 only — single-page rendering,
+no multi-page navigation, no zoom." Session 2's design discussion
+expanded that to multi-page (Approach 2 in Q4). The expanded scope
+hit real limits that heuristic tuning couldn't fully resolve.
+
+Pattern: scope expansion during design discussion is harder to
+resist than scope expansion during implementation. We caught
+implementation-time scope creep (the article framing of design
+discussion compounding). We didn't catch design-time scope
+expansion.
+
+For future sessions: when a kickoff decision says "v1 only — X"
+and the design discussion question for that scope reaches "should
+we expand to Y?", that's the moment to push back hardest. The
+"v1 only" phrasing existed for a reason. Expanding it during
+design discussion is exactly the move that produces feature creep
+into multi-iteration messes.
+
+Today's lesson: kickoff Decision 4 was right. Q4 in session 2
+design discussion should have been "page-level v1 stays, no
+expansion options." We chose differently and the iteration cost
+followed.
+
+For the article: design discussion is where decisions get made
+deliberately, but it's also where scope can expand without notice.
+The discipline is asking "does this expand a previously-locked
+decision?" before adopting an expanded scope.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
