@@ -3310,6 +3310,420 @@ decision?" before adopting an expanded scope.
 
 ---
 
+## 2026-05-02 (later afternoon) — 1.2f session 2.5: whole-document link + excerpt removal
+
+Session 2.5 reverses a decision made in session 2's lessons log
+("skip session 2.5") and ships two coupled changes: a whole-
+document link on each citation, and removal of the chunk text
+excerpt above the relevance metric.
+
+### The reversal
+
+Session 2's lessons log said explicitly:
+
+> "Skip session 2.5 (excerpt removal): originally planned to remove
+> chunk excerpt above relevance metric since highlighting shows
+> same content. Multi-page limitations make excerpt useful as
+> fallback when highlighting fails. Removing it would compound
+> user-facing inconsistency."
+
+That reasoning held under the assumption that the user had no
+other way to access full document content when highlighting failed.
+
+The reversal: adding a "Open full document in new tab" link
+(clickable document name + caption inside expander) provides a
+stronger fallback than the truncated excerpt. Full document access
+beats 500-char excerpt for the cases where:
+- Start-page highlight is just a section header
+- Continuation page is empty
+- Search-based highlighting fails entirely
+
+With the whole-document link, the excerpt becomes redundant noise.
+Removing it cleans up the citation card visually and gives users a
+single clear path to source verification.
+
+### The architectural decisions
+
+Two design choices made before the Cursor prompt:
+
+1. **Link placement: BOTH header + expander caption.** Two
+   placements for the same link — clickable document name in the
+   citation header, plus a caption-style "📄 Open full document in
+   new tab" inside the expander. Redundancy is intentional: users
+   on different mental models find the link in different places.
+
+2. **Excerpt removal: full removal, not conditional.** Considered
+   "show excerpt only when highlighting fails" but rejected as too
+   clever. Conditional UI logic creates inconsistency users can't
+   predict. All-or-nothing removal is cleaner.
+
+### Implementation notes
+
+Streamlit version 1.57 supports `enableStaticServing = true` in
+`.streamlit/config.toml`. Cursor's audit picked this approach over
+base64 encoding. Cleaner serving, no encoding overhead, no
+JavaScript dependency.
+
+Single Docker volume mount addition: `data/raw/policy_docs` mounted
+to `/app/static/policy_docs` (same source as the existing PDF
+viewer mount, different destination to surface via Streamlit
+static serving). Files served read-only.
+
+Link URL pattern: `/app/static/policy_docs/{filename}.pdf`. Clean
+relative paths, no auth complications, browser opens PDFs natively
+in new tabs.
+
+### What this closes
+
+- 5/5 PDFs accessible via static serving (verified HTTP 200)
+- 6 link instances per multi-citation answer (3 citations × 2 placements)
+- Excerpt fully removed from citation cards
+- Multi-page navigation unaffected (regression check passed)
+- Visual layout balanced without excerpt block
+
+### The honest observation about residual limitations
+
+User testing the "annual meal cap" question revealed an example of
+the documented session 2 limitation in practice: the answer
+references "$500 in any rolling 12-month period" but the chunk's
+PDF page renders with highlights elsewhere on the page, not on the
+$500 sentence.
+
+The chunk metadata for DOC 002 chunk 0000 likely contains the $500
+content somewhere mid-chunk. PyMuPDF's `search_for()` matches
+either the chunk's first 60-char prefix elsewhere on the page (a
+section header or earlier content) or fails entirely. The
+`found[:1]` fix from session 2 returns the first match, which
+isn't the chunk's actual location.
+
+This is the "header-only highlights" failure mode session 2's
+lessons log already documents. The whole-document link is exactly
+the right fallback for this case: user sees the answer references
+$500, sees the highlighted text on the rendered page doesn't match,
+clicks the document name, finds the actual content in the full PDF.
+
+The fallback path makes the limitation tolerable. Without the
+link, users would face confusing disconnect between the answer
+and the highlighted text. With the link, users have a clear path
+to ground truth.
+
+For the article: shipping imperfect-but-honest works when the
+imperfection has a graceful fallback. The fallback turns a
+"feature is broken" experience into a "feature has a known limit
+and here's what you can do about it" experience. Substantively
+different user-facing outcome.
+
+### Closing observation: reversing previous decisions
+
+Session 2's lessons log explicitly recommended skipping session
+2.5. Session 2.5's lessons log explicitly reverses that
+recommendation. Both decisions are visible in the historical
+record — neither overwritten, both reasoned about.
+
+This is the right pattern for incremental engineering. Decisions
+made under one set of assumptions can be reversed when assumptions
+change. The discipline is making the reversal explicit, not silent
+— so future-you reading the log understands both the original
+reasoning and what changed.
+
+For the article: project documentation should preserve decision
+reversals as first-class entries, not retroactively rewrite the
+record. "We decided X for reason Y. Then we decided ¬X for reason
+Z" is honest engineering history. "We always decided ¬X" is
+revisionist and useless.
+
+---
+
+## 2026-05-02 (evening) — 1.2f session 2.5: whole-document link, excerpt removal, and the two-stage highlighting that demonstrated heuristic limits
+
+Session 2.5 was supposed to be a small follow-up — remove the chunk
+excerpt that became redundant with highlighting, add a "open full
+document" link as a fallback when highlighting fails. It expanded
+to include a complete rewrite of the highlighting algorithm. Then
+the rewrite produced its own failure modes. We ended the session
+with three commits worth of real improvements and a clear architectural
+direction for tomorrow's work.
+
+This entry covers three distinct pieces shipped together:
+
+1. Static PDF serving + whole-document link (clean wins)
+2. Excerpt removal (reverses session 2's "skip 2.5" decision)
+3. Two-stage highlighting (normalize + cluster, replacing cascade)
+
+And one finding bigger than any of the three pieces: heuristic-based
+PDF text matching has fundamental limits we've now demonstrated
+empirically across six iterations.
+
+### Reversing session 2's "skip 2.5" decision
+
+Session 2's lessons log entry (committed earlier today) explicitly
+said:
+
+> "Skip session 2.5 (excerpt removal): originally planned to remove
+> chunk excerpt above relevance metric since highlighting shows same
+> content. Multi-page limitations make excerpt useful as fallback
+> when highlighting fails. Removing it would compound user-facing
+> inconsistency."
+
+That reasoning held assuming no other fallback existed. The whole-
+document link added in session 2.5 is a stronger fallback than the
+excerpt — users can see the full document, not just a truncated
+text snippet. With the link in place, the excerpt becomes redundant
+even for the multi-page failure cases.
+
+This is a real reversal, not a flip-flop. The original decision was
+right given the alternatives at the time. Adding a better fallback
+changed the alternatives.
+
+For the article: design decisions are conditional on the option
+space available. When the option space changes, decisions can
+legitimately reverse. Documenting the reversal explicitly (this
+entry doing that) is more honest than pretending the original
+decision was wrong.
+
+### What landed cleanly: static serving + whole-document link
+
+PyMuPDF rendering for the inline source viewer was already working
+(session 1). The viewer shows a single page at a time with chunk
+highlighting. The whole-document link was added as a complementary
+fallback — when highlighting fails or chunk extends beyond what's
+visible, users can open the full PDF in a new tab.
+
+Implementation:
+- Streamlit 1.57's `enableStaticServing = true` config option
+- Volume mount: `data/raw/policy_docs:/app/static/policy_docs:ro`
+  (read-only, mirrors the read-only mount from session 1)
+- Two link placements: clickable document name in citation header,
+  caption-style link inside expander
+- Both links use `target="_blank"` to open in new tab
+
+Verification confirmed:
+- All 5 source PDFs accessible (HTTP 200, content-type:
+  application/pdf)
+- Links work from both placements
+- Multi-page navigation unaffected
+- No regression in the existing chunk highlighting (when it works)
+
+This piece is unambiguously a win.
+
+### Excerpt removal
+
+The chunk text excerpt above the relevance metric was originally
+useful when no PDF rendering existed. Session 1 added inline PDF
+rendering. Session 2 added chunk highlighting. The excerpt became
+redundant for cleanly-highlighted chunks but was kept because of
+multi-page failure cases.
+
+With the whole-document link providing a stronger fallback, the
+excerpt is now redundant in all cases:
+- Cleanly highlighted chunks: user sees the chunk in PDF context
+- Multi-page chunks with imperfect highlighting: user can open
+  full document for context
+- Failed highlighting: user can open full document for context
+
+Removed the excerpt rendering at line 288. Citation card now shows:
+- Document name (clickable link to PDF)
+- Relevance score
+- Weak match indicator (if applicable)
+- Expander with rendered page + caption + "Open full document" link
+
+Card is visually cleaner without the excerpt block.
+
+### The two-stage highlighting attempt
+
+This is the iteration that didn't fully succeed.
+
+Session 2 shipped a cascading fallback (full chunk → 200 → 100 → 60
+chars). Real-world testing surfaced two failure modes:
+- Section headers highlighted instead of chunk body (60-char prefix
+  matched section text earlier on the page)
+- Multi-page continuation pages showing no highlights (full chunk
+  text not on continuation page)
+
+Session 2.5 attempted to replace the cascade with a more robust
+two-stage approach:
+
+**Stage 1 — Whitespace normalization.** Most chunk-PDF mismatches
+are whitespace differences (multi-space, line breaks, normalization
+inconsistencies). Normalize both before searching, try full chunk
+match.
+
+**Stage 2 — Multi-substring clustering.** If stage 1 fails, search
+for 4 non-overlapping substrings from the chunk (positions 0%, 30%,
+60%, 90%). Find the cluster of rectangles that's vertically close
+together — that's the chunk's actual location. Spurious matches
+are scattered and ignored.
+
+If both stages fail: return no rectangles. Better to have no
+highlight than a wrong highlight.
+
+Implementation completed. Cursor's verification at the function
+level passed all 5 test cases (TC-a through TC-e), with a separate
+synthesized test case confirming clustering path works when stage
+1 fails.
+
+### What spot-check verification surfaced
+
+Testing on different chunks than Cursor's test cases revealed three
+new failure modes:
+
+**Failure 1: $75,000 annual cap not highlighted at all.** Stage 1
+failed, stage 2 clustering also failed. The chunk is clearly on the
+page. Neither stage could locate it.
+
+**Failure 2: Citation with no highlights on either start or
+continuation page.** Both stages failed on both pages. The chunk
+is in the document but unfindable by the new approach.
+
+**Failure 3: Random text highlighted on another citation.** Stage 2
+clustering picked a wrong cluster. Spurious matches happened to
+land vertically close and got identified as the chunk's location.
+
+The two-stage approach traded one set of failures for another:
+- Old approach: over-highlighting and section header matches (wrong
+  location, but always something)
+- New approach: silent no-highlight on some chunks, plus occasional
+  wrong cluster (different mechanism, same class of error)
+
+For some users this is better (silent failure is more honest). For
+some it's worse (no highlight on $75K when it's right there is
+frustrating).
+
+### Six iterations: pattern recognition
+
+Counting iterations on multi-page handling today:
+
+1. Kickoff Q4 — chose Approach 2 (scrollable) over Approach 1
+   (page-level). Should have stuck with the original v1 single-page
+   scope from kickoff Decision 4.
+
+2. Session 2 implementation — heuristic-based multi-page detection,
+   "Continued on page" button, cascading fallback. Initial
+   verification passed.
+
+3. Cap fix — bounded forward navigation at original_page + 1 after
+   discovering unbounded navigation issue.
+
+4. Session 2 fix-arc — addressed four issues (over-highlighting,
+   no continuation highlights, expander collapse, section title
+   matching). Audit-first found the actual root cause was different
+   from my assumed root cause.
+
+5. Spot-check verification — surfaced remaining failure modes.
+
+6. Two-stage rewrite — replaced cascade with normalize + cluster.
+   New failure modes emerged.
+
+Each iteration had a clear theory and a clean implementation. Each
+hit walls. The walls aren't bugs — they're the consequence of trying
+to bridge a gap that's fundamentally lossy: chunk text in Qdrant
+(extracted by chunking pipeline, normalized) and PDF text at search
+time (extracted by PyMuPDF, with original whitespace and encoding).
+These extractions differ in ways no heuristic can fully predict.
+
+For the article: this is a sharper version of the existing finding
+that prompt-layer fixes have ceilings. Search-based PDF highlighting
+has its own ceiling, and it's structural — no amount of clever
+substring strategies bridges the chunk-to-PDF text gap.
+
+### The architectural fix that's been clear since session 2
+
+The proper solution: store chunk bbox coordinates during chunking,
+use them directly for highlighting. No search at run-time. This
+eliminates the gap entirely — we know exactly where each chunk is
+because we recorded the location when we extracted the chunk.
+
+Required changes:
+- `pipelines/embed_policy_docs.py` — capture bbox per chunk per
+  page span during PDF parsing using PyMuPDF's `page.get_textpage()`
+  with coordinates
+- Qdrant payload schema — add bbox field (list of rectangles, since
+  chunks can span multiple pages)
+- Re-embed all chunks across all 5 documents
+- `agents/schemas.py` — add bbox to PolicyCitation
+- `agents/policy_agent.py:_parse_citations` — propagate bbox (we
+  know how to do this from session 1's page_num propagation gap)
+- `streamlit_app/utils/pdf_renderer.py` — significantly simpler, no
+  search needed, draw rectangles directly from bbox coordinates
+- Tail-search logic in 5_Policy_QA.py — eliminated entirely
+
+This is several hours of work across multiple components. It's the
+right architecture. It eliminates all six failure modes from today's
+iterations, not by adding more heuristics, but by removing the need
+for heuristics.
+
+Scheduled for tomorrow's session.
+
+### What ships tonight
+
+Three commits:
+
+1. Static PDF serving infrastructure
+2. Whole-document link + excerpt removal + two-stage highlighting
+3. Lessons log
+
+The two-stage highlighting ships imperfect, with documented
+limitations. Tomorrow's bbox fix will replace it entirely. Tonight's
+state is genuinely better than session 2's state in some ways
+(cleaner failure mode — no highlight when no good match) and worse
+in others (some chunks lose highlights they used to have, even if
+those highlights were sometimes wrong).
+
+The honest framing: tonight's commit captures the iteration journey.
+Tomorrow's bbox work captures the architectural answer. Both are
+visible in git history.
+
+### Why we didn't implement the bbox fix today
+
+Two reasons:
+
+1. **Time of day / energy.** Today has had substantial iteration
+   on this feature. The bbox fix touches multiple components
+   (chunking pipeline, schema, agent code, renderer) and warrants
+   fresh attention to avoid the kind of subtle bug that surfaces
+   during verification.
+
+2. **Design discussion deserves separate session.** Session 1's
+   kickoff design discussion (~30 min before code) paid off
+   substantially. The bbox fix has multiple architectural decisions
+   (single bbox vs list, schema field design, re-embed strategy,
+   migration vs full re-embed) that benefit from being decided
+   deliberately before code.
+
+Tomorrow morning: design discussion first, then Cursor prompt with
+decisions locked.
+
+### Closing observation: knowing when to stop iterating
+
+I had to push back several times today on continuing to iterate on
+the heuristic approach. Each time, the user proposed a reasonable-
+sounding next iteration ("try multi-substring clustering," "search
+for keywords + chunk text"). Each one would have been the seventh
+or eighth attempt to make the heuristic work.
+
+The pattern: each iteration produces a clean implementation that
+verifies on its test cases, then surfaces new failure modes when
+spot-checked on different chunks. After 4-5 iterations of this,
+the question is no longer "what's the next heuristic to try?" but
+"is the heuristic class of solutions the right approach at all?"
+
+The answer was no. Heuristic-based search couldn't fully bridge the
+chunk-PDF extraction gap. The architectural fix (bbox metadata
+captured at chunking time) eliminates the gap.
+
+For the article: knowing when to stop iterating is a skill. The
+signal isn't "this iteration didn't work." It's "we've now had
+multiple iterations with the same structural failure mode, and
+each iteration's failure mode is a re-statement of the underlying
+architectural mismatch."
+
+The user made the right call to schedule the bbox fix for tomorrow
+rather than push through tonight. Fresh head, proper design
+discussion, then the right architecture rather than the wrong
+architecture iterated harder.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
