@@ -278,25 +278,25 @@ if history:
                     excerpt  = cit.get("excerpt", "")
                     score    = float(cit.get("relevance_score", 0))
                     chunk_id = cit.get("chunk_id", str(_cit_idx))
+                    _pdf_url = f"/app/static/policy_docs/{source}" if source else None
 
                     if score < _CITATION_WEAK_THRESHOLD:
                         continue  # below noise floor — hide
 
                     _any_shown = True
-                    label = f"**{source}**" if source else "Policy document"
-                    if excerpt:
-                        label += f"\n\n_{excerpt[:500]}{'…' if len(excerpt) > 500 else ''}_"
+                    # Document name as clickable link; excerpt removed (whole-document
+                    # link in the expander now serves as fallback for context).
+                    _doc_link = f"**[{source}]({_pdf_url})**" if _pdf_url else "**Policy document**"
 
                     if score < _CITATION_STRONG_THRESHOLD:
                         # Weak match: above noise floor but below confident retrieval.
                         st.info(
                             f"⚠ **Weak match** (score {score:.2f} — low relevance;"
-                            f" treat with caution)\n\n" + label
+                            f" treat with caution)\n\n" + _doc_link
                         )
                     else:
                         # Strong match: confident retrieval.
-                        label += f"\n\nRelevance: {score:.2f}"
-                        st.info(label)
+                        st.info(f"{_doc_link}\n\nRelevance: {score:.2f}")
 
                     # Inline source page viewer with highlighting + multi-page navigation
                     _original_page = cit.get("page_num")
@@ -366,6 +366,12 @@ if history:
                                             f" · continuation of chunk from page {_original_page}"
                                         )
                                 st.caption(_caption)
+                                if _pdf_url:
+                                    st.markdown(
+                                        f'<a href="{_pdf_url}" target="_blank"'
+                                        f' style="font-size:0.8em;">📄 Open full document in new tab</a>',
+                                        unsafe_allow_html=True,
+                                    )
 
                                 # Forward navigation: only on the original page.
                                 # Cap at original_page + 1 to prevent unbounded navigation
