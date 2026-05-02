@@ -2844,6 +2844,239 @@ benefit is avoiding 1-2 hour scope expansions per item.
 
 ---
 
+## 2026-05-02 — 1.2f session 1: inline source viewer foundation
+
+1.2f is the inline source viewer — PDF rendering inside the Streamlit
+Q&A page so users can see citations in their original document
+context. Largest architectural change since the original Phase 4
+dashboard. Scoped across multiple sessions.
+
+Session 1's goal was foundation: PyMuPDF rendering working in
+Streamlit, page display from chunk citations, no highlighting yet.
+Session 2 (highlighting + excerpt removal) and any further polish
+sessions build on this.
+
+### The five architectural decisions made before code
+
+The kickoff design discussion (~30 min before any Cursor work) made
+five decisions deliberately:
+
+1. **PDF rendering:** PyMuPDF server-side rasterization. Already a
+   project dependency from chunking pipeline. No JavaScript
+   debugging surface. Highlighting via colored rectangles drawn
+   before rasterization.
+
+2. **Highlighting fidelity:** Chunk-level bounding box (deferred to
+   session 2). Page-level v1 was rejected as undersell; section-level
+   was rejected as overkill given chunk metadata already exists.
+
+3. **UI integration:** Expander below each citation. Native Streamlit,
+   no custom components, no layout disruption. Each citation gets
+   independent expansion control.
+
+4. **Scope guardrails:** v1 only — single-page rendering, no multi-
+   page navigation, no zoom controls. v2 features deferred indefinitely.
+
+5. **Live with caching:** @st.cache_data on the renderer. PyMuPDF
+   rendering is fast enough for on-demand. Static rendering would
+   complicate the dev loop.
+
+These decisions were locked before the Cursor prompt was written.
+The prompt encoded each decision as a constraint, not a choice for
+Cursor to make. This pattern paid off cleanly — Cursor implemented
+exactly what was decided rather than picking variants.
+
+### The audit-first finding: propagation gap, not absence gap
+
+Cursor's audit surfaced two gaps:
+
+**Gap 1: page_num not propagating end-to-end.**
+
+Per-component, every layer had page_num:
+- pipelines/embed_policy_docs.py sets it (1-indexed)
+- Qdrant payload contains it
+- search_policy_docs tool returns it from payload
+- Agent's tool call receives chunks with page_num
+
+But _parse_citations() in policy_agent.py constructed PolicyCitation
+objects without the field. The schema (agents/schemas.py) didn't
+have it. Streamlit received PolicyCitation objects with no page
+information.
+
+Cursor framed this precisely: "propagation gap, not absence gap."
+The metadata existed throughout the pipeline; one boundary was
+silently dropping it.
+
+**The constraint conflict.** The original Cursor prompt said "DO NOT
+modify agent response schema." That constraint was guarding against
+scope expansion via "let's add some new metadata fields." This wasn't
+new metadata — the field existed elsewhere; we just stopped throwing
+it away at one boundary. Different risk profile entirely.
+
+I overruled my own constraint. Adding `page_num: Optional[int] = None`
+to PolicyCitation with one line populating in _parse_citations() was
+the right fix. Option B (Qdrant lookup from Streamlit) was the
+"don't modify schema" alternative — it would have added Qdrant client
+dependency to the UI layer, infrastructure coupling, additional env
+var management, container rebuilds. All to recover information that
+was already available and being silently discarded.
+
+For the article: per-component testing wouldn't catch field-drop
+bugs at boundaries. End-to-end audits surface them. Per-component,
+each piece works correctly — Qdrant stores, search returns, parse
+extracts what it cares about. The end-to-end view is "the field
+exists at start and is gone at end."
+
+**Gap 2: PDF files not mounted in Streamlit container.**
+
+data/raw/policy_docs/ wasn't in the Streamlit service volumes.
+Only features/outputs was mounted. PyMuPDF needs file system access.
+
+One-line fix: add the volume mount to docker-compose.yml as
+read-only. Within scope, unambiguous.
+
+### What landed in session 1
+
+- agents/schemas.py:24 — page_num: Optional[int] = None added to
+  PolicyCitation
+- agents/policy_agent.py:322 — page_num=r.get("page_num") propagated
+  in _parse_citations()
+- docker/docker-compose.yml:69 — data/raw/policy_docs volume mount
+  added to Streamlit service (read-only)
+- streamlit_app/utils/pdf_renderer.py — new module with
+  @st.cache_data render_pdf_page(source_doc, page_num) → bytes |
+  None using PyMuPDF at 2× zoom (~144 DPI)
+- streamlit_app/requirements.txt — pymupdf>=1.24.0 added
+- streamlit_app/pages/5_Policy_QA.py — st.expander("View source · p.
+  N") under each above-threshold citation, renders the PDF page
+  inline at readable resolution
+
+### The off-by-one false alarm
+
+Verification testing surfaced a moment that looked like an off-by-one
+bug. Two screenshots both labeled "View source · p. 1" appeared to
+show different content. I flagged it as red-flag worth pausing on.
+
+Then I realized the screenshots showed different vertical scroll
+positions of the same rendered page. The renderer produces a tall
+image (full PDF page); what fits in any given screenshot frame
+depends on where the user has scrolled. Both images were portions
+of PDF page 1 — the cover/section-1 area at the top, sections 2-3
+at the bottom of the same page.
+
+User confirmation of actual PDF structure (page 1 contains sections
+1, 2, 3-beginning; page 2 contains 3-continued through 4.1) verified
+both screenshots were consistent with PDF page 1.
+
+For the article: visual verification is bounded by what's in the
+frame. Looking at "what's visible" in a screenshot can mislead when
+the actual artifact extends beyond the frame. Diagnostic instinct:
+if something looks wrong, check whether you're seeing all of it.
+
+The lesson here is small but real. The verification methodology
+needs to account for the rendering artifact extending beyond the
+viewport. A more thorough check would have been "scroll to the
+top/bottom of the rendered page and verify it matches expected
+content for that PDF page." We did that retroactively (asked user
+to compare actual PDF page contents) and confirmed alignment.
+
+### Verification outcomes
+
+All five tests passed cleanly:
+
+1. Basic rendering across documents ✓ — verified on
+   nova_pharma_internal_policy_SYNTHETIC.pdf, oig_cpg_pharmaceutical.pdf,
+   phrma_code_2022.pdf
+2. Page number accuracy ✓ — diagnostic confirmed PDF page contents
+   match expander captions across all tested citations
+3. Caching behavior ✓ — instant on reopen, fresh on different
+   page/document
+4. Weak match citation interaction ✓ — expander renders correctly
+   below weak match styling
+5. TOPIC ABSENT case ✓ — expanders work on retrieval citations,
+   "Comparison not available" still shows, grounding line shows
+   correctly
+
+### Session 2 scope decision: excerpt removal deferred to session 2.5
+
+User raised a sharp design observation during verification: "View
+source should highlight the citation text in yellow. If it does
+that, then we can remove the citation text above Relevance metric."
+
+This is a better information architecture than the current state.
+Currently each citation card shows the chunk text twice — once as
+italic excerpt, once when expanded and the user finds the same
+text in the rendered page. Yellow highlighting in the rendered page
+makes the excerpt redundant.
+
+But the right sequencing matters:
+
+- Session 2 (current planned scope): chunk-level bounding box
+  highlighting via PyMuPDF.search_for(). Excerpt stays for now.
+- Verification: confirm highlighting is reliable across documents,
+  chunk types, edge cases (multi-line chunks, chunks at page
+  boundaries, chunks with special characters)
+- Session 2.5 (small follow-up): remove excerpt if highlighting
+  reliable. Keep as fallback if highlighting fails.
+
+The reason for the staging: don't strip the safety net (the visible
+excerpt) before we know the new approach works. If session 2
+highlighting has edge cases — chunks that PyMuPDF.search_for() can't
+locate due to text encoding differences, character substitutions
+during PDF text extraction — the excerpt remains the user's only
+view of the chunk content. Removing it before verifying is risky.
+
+For the article: design improvements often suggest cascading changes.
+The discipline is to land each change individually and verify
+before cascading the next. The cost is a few extra commits; the
+benefit is bounded rollback if any change surfaces issues.
+
+### What this session closes
+
+- Foundation: PDF rendering working in Streamlit via PyMuPDF
+- Architectural decisions all locked deliberately
+- One propagation gap fixed (page_num end-to-end)
+- One infrastructure gap fixed (volume mount)
+- 5/5 verification tests pass
+- Off-by-one false alarm noted as verification methodology lesson
+
+### What carries forward
+
+- Session 2: chunk-level bounding box highlighting via
+  PyMuPDF.search_for(). Edge cases to watch: multi-line chunks,
+  chunks with text-extraction quirks, chunks at page boundaries
+- Session 2.5: excerpt removal once highlighting verified reliable
+- v2 features (multi-page navigation, zoom, section-level
+  highlighting): deferred indefinitely; not scheduled
+- Bug C from 1.2g pass 2 (agent over-retrieval) — visible via
+  grounding indicator, still untouched
+
+### Closing observation: design discussion compounding
+
+This is the second consecutive session where pre-Cursor design
+discussion produced clean closure. 1.2g pass 2's four items closed
+in one session because UX decisions were locked before the prompt.
+1.2f session 1's architectural foundation closed in one session
+because five decisions were locked before the prompt.
+
+The pattern: Cursor is excellent at executing well-specified work.
+Cursor's failure mode is making architectural choices silently when
+the prompt leaves them open. The fix is doing the architectural
+thinking before writing the prompt, then encoding decisions as
+constraints.
+
+The cost: 30-45 min of structured discussion before each major
+session. The benefit: cleaner closures, no rework, fewer surprises
+in verification. Across 1.2g pass 2 and 1.2f session 1, this pattern
+saved an estimated 2-4 hours of rework that the prompt-without-
+discussion pattern produced in earlier sessions.
+
+For the article: structured pre-Cursor design discussion is the
+single most leverage-positive practice from this project. Worth
+naming explicitly as a methodology finding, not just an anecdote.
+
+---
+
 ## Note to future self
 
 Don't rewrite this when drafting the article. Lift specific anecdotes,
