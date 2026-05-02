@@ -67,6 +67,7 @@ services:
     volumes:
       - ../features/outputs:/app/features/outputs:ro
       - ../data/raw/policy_docs:/app/data/raw/policy_docs:ro
+      - ../data/raw/policy_docs:/app/static/policy_docs:ro
     restart: unless-stopped
 
   # ── MLflow experiment tracking ─────────────────────────────────────────────
