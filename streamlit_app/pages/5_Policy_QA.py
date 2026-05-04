@@ -318,54 +318,42 @@ if history:
                             # Navigation buttons set it True again before rerun.
                             st.session_state[_ekey] = False
 
-                            # Determine chunk_text for highlighting:
-                            # - Original page: search the chunk prefix (start of chunk)
-                            # - Continuation page: search the tail half of the chunk text,
-                            #   since the first half was already on the previous page.
-                            #   Guard: only apply tail-search if chunk is long enough
-                            #   that splitting is meaningful (> 200 chars).
                             _on_original = (_cur_page == _original_page)
-                            if excerpt and not _on_original and len(excerpt) > 200:
-                                _chunk_text = excerpt[len(excerpt) // 2:]
-                            else:
-                                _chunk_text = excerpt or None
+
+                            # Filter stored bboxes to the current page only.
+                            _page_bboxes = tuple(
+                                (b["x0"], b["y0"], b["x1"], b["y1"])
+                                for b in (cit.get("bboxes") or [])
+                                if b.get("page_num") == _cur_page
+                            )
 
                             _result = render_pdf_page(
-                                source, _cur_page, chunk_text=_chunk_text
+                                source, _cur_page, bboxes_for_page=_page_bboxes
                             )
                             if _result is not None:
                                 _img_bytes, _meta = _result
                                 st.image(_img_bytes, use_container_width=True)
 
-                                # Caption based on highlight outcome and page position
+                                # Caption
                                 _hs = _meta["highlight_status"]
                                 _doc_label = source.replace(".pdf", "").replace("_", " ")
                                 if _on_original:
-                                    if _hs == "full":
-                                        _caption = f"Page {_cur_page} of {_doc_label}"
-                                    elif _hs == "none":
-                                        _caption = (
-                                            f"Page {_cur_page} of {_doc_label}"
-                                            " · unable to highlight chunk"
-                                        )
-                                    else:
-                                        _caption = (
-                                            f"Page {_cur_page} of {_doc_label}"
-                                            " · highlighted partial match"
-                                        )
-                                else:
-                                    # Continuation page — tell the user what they're looking at
+                                    _caption = f"Page {_cur_page} of {_doc_label}"
                                     if _hs == "none":
-                                        _caption = (
-                                            f"Page {_cur_page} of {_doc_label}"
-                                            " · chunk continues here (no exact text match)"
-                                        )
-                                    else:
-                                        _caption = (
-                                            f"Page {_cur_page} of {_doc_label}"
-                                            f" · continuation of chunk from page {_original_page}"
-                                        )
+                                        _caption += " · no chunk highlight"
+                                else:
+                                    _caption = (
+                                        f"Page {_cur_page} of {_doc_label}"
+                                        f" · continued from page {_original_page}"
+                                    )
+                                    if _hs == "none":
+                                        _caption += " (no highlight)"
                                 st.caption(_caption)
+                                if _hs == "full":
+                                    st.caption(
+                                        "Highlighted region shows the full retrieved chunk (~512 words). "
+                                        "Sentence-level highlighting is planned (issue 1.2g)."
+                                    )
                                 if _pdf_url:
                                     st.markdown(
                                         f'<a href="{_pdf_url}" target="_blank"'
@@ -373,10 +361,13 @@ if history:
                                         unsafe_allow_html=True,
                                     )
 
-                                # Forward navigation: only on the original page.
-                                # Cap at original_page + 1 to prevent unbounded navigation
-                                # past where the chunk ends.
-                                if _meta.get("chunk_continues") and _on_original:
+                                # Forward navigation: precise — chunk has bboxes on next page.
+                                _chunk_pages = {
+                                    b.get("page_num")
+                                    for b in (cit.get("bboxes") or [])
+                                }
+                                _has_continuation = (_original_page + 1) in _chunk_pages
+                                if _has_continuation and _on_original:
                                     if st.button(
                                         f"Continued on page {_cur_page + 1} →",
                                         key=f"nav_fwd_{_vkey}",

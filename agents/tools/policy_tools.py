@@ -150,6 +150,7 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
                 "relevance_score":    round(float(hit.score), 4),
                 "excerpt":            excerpt,
                 "page_num":           payload.get("page_num"),
+                "bboxes":             payload.get("bboxes") or [],
                 "section_heading":    payload.get("section_heading", ""),
                 "chunk_start_offset": payload.get("chunk_start_offset"),
                 "chunk_end_offset":   payload.get("chunk_end_offset"),

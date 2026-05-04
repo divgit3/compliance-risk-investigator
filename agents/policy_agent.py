@@ -28,7 +28,7 @@ from agents.post_processors.over_narration import strip_over_narration
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_openai import ChatOpenAI
 
-from agents.schemas import NovaVsPhRMA, PolicyAnswer, PolicyCitation
+from agents.schemas import BBox, NovaVsPhRMA, PolicyAnswer, PolicyCitation
 from agents.tools.policy_tools import lookup_rule, search_policy_docs, list_rule_dimensions
 
 # ── MLflow config ──────────────────────────────────────────────────────────────
@@ -320,6 +320,7 @@ class PolicyAgent:
                     relevance_score=float(r.get("relevance_score", 0.0)),
                     excerpt=r.get("excerpt", ""),
                     page_num=r.get("page_num"),
+                    bboxes=[BBox(**b) for b in r.get("bboxes") or []],
                 ))
         return citations
 

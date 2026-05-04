@@ -17,12 +17,21 @@ from pydantic import BaseModel, Field
 
 # ── Shared building blocks ─────────────────────────────────────────────────────
 
+class BBox(BaseModel):
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    page_num: int  # 1-indexed, matches page_num convention throughout
+
+
 class PolicyCitation(BaseModel):
     chunk_id: str
     source_doc: str
     relevance_score: float
     excerpt: str  # full chunk text
     page_num: Optional[int] = None
+    bboxes: Optional[List[BBox]] = None
 
 
 class RuleFlag(BaseModel):
