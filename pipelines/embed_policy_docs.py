@@ -21,6 +21,7 @@ import hashlib
 import io
 import sys
 import time
+from collections import defaultdict
 
 import boto3
 import fitz  # PyMuPDF
@@ -28,7 +29,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from openai import OpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 load_dotenv()
 
@@ -96,6 +97,31 @@ qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
 # ── Functions ──────────────────────────────────────────────────────────────────
 
+def _merge_word_bboxes_to_lines(
+    word_bboxes: list[tuple[float, float, float, float]],
+    y_tolerance: float = 3.0,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Merge word-level bboxes that share the same text line into single line bboxes.
+    Words are considered on the same line if their y0 values are within y_tolerance pts.
+    """
+    if not word_bboxes:
+        return []
+    sorted_bboxes = sorted(word_bboxes, key=lambda b: (b[1], b[0]))
+    lines = []
+    cx0, cy0, cx1, cy1 = sorted_bboxes[0]
+    for x0, y0, x1, y1 in sorted_bboxes[1:]:
+        if abs(y0 - cy0) <= y_tolerance:
+            cx0 = min(cx0, x0)
+            cx1 = max(cx1, x1)
+            cy1 = max(cy1, y1)
+        else:
+            lines.append((cx0, cy0, cx1, cy1))
+            cx0, cy0, cx1, cy1 = x0, y0, x1, y1
+    lines.append((cx0, cy0, cx1, cy1))
+    return lines
+
+
 def download_pdf_from_s3(bucket: str, key: str) -> bytes:
     """Download PDF bytes from S3. Returns raw bytes."""
     filename = key.split("/")[-1]
@@ -121,10 +147,19 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str) -> list[dict]:
         text = page.get_text("text").strip()
         if len(text) < 50:
             continue
+        # Word-level extraction: (x0, y0, x1, y1, word, block, line, word_no)
+        # Used for bbox-aware chunking; skip empty tokens.
+        raw_words = page.get_text("words")
+        words_data = [
+            (float(x0), float(y0), float(x1), float(y1), w)
+            for x0, y0, x1, y1, w, *_ in raw_words
+            if w.strip()
+        ]
         pages.append({
-            "page_num": page_num + 1,  # 1-indexed for human readability
-            "text":     text,
-            "filename": filename,
+            "page_num":   page_num + 1,  # 1-indexed for human readability
+            "text":       text,
+            "filename":   filename,
+            "words_data": words_data,    # [(x0,y0,x1,y1,word), ...]
         })
         total_chars += len(text)
 
@@ -167,12 +202,13 @@ def chunk_text(
                 break
         page_heading[page["page_num"]] = heading
 
-    # Build (word, page_num) pairs across all pages
-    word_page_pairs: list[tuple[str, int]] = []
+    # Build (word, page_num, bbox) triples from word-level data.
+    # words_data is [(x0,y0,x1,y1,word), ...] extracted by PyMuPDF at page level,
+    # giving us exact coordinates without any runtime text search.
+    word_page_pairs: list[tuple[str, int, tuple]] = []
     for page in pages:
-        words = page["text"].split()
-        for word in words:
-            word_page_pairs.append((word, page["page_num"]))
+        for x0, y0, x1, y1, word in page["words_data"]:
+            word_page_pairs.append((word, page["page_num"], (x0, y0, x1, y1)))
 
     chunks: list[dict] = []
     total_words = len(word_page_pairs)
@@ -182,9 +218,22 @@ def chunk_text(
     while pos < total_words:
         end = min(pos + CHUNK_SIZE, total_words)
         window = word_page_pairs[pos:end]
-        text   = " ".join(w for w, _ in window)
-        # Record the page number where this chunk starts
+        text       = " ".join(w for w, _, _ in window)
         start_page = window[0][1]
+
+        # Collect word bboxes grouped by page, then merge into line-level bboxes.
+        page_word_bboxes: dict[int, list] = defaultdict(list)
+        for _, pnum, bbox in window:
+            page_word_bboxes[pnum].append(bbox)
+
+        bboxes: list[dict] = []
+        for pnum in sorted(page_word_bboxes):
+            for x0, y0, x1, y1 in _merge_word_bboxes_to_lines(page_word_bboxes[pnum]):
+                bboxes.append({
+                    "x0": round(x0, 2), "y0": round(y0, 2),
+                    "x1": round(x1, 2), "y1": round(y1, 2),
+                    "page_num": pnum,
+                })
 
         chunk_id = f"{doc_id}_chunk_{chunk_index:04d}"
         chunks.append({
@@ -201,6 +250,7 @@ def chunk_text(
             "text":               text,
             "char_count":         len(text),
             "relevant_rules":     relevant_rules,
+            "bboxes":             bboxes,
         })
         chunk_index += 1
 
@@ -273,6 +323,23 @@ def _chunk_id_to_qdrant_id(chunk_id: str) -> int:
     return int(md5[:8], 16)
 
 
+def recreate_qdrant_collection() -> None:
+    """Drop and recreate the policy_docs collection for a clean re-embed."""
+    existing = [c.name for c in qdrant.get_collections().collections]
+    if QDRANT_COLLECTION in existing:
+        logger.info(f"Dropping collection '{QDRANT_COLLECTION}'...")
+        qdrant.delete_collection(QDRANT_COLLECTION)
+    logger.info(
+        f"Creating collection '{QDRANT_COLLECTION}' "
+        f"({EMBEDDING_DIM}-dim, Cosine)..."
+    )
+    qdrant.create_collection(
+        collection_name=QDRANT_COLLECTION,
+        vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+    )
+    logger.info("Collection created.")
+
+
 def upsert_to_qdrant(chunks_with_embeddings: list[dict]) -> int:
     """
     Upsert embedded chunks into the Qdrant policy_docs collection.
@@ -280,15 +347,6 @@ def upsert_to_qdrant(chunks_with_embeddings: list[dict]) -> int:
     Batches in groups of QDRANT_BATCH_SIZE.
     Returns total points upserted.
     """
-    # Verify collection exists
-    collections = [c.name for c in qdrant.get_collections().collections]
-    if QDRANT_COLLECTION not in collections:
-        raise RuntimeError(
-            f"Qdrant collection '{QDRANT_COLLECTION}' not found. "
-            "Run: curl -X PUT http://localhost:6333/collections/policy_docs "
-            "-H 'Content-Type: application/json' "
-            "-d '{\"vectors\": {\"size\": 1536, \"distance\": \"Cosine\"}}'"
-        )
 
     embeddable = [c for c in chunks_with_embeddings if "embedding" in c]
     total = len(embeddable)
@@ -352,19 +410,8 @@ def main() -> None:
     logger.info(f"Documents:        {len(POLICY_DOC_METADATA)}")
     logger.info("")
 
-    # Guard: don't re-embed if collection already populated
-    collection_info = qdrant.get_collection(QDRANT_COLLECTION)
-    existing_points = collection_info.points_count
-    if existing_points > 0:
-        logger.warning(
-            f"Collection '{QDRANT_COLLECTION}' already contains "
-            f"{existing_points} points."
-        )
-        answer = input("Re-embed and overwrite? [y/N]: ").strip().lower()
-        if answer != "y":
-            logger.info("Aborted — existing embeddings preserved.")
-            sys.exit(0)
-        logger.info("Proceeding with re-embed (upsert will overwrite by ID).")
+    # Drop and recreate collection for clean re-embed with bbox payload.
+    recreate_qdrant_collection()
 
     docs_processed  = 0
     total_chunks    = 0
