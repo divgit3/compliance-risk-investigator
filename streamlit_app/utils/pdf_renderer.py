@@ -62,45 +62,19 @@ def render_pdf_page(
 
         page = doc.load_page(zero_indexed)
 
-        meta: dict = {
-            "highlight_status": "none",
-            "rect_count": 0,
-            "chunk_continues": False,
-        }
-
-        if chunk_text:
-            total_len = len(chunk_text)
-            rects, status, matched_positions = _search_two_stage(page, chunk_text)
-
-            if rects:
-                for rect in rects:
-                    annot = page.add_highlight_annot(rect)
-                    annot.update()
-
-                meta["highlight_status"] = status
-                meta["rect_count"] = len(rects)
-                # chunk_continues heuristic:
-                #   full match  → chunk is here, no continuation
-                #   clustered   → found a region but may not cover the whole chunk;
-                #                 assume continues if chunk is long and only a minority
-                #                 of positions were clustered (< half of 4 positions)
-                #   none        → no match; long chunks probably span pages
-                if status == "full":
-                    meta["chunk_continues"] = False
-                else:
-                    # matched_positions is the cluster score (unique positions found)
-                    # 4 positions sampled; ≥3 in cluster ≈ chunk is mostly here
-                    meta["chunk_continues"] = (
-                        total_len > 300 and matched_positions < 3
-                    )
-            else:
-                meta["chunk_continues"] = total_len > 2500
+        for x0, y0, x1, y1 in bboxes_for_page:
+            annot = page.add_highlight_annot(fitz.Rect(x0, y0, x1, y1))
+            annot.update()
 
         mat = fitz.Matrix(2, 2)
         pix = page.get_pixmap(matrix=mat)
         png_bytes = pix.tobytes("png")
         doc.close()
-        return png_bytes, meta
+
+        return png_bytes, {
+            "highlight_status": "full" if bboxes_for_page else "none",
+            "rect_count": len(bboxes_for_page),
+        }
 
     except Exception:
         return None
