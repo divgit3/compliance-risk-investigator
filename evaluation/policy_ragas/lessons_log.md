@@ -3731,3 +3731,243 @@ reframe in article voice, but keep this raw. The honesty in raw notes
 beats the polish of post-hoc reconstruction every time. If something
 in here reads as embarrassing or rough — keep it that way; it's what
 makes the article real.
+---
+
+## 1.2f Session 3 — bbox pipeline closure
+
+The session that was supposed to be straightforward verification turned
+into a diagnosis exercise that reframed what the feature actually does.
+
+### What was planned
+
+The May 2 closing entry scheduled today as: design discussion → Cursor
+prompt with decisions locked → bbox metadata extraction in
+`pipelines/embed_policy_docs.py` → schema propagation through
+`PolicyCitation` → re-embed → renderer simplification. Then five visual
+verification tests, three commits, push, 1.2f closes.
+
+Phase 1 (chunking pipeline + Qdrant re-embed) and Phase 2 (schema
+propagation + renderer) both completed against the plan. API verification
+confirmed bboxes propagating end-to-end.
+
+Then the visual verification surfaced something the plan didn't
+anticipate.
+
+### The wall-to-wall highlighting problem
+
+First test (the $75K annual cap question): the highlight covered nearly
+the entire PDF page. Section headers, body paragraphs, table rows,
+footer text, even the red "SYNTHETIC DOCUMENT" warning at the top —
+all yellow.
+
+The instinct was to assume a bug. Two natural hypotheses:
+
+**Hypothesis A — renderer bug.** The renderer is drawing all bboxes on
+the page, not just the chunk's bboxes. Iterating `page.get_text("dict")`
+at render time instead of using stored chunk bboxes would produce
+exactly this.
+
+**Hypothesis B — data bug.** Phase 1 incorrectly attached page-level
+bbox unions to chunks instead of just the chunk's own text spans. Bad
+data at rest, faithfully rendered.
+
+The two hypotheses needed very different fixes — one cheap, one
+expensive. The diagnostic that distinguished them: dump one chunk's
+stored bboxes from Qdrant and look at the count and the union coverage.
+
+### What the diagnostic showed
+
+`scripts/diagnose_chunk_bboxes.py` (added today) dumped three chunks:
+
+| chunk | chars | pages | union coverage |
+|---|---|---|---|
+| DOC_002_chunk_0001 | 3,214 | p2–p3 | 42.7% |
+| DOC_004_chunk_0000 | 3,452 | p1–p2 | 46.4% |
+| DOC_003_chunk_0007 | 3,490 | p4 only | 48.4% |
+
+Coverage at 34–58% — not the >80% we'd expect if either hypothesis
+were correct. The bbox pipeline is right. The renderer is right. The
+chunks are 512 words and a 512-word chunk genuinely occupies that much
+of a typical PDF page.
+
+The wall-to-wall appearance is real, but accurate. Highlight covers ~50
+line bboxes because the chunk genuinely spans ~50 lines.
+
+### Why the previous renderer "looked better"
+
+This was the moment that made the May 2 entry retroactively interesting.
+
+Session 2.5's two-stage approach used `page.search_for(full_chunk_text)`
+as stage 1 and substring clustering as stage 2. For 3000+ char chunks,
+stage 1 almost always failed (chunk text and PDF text differ in ways no
+search bridges — exactly what May 2 documented). It silently fell back
+to stage 2, which sampled four substrings and highlighted only the
+vertical region where 2+ of them clustered — typically ~25% of the
+chunk.
+
+The old renderer looked tighter because it was showing **less** than
+what was retrieved. The new bbox pipeline is more accurate. The chunk
+size makes that accuracy visually unflattering.
+
+This generalises: **an evaluation harness can mistake a broken renderer
+for a working one if the broken renderer happens to produce visually
+plausible output.** Eyeball checks would have continued passing the old
+approach indefinitely. The diagnostic script — comparing what's stored
+to what's rendered — caught this in one run. For the article: visual
+plausibility is not the same as visual correctness, and on RAG citation
+systems specifically, the failure mode is "looks tight, shows wrong
+thing" rather than "looks broken."
+
+### The two-column artifact (OIG CPG)
+
+DOC_003_chunk_0007 had bboxes [000]–[033] in the right column
+(x0≈222) and [034]–[068] in the left column (x0≈45), with y0 running
+from 60 to 741 — full page height. PyMuPDF's `get_text("words")`
+returns words right-column-first for the OIG Federal Register PDF,
+which means a 512-word chunk walks down the right column and wraps
+into the left, producing bboxes that span the full page vertically.
+
+Today this is a curiosity. For 1.2g it's a real risk: any sentence-level
+highlighting that relies on word reading order needs the chunking-time
+order and the highlight-time order to match exactly. A different
+PyMuPDF version, a different extraction call, or any reading-order
+heuristic in between will silently misalign.
+
+### The decision space
+
+Three options surfaced once root cause was clear:
+
+1. **Re-chunk to 128–200 words.** Tighter highlights, more chunks,
+   higher embedding cost, requires Phase 1 re-embed. But: small chunks
+   tend to *hurt* citation quality by fragmenting context, which
+   contradicts the existing "policy citation quality improvements"
+   backlog item.
+
+2. **Sentence-level highlighting within retrieved chunks.** Keep 512-word
+   chunks for retrieval, but at highlight time score sentences against
+   the query and render only the top 1–2 sentences' bboxes. The full
+   chunk still goes to the LLM as context — only the highlight target
+   changes.
+
+3. **Accept current behaviour with a caption.** Add a small note to the
+   renderer clarifying that the highlight shows the full retrieved chunk.
+   Honest about what the system is doing.
+
+The temptation was option 3 only. It closes 1.2f cleanly. But shipping
+a citation viewer that highlights a 500-word region while users
+intuitively expect sentence-level provenance is the same class of error
+as session 2.5's "looks tight, shows wrong thing." The cosmetic fix is
+necessary (option 3), but it's not sufficient on its own.
+
+The right shape is: ship option 3 *now* to close 1.2f honestly, and
+open 1.2g for option 2. Don't pretend option 3 is enough.
+
+### Why 1.2g is its own scope, not 1.2f scope-creep
+
+Sentence-level highlighting requires reconstructing word-to-bbox
+alignment at highlight time. The Phase 1 pipeline stores merged
+line-level bboxes (`{x0, y0, x1, y1, page_num}`) — no per-word
+character offsets, no word index. The chunk payload has
+`chunk_start_offset` and `chunk_end_offset` at the chunk level but
+nothing per-word.
+
+Reconstruction approach: open the source PDF page with PyMuPDF, call
+`get_text("words")`, find where the chunk text starts in the page
+text, walk both lists in parallel to get a word-bbox alignment, split
+the chunk into sentences, score sentences against the query, collect
+the relevant words' bboxes, merge to line level, render.
+
+Estimated 6–8 hours optimistically. The two-column reading order risk
+above means surprises are likely. Sentence splitting on compliance
+text (numbered references, parenthetical citations like "(42 U.S.C.
+1320a-7h)", bulleted lists with no terminal periods) needs care.
+
+Trying to cram this into 1.2f to "really finish it" would have been
+the pattern May 2's closing observation warned against — pushing
+through when the right move is to let the next session pick it up
+clean.
+
+### What ships tonight
+
+Three commits plus the pipeline change that should have been part of
+Phase 1's commit but was uncommitted on the local branch:
+
+1. `feat(policy-qa): propagate bbox metadata through agent stack and renderer`
+2. `chore(policy-qa): add bbox diagnostic script and renderer caption`
+3. `docs(policy_ragas): 1.2f closure - bbox pipeline verified, chunk-size finding, 1.2g scoped` (this entry)
+4. `feat(policy-pipeline): extract and store line-level bboxes during embedding`
+
+The pipeline commit is fourth in branch order but represents Phase 1
+work. Squash merge to main collapses the ordering anyway. Worth
+flagging that the embed pipeline now unconditionally drops and
+recreates the Qdrant collection — the prior interactive `y/N`
+overwrite guard was removed because the payload schema changed
+(bboxes field added) and merging new-schema points alongside old-schema
+ones isn't clean. Adding the guard back as an opt-out flag is a
+candidate small follow-up.
+
+### Findings to add to the running list
+
+- **Visual plausibility is not visual correctness.** A renderer that
+  produces tight, plausible-looking highlights can be silently showing
+  a fraction of what was retrieved. The diagnostic that catches this
+  is "compare what's stored to what's rendered" — not "does the output
+  look reasonable."
+
+- **When all hypotheses point to a bug, consider that the system might
+  be working correctly and the assumption is wrong.** Coverage at 42%
+  isn't a bug; it's what 512-word chunks look like on a PDF page. The
+  bug-hunting frame almost cost an unnecessary re-embed.
+
+- **Chunk size is a UX parameter, not just a retrieval parameter.**
+  512 words is a defensible retrieval choice and a poor citation-display
+  choice. The two design pressures point in different directions and
+  the resolution isn't to pick one — it's to decouple them (retrieve at
+  one granularity, display at another).
+
+- **Storage decisions made early are expensive to undo.** Phase 1
+  stored line-level bboxes without per-word character offsets. That was
+  a defensible choice for a line-level renderer. It's now the constraint
+  that makes 1.2g a 6–8 hour task instead of a 30-minute one. For any
+  future RAG pipeline with PDF citation: preserve word-level bbox
+  granularity in storage even if the default renderer only draws
+  line-level. The marginal storage cost is small; reconstruction later
+  is significant.
+
+- **Diagnostic scripts are first-class artifacts.** `scripts/diagnose_chunk_bboxes.py`
+  resolved in one run what would have been hours of speculation. Worth
+  building the diagnostic before the visual verification, not after,
+  whenever the pipeline involves stored intermediate state.
+
+### 1.2g scope (next, deferred until after Phase 4)
+
+Reconstruct word-to-bbox alignment at highlight time using
+`PyMuPDF.page.get_text("words")`. Embed-rank sentences within the
+retrieved chunk against the query. Render only the top-sentence bboxes.
+Keep the full chunk as LLM context — only the highlight target changes.
+
+Main risks already named: two-column reading order, sentence splitting
+on compliance text, word-to-chunk fuzzy alignment for whitespace and
+hyphenation. Estimated 6–8 hours. Two-column risk most likely to
+expand scope.
+
+### Closing observation: the gap between "verified" and "correct"
+
+End-to-end verification confirmed bboxes flow from chunking pipeline
+→ Qdrant → agent → API → renderer. Every stage was correct. The
+feature is verified.
+
+The feature is also not what users expected when they clicked "view
+source." Both statements are true. The verification we ran answered
+"does the wiring work" — it didn't answer "does the output match user
+expectation." Those are different questions and they need different
+tests.
+
+For 1.2g the verification needs to include a user-expectation check,
+not just a wiring check. Something like: given a question with a
+known answer sentence, does the highlight land on that sentence?
+Boolean pass/fail per question, not "does it look reasonable."
+
+That's the test the next session should design before writing code.
+
+---
