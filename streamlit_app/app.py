@@ -19,6 +19,12 @@ st.set_page_config(
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    st.page_link("pages/1_Compliance_Risk_Overview.py", label="📊 Overview", icon=None)
+    st.page_link("pages/2_Rep_HCP_Network.py",          label="🕸️ Rep–HCP Network", icon=None)
+    st.page_link("pages/3_HCP_Explorer.py",             label="🔎 HCP Explorer", icon=None)
+    st.page_link("pages/4_HCP_Detail.py",               label="👤 HCP Detail", icon=None)
+    st.page_link("pages/5_Policy_QA.py",                label="📋 Policy Q&A", icon=None)
+    st.markdown("---")
     st.markdown("## 🔍 Compliance Risk AI")
     st.markdown("---")
 
