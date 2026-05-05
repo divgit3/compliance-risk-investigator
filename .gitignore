@@ -9,6 +9,7 @@ __pycache__/
 
 # Environment variables
 .env
+docker/.env
 
 # Data (too large for Git)
 data/raw/
@@ -56,13 +57,13 @@ pipelines/dbt_project/*.duckdb
 pipelines/dbt_project/*.duckdb-shm
 pipelines/dbt_project/*.duckdb-wal
 lib/
-docker/.env
-.env
-docker/.env
 .venv_py39_snapshot.txt
 mlflow.db
 .venv_py312_install.txt
 backups/
+
+# Personal operational notes (kept locally, not committed)
+LOCAL_SETUP_NOTES.md
 
 # Evaluation smoke test artifacts
 evaluation/policy_ragas/stage2_smoke_results/
