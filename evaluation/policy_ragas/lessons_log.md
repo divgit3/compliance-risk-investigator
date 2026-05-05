@@ -3971,3 +3971,107 @@ Boolean pass/fail per question, not "does it look reasonable."
 That's the test the next session should design before writing code.
 
 ---
+## 2026-05-05 (Tuesday evening) → 2026-05-06 (Wednesday morning) — 1.2g UI verification, dual-query attempt and revert, prompt-layer fix
+
+Two-day arc covering 1.2g shipping verification through retrieval ranking debugging. Started with "function tests passed, let's UI-verify and ship" and ended with three commits, one revert, and a partial fix shipped honestly. The session crossed three sub-arcs: env var propagation surfacing during UI verification, dual-query retrieval attempt that passed unit tests and failed production, and prompt-layer fix that addressed the actual cause but revealed deeper chunking issues. Worth writing as one entry because the three sub-arcs are causally connected — each one's findings shaped the next attempt.
+
+### Sub-arc A — 1.2g UI verification surfaces missing env var
+
+After 1.2g function tests passed clean (29/29) on Tuesday evening, UI verification was the gate before push. Ran the four canonical queries through Streamlit. Result was striking — Q1 highlighted essentially every line of the Nova Pharma synthetic policy page yellow. Worse than 1.2f's whole-chunk highlight. Q3 showed broad highlighting across multiple chunks instead of single-bullet precision. The cleanest result was Q4 (TOPIC ABSENT) — refusal short-circuit fired correctly, no rectangles drawn.
+
+Almost made the revert call. The plan from yesterday was clear: if testing surfaces issues, revert to citation-only display rather than ship below the shipping bar. Specifically the bar was "full sentences only" and the highlights were demonstrably not sentence-level.
+
+Took a 30-minute time-box to diagnose before committing to revert. Three hypotheses: validation fallback firing universally, wiring issue with the new code not being called, or bbox math broken. Cursor's diagnostic checked all three with read-only commands. Result was hypothesis 1 with a specific cause: the Streamlit container was missing `OPENAI_API_KEY`. Every embedding call inside `score_sentences()` failed on missing credentials, exception was caught as a generic embedding failure, and `sentence_highlight()` returned the whole-chunk fallback path. Every query in production hit this path because the container had no key.
+
+Fix was one line — add `OPENAI_API_KEY=${OPENAI_API_KEY}` to the streamlit service environment block in `docker-compose.yml`. After container restart, re-running the four queries showed actual sentence-level highlighting. Q3 in particular went from broad multi-bullet highlighting to a single tight rectangle on the venue bullet. The architecture was correct all along; the deployment was missing a dependency.
+
+The retrieval ranking observation also surfaced during this verification — Q1 and Q2 both ranked the directly-answer-containing chunk at #2, not #1. Logged as out-of-scope for 1.2g but flagged for follow-up.
+
+### Sub-arc B — Dual-query retrieval attempt, function tests pass, production fails
+
+Wednesday morning. Decided to address the retrieval ranking inversion before moving to 1.3 hygiene. The diagnostic from Tuesday evening had localized the cause: the LangChain agent reformulates user questions before calling `search_policy_docs`. "What is the annual meal cap per HCP at Nova Pharma?" became "annual meal limit HCP". The shorter form lost discriminating vocabulary — chunks containing "annual" + "cap" + "HCP" in dense form (Section 3.2 Annual Speaker Fee Cap) outranked chunks containing the actual meal cap.
+
+Three options surfaced: override agent's tool input (breaks abstraction), prompt-layer fix (1c, brittle), search both queries and merge by max score (1b, defense-in-depth). Picked 1b because it doesn't depend on agent obedience — works regardless of how the agent reformulates.
+
+Threading mechanism for getting the raw question into the tool: `contextvars.ContextVar`. Set in `PolicyAgent.query()` before `run_in_executor`, reset in finally block. Python's PEP 567 async context propagation copies bindings into executor threads automatically. Cursor evaluated four threading options and picked ContextVar specifically because it required no agent prompt changes and no tool schema changes.
+
+Audit-first pattern held. Cursor read the full call path, confirmed the threading mechanism would work in principle (PEP 567 propagation through `run_in_executor`), implemented with token-based reset for request scoping. Four unit tests covering single-query backward compatibility, inversion correction, ranking preservation, and merge-by-max with both winners. All four passed. Seven UI verification queries passed including the canonical Q1 — chunk_0000 ranked #1 at 0.6881.
+
+Committed (982a5ad) and pushed.
+
+Then ran the curl test from outside Streamlit to verify production behavior. The api returned chunk_0001 at 0.5143 ranking #1 — the same inversion as before the fix. Function tests passed, push happened, production behavior was unchanged.
+
+The diagnostic that followed was the single most important piece of work in the two-day arc. Added temporary logging at `search_policy_docs` entry, in `_dual_search` helpers, and in `PolicyAgent.query()` before `run_in_executor`. Restarted the api container. Ran the failing query.
+
+Logs showed:
+
+```
+policy_agent.query: setting _raw_question_ctx to 'What is the annual meal cap...'
+search_policy_docs CALLED: agent_query='annual meal limit for HCPs', raw_question=None
+DIAGNOSTIC: raw_question is None — ContextVar did not propagate
+```
+
+The ContextVar set correctly. By the time `search_policy_docs` ran inside LangChain's tool execution, the value was None. Cursor's interpretation: LangChain's `AgentExecutor` runs tools through its own execution layer that creates a fresh context independent of the outer `run_in_executor`. The default value of None won — the dual-query branch was never reached. Single-query mode ran with just the agent's reformulated query, producing the same scores as before the fix.
+
+Reverted via `git revert 982a5ad`. The revert removed everything 982a5ad had added — including the `OPENAI_API_KEY` line in `docker-compose.yml` that had been bundled into the same commit. Caught this before pushing the revert. Cherry-picked the docker-compose change back as a separate commit (c22b712), pushed both. The shape ended up clean: original broken commit, revert that undid it, separate commit preserving the env var fix.
+
+### Sub-arc C — Prompt-layer fix that addressed the actual cause
+
+After the revert, three options remained: try a different threading mechanism (RunnableConfig — LangChain's official metadata-passing surface), try prompt-layer instruction (option 1c from earlier), or accept the inversion as known issue. Picked 1c. Smaller blast radius, faster verification, and the failed sub-arc B taught us something specific that changed the calculation.
+
+Cursor's audit for 1c was the moment that reframed everything. The audit found:
+
+1. The `search_policy_docs` docstring said: "Use broad regulatory and policy language in your query — avoid internal flag names like 'flag_fmv_non_compliance'. Use the policy concept instead." Plus eight keyword-style example queries, all of which templated paraphrasing as the correct behavior.
+
+2. The system message tool-call-order block said: "Call search_policy_docs with broad regulatory language (not internal flag names)."
+
+3. The per-question prompt had no instruction about how to construct the search query — just generic "use search_policy_docs to find relevant policy chunks."
+
+The agent wasn't reformulating because of some intrinsic LLM behavior. It was reformulating because we were explicitly telling it to. Three places, all wrong-directional.
+
+This is the part worth writing honestly: yesterday and this morning we treated agent reformulation as an unavoidable property of the agent and tried to compensate with threading mechanisms. The audit showed it was a property of the prompts. We were fighting our own instructions.
+
+The fix was:
+
+1. Replace the docstring's "broad regulatory language" instruction with: "IMPORTANT: Pass the user's question VERBATIM as the query parameter. Do NOT paraphrase, summarize, shorten, or extract keywords."
+2. Replace all 8 keyword-style examples with one full-question example.
+3. Update the system message to instruct verbatim passing.
+4. Add a per-question prompt sentence right after the question is introduced: "When calling search_policy_docs, pass the question above verbatim as the query."
+
+Defense in depth — three coordinated instruction surfaces.
+
+Verification was strict this time: integration test via curl, not unit tests. The diagnostic logger Cursor added showed all five test queries went verbatim — character-for-character identical to the user input. Canonical query: chunk_0000 ranked #1 at 0.6881. Score matched the diagnostic baseline of embedding the raw question directly against Qdrant, confirming the agent was no longer reformulating.
+
+Then the UI sanity check. Submitted "What is the annual meal cap for HCPs?" — without "at Nova Pharma." Citation #1 was the wrong chunk at score 0.50. The inversion was back.
+
+The agent was passing this query verbatim too (logger confirmed). The issue wasn't agent behavior. It was that without "Nova Pharma" in the question, the embedding distributed weight across "annual / meal / cap / HCP" tokens, and chunk_0001 (which opens with Section 3.2 Annual Speaker Fee Cap, dense in those tokens) outranked chunk_0000 (whose ~300 chars of synthetic-document boilerplate header diluted its embedding).
+
+The dilution finding had been in Cursor's original retrieval diagnostic two days ago. We hadn't fixed it, only fixed the agent reformulation that was masking it.
+
+### The decision to ship partial
+
+Three honest options at this point: ship the prompt fix as-is with a known-limitation note (option A), do focused chunking work to address the dilution (option B), defer everything to a future iteration (option C).
+
+The reflexive answer was option B — "let's fix it correctly." But "correctly" turned out to be bigger than narrow re-chunking of DOC_002. The real correctness target included section-aware chunking instead of fixed-size sliding windows, generic boilerplate detection, hybrid retrieval (BM25 + vector), cross-encoder reranking, possibly a larger embedding model. That's an 8-15+ hour piece of work, not a tack-on to a debugging session.
+
+The honest framing landed: doing chunking properly *as part of fixing today's bug* is opportunistic. The right time to design good chunking architecture is from a clean starting point with focused attention, not at hour 8 of a debugging session. Option A (commit partial fix, defer chunking) is the senior engineering move — it knows when to stop and document.
+
+Committed the prompt fix with a "Known limitation" paragraph in the message that names exactly what was fixed and what wasn't. The chunking work goes to FUTURE_WORK.md as a candidate for Phase 5 or for a standalone "RAG retrieval and citation precision" project.
+
+### Findings to add to running list
+
+- **Function tests passed but UI broke — twice in 48 hours.** Sentence highlighting passed 29/29 unit tests but production hit whole-chunk fallback because OPENAI_API_KEY wasn't propagated to the Streamlit container. Dual-query retrieval passed 29/29 unit tests but production showed unchanged inversion because LangChain's AgentExecutor doesn't propagate Python async context to tools. Both bugs lived in layers below the code: environment configuration in case 1, framework execution model in case 2. The lesson is operational: for fixes touching framework integration points or environment dependencies, function-level tests are necessary but not sufficient. The gate is integration behavior — curl against the running api, container env grep, actual deployed surface. After this session, the verification protocol explicitly includes integration testing as a separate layer for any fix that adds a framework dependency or environment variable.
+
+- **Audit-first surfaces wrong-direction instructions.** Two days of debugging treated agent query reformulation as inherent agent behavior. The audit for the prompt fix took 20 minutes and found three places where prompts were *explicitly instructing* the agent to paraphrase. The fix was removing the wrong instructions, not adding new mechanisms to compensate for them. Generalizable lesson: when something looks like inherent framework behavior, audit the prompts/configuration before assuming framework-level workarounds. The instruction layer is often where the actual cause lives.
+
+- **Bundling unrelated changes into one commit creates revert pain.** Commit 982a5ad bundled the dual-query retrieval fix with the Streamlit OPENAI_API_KEY config fix. When the retrieval fix had to be reverted, the env var fix went with it. Cherry-picked the env var change back as a separate commit, but only because we caught it during `git show HEAD --stat` review. Lesson: config changes (docker-compose, .env, requirements) get separate commits from code changes. Even when they "belong together" in the broader task, they belong in separate commits because they have different reversibility profiles.
+
+- **The diagnostic is the win, sometimes more than the fix.** The dual-query attempt's diagnostic — temporary logging that proved ContextVar didn't propagate through LangChain's tool runner — was more valuable than any fix that would have come from continuing to push that approach. It directly informed the decision to abandon ContextVar threading and try the prompt layer instead. Without that specific diagnostic, we might have spent another session trying RunnableConfig (which uses the same async context mechanism and would likely fail the same way). When function tests pass and production fails, the diagnostic is the next deliverable, not another fix attempt.
+
+- **"Correct" is bigger than the bug you're debugging.** When asked to optimize for correctness rather than time, the answer wasn't "do option B harder" — it was "the correct chunking architecture is a focused 8-15 hour piece of work, not a tack-on to today's debugging session." Senior engineering judgment includes recognizing when the right time to do something properly is later, with focused attention, rather than now opportunistically. The prompt fix that shipped is genuinely correct for what it addresses; what it doesn't address is appropriately scoped to a separate effort.
+
+- **Time-boxes work when paired with explicit fallback decisions.** The 30-minute time-box for diagnosing 1.2g UI failures held because the fallback (revert to citation-only) was pre-decided. Same for the 60-minute time-box on the dual-query diagnostic. When the time runs out and the fix isn't working, having the fallback decision already made eliminates "let me just try one more thing" pressure. The hard part isn't setting time-boxes; it's pre-committing to what happens when they expire.
+
+- **REFUSAL_PHRASES list maintenance is a hidden dependency.** Phrase-match refusal detection in 1.2g was verified against real production agent output (the answer to "What is Nova Pharma's policy on telehealth prescribing?"). The list works for the current agent prompt and current LLM. If either changes — new prompt, model upgrade — the phrases may go stale silently. Score-threshold backstop catches the worst case but the fundamental robustness depends on phrase list freshness. Worth a periodic re-verification ritual rather than treating it as one-and-done.
+
+- **The boilerplate dilution is a property of the document, not the embedding model.** DOC_002 has ~300 chars of synthetic-document boilerplate ("SYNTHETIC DOCUMENT - NOT REAL", "NOVA PHARMA INC.", "HCP ENGAGEMENT AND COMPLIANCE POLICY", page footers) at the top of every page. This dilutes the embedding such that even chunks containing the right answer score lower than chunks without dilution. The fix isn't a bigger embedding model or a different chunking size — it's removing repetitive content that doesn't carry semantic signal. Real-world pharma policies don't have "SYNTHETIC - NOT REAL" repeated, but they often do have repeated headers, footers, watermarks, classification notices. The dilution finding generalizes to any document with substantial repeated boilerplate.
