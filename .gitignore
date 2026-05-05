@@ -66,3 +66,4 @@ backups/
 
 # Evaluation smoke test artifacts
 evaluation/policy_ragas/stage2_smoke_results/
+FUTURE_WORK.md
