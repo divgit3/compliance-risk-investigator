@@ -61,6 +61,7 @@ services:
       - "8502:8502"
     environment:
       - API_BASE_URL=http://api:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on:
       api:
         condition: service_healthy
