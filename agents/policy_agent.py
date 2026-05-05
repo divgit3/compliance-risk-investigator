@@ -108,8 +108,9 @@ class PolicyAgent:
                 "Tool call order:\n"
                 "1. Call lookup_rule first for any question involving a threshold,\n"
                 "   dollar amount, or named rule\n"
-                "2. Call search_policy_docs with broad regulatory language (not\n"
-                "   internal flag names)\n\n"
+                "2. Call search_policy_docs with the user's question verbatim\n"
+                "   (do not paraphrase or shorten). Translate internal flag\n"
+                "   names to policy concepts only if the user used them.\n\n"
                 "CRITICAL — scope verification before answering:\n"
                 "Every rule returned by lookup_rule includes a `scope` field with\n"
                 "`time_scope` (annual, monthly, weekly, daily, per_event_or_per_instance,\n"
@@ -746,10 +747,11 @@ If grounded is true, ungrounded_claims should be an empty list."""
         try:
             prompt = (
                 f"Answer this compliance question for Nova Pharma Inc: {question}\n"
-                "Use search_policy_docs to find relevant policy chunks from the "
-                "knowledge base. Use lookup_rule to find exact thresholds from "
-                "the rules registry. Cite specific chunk_ids and rule_ids in "
-                "your answer. Compare Nova Pharma policy against PhRMA Code "
+                "When calling search_policy_docs, pass the question above "
+                "verbatim as the query. Do not paraphrase or summarize it. "
+                "Use lookup_rule to find exact thresholds from the rules "
+                "registry. Cite specific chunk_ids and rule_ids in your "
+                "answer. Compare Nova Pharma policy against PhRMA Code "
                 "where relevant."
             )
 

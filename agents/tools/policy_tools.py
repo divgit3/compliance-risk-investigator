@@ -84,24 +84,25 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
     Search the Nova Pharma policy document knowledge base for relevant compliance
     guidance using semantic similarity.
 
+    IMPORTANT: Pass the user's question VERBATIM as the `query` parameter. Do NOT
+    paraphrase, summarize, shorten, or extract keywords. The retrieval system
+    performs better with the full natural-language question. If the user asked
+    'What is the annual meal cap per HCP at Nova Pharma?', pass that exact string
+    to `query` — not 'annual meal limit HCP' or any shortened form.
+
+    Edge case: if the user's question references internal flag names (e.g.,
+    'flag_fmv_non_compliance'), translate those to policy concepts in the query.
+    For all other questions, pass the question verbatim.
+
     Embeds the query with OpenAI text-embedding-3-small and searches the Qdrant
     policy_docs collection (128 chunks from PhRMA Code 2022, OIG CPG, OIG Speaker
     Fraud Alert, CMS Data Dictionary, and Nova Pharma Internal Policy).
 
     Use this tool to ground compliance findings in specific policy language.
 
-    Use broad regulatory and policy language in your query — avoid internal flag
-    names like 'flag_fmv_non_compliance'. Use the policy concept instead.
-
-    Example queries that return strong results:
-      - "pharmaceutical representative meal entertainment limit"
-      - "fair market value speaker honoraria"
-      - "anti-kickback statute speaker program"
-      - "documentation requirements HCP interaction"
-      - "OIG compliance program pharmaceutical manufacturer"
-      - "speaker program fraud risk indicators repeat speaker"
-      - "business rationale documentation interaction record"
-      - "annual honoraria cap speaker engagement limit"
+    Example: query='What is the annual meal cap per HCP at Nova Pharma?' returns
+    chunks from Nova Pharma Internal Policy relevant to meal limits and HCP
+    compensation caps.
 
     Returns a list of matching chunks with chunk_id, source_doc, relevance_score,
     and the full chunk text as excerpt. Returns empty results list if no chunks
