@@ -327,8 +327,14 @@ if history:
                                 if b.get("page_num") == _cur_page
                             )
 
+                            _answer_text = latest.get("answer", "")
+                            _chunk_text  = cit.get("excerpt", "")
                             _result = render_pdf_page(
-                                source, _cur_page, bboxes_for_page=_page_bboxes
+                                source,
+                                _cur_page,
+                                bboxes_for_page=_page_bboxes,
+                                answer_text=_answer_text,
+                                chunk_text=_chunk_text,
                             )
                             if _result is not None:
                                 _img_bytes, _meta = _result
@@ -339,20 +345,24 @@ if history:
                                 _doc_label = source.replace(".pdf", "").replace("_", " ")
                                 if _on_original:
                                     _caption = f"Page {_cur_page} of {_doc_label}"
-                                    if _hs == "none":
-                                        _caption += " · no chunk highlight"
                                 else:
                                     _caption = (
                                         f"Page {_cur_page} of {_doc_label}"
                                         f" · continued from page {_original_page}"
                                     )
-                                    if _hs == "none":
-                                        _caption += " (no highlight)"
                                 st.caption(_caption)
-                                if _hs == "full":
+                                if _hs == "sentence":
                                     st.caption(
-                                        "Highlighted region shows the full retrieved chunk (~512 words). "
-                                        "Sentence-level highlighting is planned (issue 1.2g)."
+                                        "Highlighted: top-2 sentences most similar to the agent's answer"
+                                    )
+                                elif _hs == "full":
+                                    st.caption(
+                                        "Sentence highlighting unavailable for this chunk"
+                                        " — full chunk highlighted"
+                                    )
+                                elif _hs == "none":
+                                    st.caption(
+                                        "No specific sentence matched — full chunk text available below"
                                     )
                                 if _pdf_url:
                                     st.markdown(

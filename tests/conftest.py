@@ -59,12 +59,19 @@ def _init_app_state() -> None:
     # Non-agent tests never call agent endpoints, so None is safe.
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if api_key and not api_key.startswith("sk-test"):
-        from agents.investigation_agent import InvestigationAgent
-        from agents.monitoring_agent    import MonitoringAgent
-        from agents.policy_agent        import PolicyAgent
-        set_agent("investigation", InvestigationAgent(openai_api_key=api_key))
-        set_agent("monitoring",    MonitoringAgent(openai_api_key=api_key))
-        set_agent("policy",        PolicyAgent(openai_api_key=api_key))
+        try:
+            from agents.investigation_agent import InvestigationAgent
+            from agents.monitoring_agent    import MonitoringAgent
+            from agents.policy_agent        import PolicyAgent
+            set_agent("investigation", InvestigationAgent(openai_api_key=api_key))
+            set_agent("monitoring",    MonitoringAgent(openai_api_key=api_key))
+            set_agent("policy",        PolicyAgent(openai_api_key=api_key))
+        except ImportError:
+            # LangChain version mismatch — agent tests will fail but non-agent
+            # tests (including sentence-highlighting tests) are unaffected.
+            set_agent("investigation", None)
+            set_agent("monitoring",    None)
+            set_agent("policy",        None)
     else:
         set_agent("investigation", None)
         set_agent("monitoring",    None)
