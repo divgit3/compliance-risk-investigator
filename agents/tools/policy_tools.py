@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -46,12 +45,6 @@ _QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 _COLLECTION        = "policy_docs"
 _EMBEDDING_MODEL   = "text-embedding-3-small"
 _EMBEDDING_DIM     = 1536
-
-# Threads the raw user question from PolicyAgent.query() to search_policy_docs
-# without modifying the tool's LangChain schema or the agent prompt. The
-# ContextVar is set in the async caller before run_in_executor; Python copies
-# the current context into the spawned thread automatically (PEP 567 / 3.7+).
-_raw_question_ctx: ContextVar[str | None] = ContextVar("raw_question", default=None)
 
 # Module-level singletons — initialised on first call
 _qdrant_client: Optional[QdrantClient] = None
@@ -85,98 +78,6 @@ def _embed(text: str) -> list[float]:
     return response.data[0].embedding
 
 
-def _embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed multiple texts in a single API call, returned in input order."""
-    client = _get_openai()
-    response = client.embeddings.create(
-        model=_EMBEDDING_MODEL,
-        input=texts,
-        dimensions=_EMBEDDING_DIM,
-    )
-    return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
-
-
-def _qdrant_search(vector: list[float], limit: int) -> list:
-    """Run one Qdrant ANN search, handling qdrant-client version differences."""
-    qdrant = _get_qdrant()
-    try:
-        return qdrant.query_points(
-            collection_name=_COLLECTION,
-            query=vector,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        ).points
-    except AttributeError:
-        return qdrant.search(
-            collection_name=_COLLECTION,
-            query_vector=vector,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        )
-
-
-def _hit_to_dict(hit, score: float) -> dict:
-    """Convert a Qdrant ScoredPoint to the search_policy_docs result schema."""
-    payload = hit.payload or {}
-    raw_text   = payload.get("text") or payload.get("content") or ""
-    source_doc = payload.get("filename") or payload.get("doc_id") or "unknown"
-    return {
-        "chunk_id":           payload.get("chunk_id", str(hit.id)),
-        "source_doc":         source_doc,
-        "authority":          payload.get("authority", "unknown"),
-        "relevance_score":    round(float(score), 4),
-        "excerpt":            raw_text.replace("\n", " ").strip(),
-        "page_num":           payload.get("page_num"),
-        "bboxes":             payload.get("bboxes") or [],
-        "section_heading":    payload.get("section_heading", ""),
-        "chunk_start_offset": payload.get("chunk_start_offset"),
-        "chunk_end_offset":   payload.get("chunk_end_offset"),
-    }
-
-
-def _dual_search(agent_query: str, raw_question: str, top_k: int) -> list[dict]:
-    """
-    Embed both the agent's reformulated query and the raw user question,
-    search Qdrant independently with each, then merge by max score per chunk.
-
-    Oversamples at top_k * 2 so cross-query winners aren't excluded before merge.
-    Tie-breaking at equal max score: prefers raw-question search order.
-    """
-    oversample = top_k * 2
-    agent_vec, raw_vec = _embed_batch([agent_query, raw_question])
-    results_agent = _qdrant_search(agent_vec, oversample)
-    results_raw   = _qdrant_search(raw_vec,   oversample)
-
-    # merged[chunk_id] = {"score": float, "hit": point, "raw_rank": int}
-    merged: dict[str, dict] = {}
-
-    for hit in results_agent:
-        payload = hit.payload or {}
-        cid = payload.get("chunk_id", str(hit.id))
-        merged[cid] = {
-            "score":    hit.score,
-            "hit":      hit,
-            "raw_rank": len(results_raw),  # worst possible — not seen by raw search
-        }
-
-    for i, hit in enumerate(results_raw):
-        payload = hit.payload or {}
-        cid = payload.get("chunk_id", str(hit.id))
-        if cid in merged:
-            if hit.score > merged[cid]["score"]:
-                merged[cid]["score"] = hit.score
-            # Always record the raw rank for tie-breaking, even when agent score wins
-            merged[cid]["raw_rank"] = i
-        else:
-            merged[cid] = {"score": hit.score, "hit": hit, "raw_rank": i}
-
-    # Score desc; raw_rank asc breaks ties in favour of raw-question ordering
-    ranked = sorted(merged.values(), key=lambda x: (-x["score"], x["raw_rank"]))
-    return [_hit_to_dict(entry["hit"], entry["score"]) for entry in ranked[:top_k]]
-
-
 @tool
 def search_policy_docs(query: str, top_k: int = 3) -> dict:
     """
@@ -208,15 +109,52 @@ def search_policy_docs(query: str, top_k: int = 3) -> dict:
     """
     try:
         query = query.strip().strip("'\"")
-        raw_question = _raw_question_ctx.get()
+        qdrant = _get_qdrant()
+        vector = _embed(query)
 
-        if raw_question is not None and raw_question.strip() != query:
-            # Dual-query mode: merge results from agent reformulation and raw question
-            hits = _dual_search(query, raw_question, top_k)
-        else:
-            # Single-query mode: current behaviour, unchanged
-            hits = [_hit_to_dict(hit, hit.score)
-                    for hit in _qdrant_search(_embed(query), top_k)]
+        try:
+            # qdrant-client >= 1.7: use query_points
+            results = qdrant.query_points(
+                collection_name=_COLLECTION,
+                query=vector,
+                limit=top_k,
+                with_payload=True,
+                with_vectors=False,
+            ).points
+        except AttributeError:
+            # fallback for older qdrant-client versions
+            results = qdrant.search(
+                collection_name=_COLLECTION,
+                query_vector=vector,
+                limit=top_k,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+        hits = []
+        for hit in results:
+            payload = hit.payload or {}
+            raw_text = payload.get("text") or payload.get("content") or ""
+            excerpt  = raw_text.replace("\n", " ").strip()
+
+            source_doc = (
+                payload.get("filename")
+                or payload.get("doc_id")
+                or "unknown"
+            )
+
+            hits.append({
+                "chunk_id":           payload.get("chunk_id", str(hit.id)),
+                "source_doc":         source_doc,
+                "authority":          payload.get("authority", "unknown"),
+                "relevance_score":    round(float(hit.score), 4),
+                "excerpt":            excerpt,
+                "page_num":           payload.get("page_num"),
+                "bboxes":             payload.get("bboxes") or [],
+                "section_heading":    payload.get("section_heading", ""),
+                "chunk_start_offset": payload.get("chunk_start_offset"),
+                "chunk_end_offset":   payload.get("chunk_end_offset"),
+            })
 
         # Filter applied once after all hits collected — not inside the loop
         MIN_RELEVANCE = 0.0

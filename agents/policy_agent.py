@@ -29,12 +29,7 @@ from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_openai import ChatOpenAI
 
 from agents.schemas import BBox, NovaVsPhRMA, PolicyAnswer, PolicyCitation
-from agents.tools.policy_tools import (
-    lookup_rule,
-    search_policy_docs,
-    list_rule_dimensions,
-    _raw_question_ctx,
-)
+from agents.tools.policy_tools import lookup_rule, search_policy_docs, list_rule_dimensions
 
 # ── MLflow config ──────────────────────────────────────────────────────────────
 
@@ -758,14 +753,10 @@ If grounded is true, ungrounded_claims should be an empty list."""
                 "where relevant."
             )
 
-            token = _raw_question_ctx.set(question)
-            try:
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self.executor.invoke({"input": prompt}),
-                )
-            finally:
-                _raw_question_ctx.reset(token)
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.executor.invoke({"input": prompt}),
+            )
 
             steps      = result.get("intermediate_steps", [])
             llm_output = result.get("output", "")
