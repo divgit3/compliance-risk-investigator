@@ -11,7 +11,7 @@
 
 A compliance analytics platform that detects anomalies in pharmaceutical HCP interactions using real CMS Open Payments data and synthetic internal records. Scores 97K HCPs with a rule-based + Isolation Forest dual detection engine, grounds all flags in policy documents via RAG, and serves structured compliance reports through a FastAPI backend backed by three LangChain AI agents.
 
-> **Data Notice:** All HCP identities are pseudonymized. Nova Pharma Inc is a fictional company (based on Takeda publicly reported data). No real proprietary data is used. CMS Open Payments data is public, sourced from [cms.gov](https://www.cms.gov/priorities/innovation/data-and-reports/2023/openpayments-data).
+> **Data Notice:** All HCP identities are pseudonymized. Nova Pharma Inc is a fictional company. No real proprietary data is used. CMS Open Payments data is public, sourced from [cms.gov](https://www.cms.gov/priorities/innovation/data-and-reports/2023/openpayments-data).
 
 ---
 
