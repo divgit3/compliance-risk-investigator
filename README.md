@@ -17,9 +17,11 @@ A production-style compliance analytics platform that detects anomalies in pharm
 
 ## Built by
 
-Built by Divya Rajaraman as a portfolio piece — regulated-industry engineering practices applied to pharma HCP compliance in a modern AI agent stack.
+Built by Divya Rajaraman as a portfolio project — regulated-industry engineering practices applied to pharma HCP compliance in a modern AI agent stack.
 
 [LinkedIn](https://www.linkedin.com/in/divyarajaraman)
+
+![Compliance Risk Overview dashboard](docs/screenshots/01-compliance-risk-overview.png)
 
 ---
 
@@ -62,11 +64,15 @@ Phase 4 — Streamlit Dashboard
 
 **Policy grounding.** Business rules are extracted from policy documents via RAG — not hardcoded — ensuring every flag is traceable to a specific policy chunk. 24 rules across 5 documents (PhRMA Code 2022, OIG CPG, OIG Speaker Fraud Alert, CMS Data Dictionary, Nova Pharma Internal Policy). 8 Nova Pharma overrides are stricter than the PhRMA baseline; thresholds (meal limit $25/$50/$100, speaker FMV $3,500, annual cap $75,000) stored in `compliance/rules.json` with full citation provenance.
 
+![Policy Q&A with grounded citations](docs/screenshots/08-policy-qa-answer-with-citations.png)
+
 **AI agents.** Three LangChain agents on OpenAI GPT-4o-mini: **InvestigationAgent** produces per-HCP compliance reports with policy citations and SHAP feature drivers; **MonitoringAgent** runs population-level risk analysis and cohort trending; **PolicyAgent** answers natural-language compliance questions via Qdrant RAG with Nova Pharma vs. PhRMA comparisons and chunk-level citations.
+
+![HCP Detail page with SHAP explanations](docs/screenshots/06-hcp-detail-shap.png)
 
 **API + dashboard.** Nine FastAPI endpoints expose risk profiles, rule flags, agent reports, and benchmarks. A 5-page Streamlit dashboard presents compliance risk visually: population KPIs, an interactive rep–HCP network graph, paginated HCP explorer, per-HCP drill-down with SHAP explanations, and a RAG-powered Policy Q&A panel.
 
-<!-- TODO: add dashboard screenshot -->
+![Rep–HCP network graph with focus state](docs/screenshots/05-rep-hcp-network-focused.png)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -91,13 +97,15 @@ The 1.2 arc focused on the engineering that distinguishes a working demo from a 
 
 **Sentence-level citation highlighting.** The Policy Q&A panel maps agent answers back to specific sentences in source PDF documents. A coordinate pipeline extracts line-level bounding boxes during embedding; the renderer applies a two-stage approach — citation chunk display plus sentence-level highlight overlay. A score-threshold backstop handles TOPIC ABSENT cases where no high-confidence sentence match exists, preventing spurious highlights.
 
-<!-- TODO: add policy Q&A screenshot with sentence highlighting -->
+![Sentence-level citation highlighting in source PDF](docs/screenshots/09-policy-qa-sentence-highlighting.png)
 
 **Retrieval ranking debugging.** Discovered that LangChain agent query reformulation was inverting retrieval ranking on specifically-phrased questions — paraphrasing loses the discriminating vocabulary in the original question. Diagnosed the failure through LangChain's async executor boundaries (a ContextVar-based fix passed unit tests but failed in production because the framework's tool runner doesn't inherit the caller's execution context). Addressed via prompt-layer instruction to pass user questions verbatim. Documented embedding dilution from synthetic-document boilerplate as a separately-scoped follow-on rather than over-extending the fix.
 
 **RAGAS evaluation framework.** 15 Q&A pairs across 7 compliance categories, evaluated against three judge metrics: Faithfulness (≥0.75), Response Relevancy (≥0.75), Context Precision (≥0.60). Offline replay mode re-runs evaluations against cached LLM responses for reproducibility; CI gates enforce thresholds; latency P95 tracked per run.
 
 **Post-processor architecture.** `agents/post_processors/` provides output hardening before responses reach the user: an over-narration safety net for TOPIC ABSENT answers and a scope-mismatch detector that catches responses bleeding outside designated agent boundaries.
+
+![Policy Q&A refusal handling for out-of-scope query](docs/screenshots/10-policy-qa-topic-absent.png)
 
 **Trustworthy AI evaluation framework.** 11-attribute rubric: Faithfulness, Retrieval Relevance, Groundedness, Graceful Failure, Auditability, Consistency, Latency, Robustness, Calibrated Confidence, Scope Adherence, Reproducibility. Full rubric and measurement methodology in [docs/operations.md](docs/operations.md).
 
@@ -157,7 +165,6 @@ tests/          — Unit and integration tests
 ## Scope & Known Limitations
 
 - **Recall ceiling on dev data.** `recall_high_or_critical` is 0.41 vs. a 0.70 long-term target. The synthetic violation labels have limited correlation with rule flags on the generated distribution — a synthetic-data constraint, not a model capability issue.
-- **Athena dev-mode fallback.** When Athena is offline, peer benchmarks substitute aggregate-population medians for specialty-cohort medians. Dollar-amount benchmark comparisons require a live Athena connection.
 - **No temporal train/test split.** The Isolation Forest is trained on the full dataset; temporal holdout remains on the backlog.
 - **Agent cold-start latency ~30s.** LangChain agent executor initialization is deferred to first request to avoid Docker startup hangs; subsequent calls are faster.
 - **Retrieval ranking on low-specificity questions.** Questions without strong company-specific vocabulary can surface chunks with dense topical text that outranks chunks containing the actual answer. Root cause is embedding dilution from synthetic-document boilerplate. Diagnosis and scope documented in [evaluation/policy_ragas/lessons_log.md](evaluation/policy_ragas/lessons_log.md).
