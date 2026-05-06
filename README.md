@@ -27,32 +27,11 @@ Built by Divya Rajaraman as a portfolio project — regulated-industry engineeri
 
 ## Architecture
 
-```
-Phase 1 — Data ingestion
-  CMS Open Payments CSVs (18GB) ──► S3 ──► Glue ──► Athena
-  Synthetic HCP data (1.1M rows) ──► S3 (Parquet)
-  Policy PDFs (5 docs) ──► S3 ──► Qdrant (128 chunks, 1536-dim)
-           │
-           ▼
-Phase 2 — Anomaly detection
-  dbt transforms ──► feature store (104 features, 97K HCPs)
-  rule_based_flags.py (23 flags) + isolation_forest.py (200 trees)
-  scorer.py ──► risk_scores.parquet (0–100 score, 4 tiers)
-           │
-           ▼
-Phase 3 — AI agents + API                    Qdrant (policy_docs)
-  InvestigationAgent ◄────────────────────────────┤
-  MonitoringAgent    ◄────────────────────────────┤
-  PolicyAgent        ◄────────────────────────────┘
-           │
-  FastAPI (9 endpoints) ──► MLflow audit trail
-           │
-           ▼
-Phase 4 — Streamlit Dashboard
-  5-page compliance UI · Network graph · HCP drill-down · Policy Q&A
-```
+![Compliance Risk Investigator architecture](docs/screenshots/architecture.png)
 
-**Stack:** Python 3.12 · dbt 1.8.3 · DuckDB · AWS S3/Glue/Athena · Qdrant · MLflow 3.10.1 · scikit-learn · SHAP · OpenAI GPT-4o-mini · LangChain · FastAPI · Streamlit · Docker
+## Tech Stack
+
+![Tech stack](docs/screenshots/tech_stack.png)
 
 ---
 
