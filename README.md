@@ -49,6 +49,10 @@ Built by Divya Rajaraman as a portfolio project — regulated-industry engineeri
 
 ![HCP Detail page with SHAP explanations](docs/screenshots/06-hcp-detail-shap.png)
 
+![Investigation Agent compliance report](docs/screenshots/07-hcp-detail-investigation-report.png)
+
+![Monitoring Agent population risk analysis](docs/screenshots/03-compliance-risk-overview-monitoring-agent.png)
+
 **API + dashboard.** Nine FastAPI endpoints expose risk profiles, rule flags, agent reports, and benchmarks. A 5-page Streamlit dashboard presents compliance risk visually: population KPIs, an interactive rep–HCP network graph, paginated HCP explorer, per-HCP drill-down with SHAP explanations, and a RAG-powered Policy Q&A panel.
 
 ![Rep–HCP network graph with focus state](docs/screenshots/05-rep-hcp-network-focused.png)
