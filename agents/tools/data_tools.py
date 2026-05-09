@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 agents/tools/data_tools.py — LangChain tools for querying Phase 2 parquet outputs
 and compliance/rules.json.

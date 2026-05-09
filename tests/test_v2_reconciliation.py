@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """V2 synthetic data reconciliation tests.
 
 Verifies that synthetic dollar amounts reconcile to CMS Open Payments totals

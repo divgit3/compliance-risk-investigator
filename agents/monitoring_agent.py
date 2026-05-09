@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 agents/monitoring_agent.py — Monitoring Agent (Task 3.2)
 

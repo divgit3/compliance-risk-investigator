@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 streamlit_app/pages/1_Compliance_Risk_Overview.py — Population-level compliance risk overview.
 

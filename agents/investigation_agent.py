@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 agents/investigation_agent.py — Investigation Agent (Task 3.1)
 

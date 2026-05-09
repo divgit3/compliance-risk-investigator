@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 agents/test_policy.py — Manual smoke test for PolicyAgent (Task 3.3)
 

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 hcp_spend_features.py
 Phase 2 — HCP spend feature engineering pipeline

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 api/test_api.py — Smoke test for the FastAPI backend (Task 3.4)
 

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 feature_store.py
 Phase 2 — Central feature store: merge, recompute, and validate all features

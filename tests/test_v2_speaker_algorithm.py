@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 tests/test_v2_speaker_algorithm.py — Option W v2 speaker fee algorithm validation
 

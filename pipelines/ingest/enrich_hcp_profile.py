@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 pipelines/ingest/enrich_hcp_profile.py — Enrich feature store with specialty,
 state, and primary_rep_id from processed source data.

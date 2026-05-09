@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 tests/test_sentence_highlighting.py — 1.2g sentence-level highlighting test suite.
 

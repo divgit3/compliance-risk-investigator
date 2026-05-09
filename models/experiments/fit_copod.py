@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 Fit COPOD on the same 97,011-HCP feature matrix used by IsolationForest.
 

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 streamlit_app/pages/4_HCP_Detail.py — Per-HCP investigation report + SHAP explanations.
 

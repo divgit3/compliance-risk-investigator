@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 agents/tools/monitoring_tools.py — LangChain tools for population-level compliance
 monitoring queries (Task 3.2).

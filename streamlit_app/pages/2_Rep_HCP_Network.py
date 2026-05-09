@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 streamlit_app/pages/2_Rep_HCP_Network.py — Rep→HCP relationship network graph.
 

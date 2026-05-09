@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """V2 synthetic data reconciliation — detailed human-readable report.
 
 Run this after any regeneration of the synthetic data to verify that

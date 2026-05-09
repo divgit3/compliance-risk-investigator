@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """Precision/recall/lift evaluation utilities for IF vs rule-score comparison."""
 
 import numpy as np

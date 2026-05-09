@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 streamlit_app/pages/3_HCP_Explorer.py — Browse and filter the full HCP list.
 

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 tests/trustworthy_ai/test_latency.py — Attribute #7: Latency benchmark
 

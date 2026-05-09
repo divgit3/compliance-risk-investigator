@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 models/experiments/model_comparison.py — Phase 2 anomaly detection model comparison.
 

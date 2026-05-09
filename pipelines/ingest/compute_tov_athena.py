@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 Task 4.17b — Compute true Transfer of Value from CMS Athena data.
 Aggregates Nova Pharma + all-company spend per HCP per year.

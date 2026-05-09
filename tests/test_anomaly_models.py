@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Divya Rajaraman
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 """
 test_anomaly_models.py
 Phase 2 — Integration tests for anomaly detection pipeline outputs
